@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -263,6 +264,11 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                     timers = timers,
                     runtimeById = runtimeById,
                     selectedIds = selectedIds,
+                    colorMode = colorMode,
+                    intervalMinutes = intervalMinutes,
+                    fractionDivisions = fractionDivisions,
+                    thresholdMinutes = thresholdMinutes,
+                    thresholdColors = thresholdColors,
                     onToggle = { id ->
                         selectedIds = if (id in selectedIds) selectedIds - id else selectedIds + id
                     },
@@ -554,6 +560,11 @@ private fun TimerList(
     timers: List<TimerItem>,
     runtimeById: Map<Long, TimerRuntime>,
     selectedIds: Set<Long>,
+    colorMode: at.cwiesner.android.visualtimer.ext.settings.ColorMode,
+    intervalMinutes: Long,
+    fractionDivisions: Int,
+    thresholdMinutes: List<Long>,
+    thresholdColors: List<Color>,
     onToggle: (Long) -> Unit,
     onBatchDelete: () -> Unit,
     onBatchStart: () -> Unit,
@@ -598,6 +609,22 @@ private fun TimerList(
                     Checkbox(
                         checked = timer.id in selectedIds,
                         onCheckedChange = { onToggle(timer.id) },
+                    )
+                    // 小圆盘：和网格里的大表盘同样的视觉，便于一眼分辨各计时器状态
+                    PieTimerView(
+                        totalMillis = rt?.totalMillis ?: timer.durationMillis,
+                        remainingMillis = rt?.remainingMillis ?: timer.durationMillis,
+                        running = running,
+                        onDurationChange = null,
+                        modifier = Modifier.width(52.dp),
+                        maxMinutes = 60,
+                        centerFontSize = 14f,
+                        innerDial = false,
+                        colorMode = colorMode,
+                        intervalMinutes = intervalMinutes,
+                        fractionDivisions = fractionDivisions,
+                        thresholdMinutes = thresholdMinutes,
+                        thresholdColors = thresholdColors,
                     )
                     Column(modifier = Modifier.weight(1f)) {
                         Text(

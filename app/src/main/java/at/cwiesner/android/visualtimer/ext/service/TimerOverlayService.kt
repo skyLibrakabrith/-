@@ -179,14 +179,19 @@ class TimerOverlayService : Service() {
         }.also { it.isDaemon = true; it.start() }
     }
 
+    /**
+     * 把运行中的计时器画成一排圆盘。
+     *
+     * 用 [OverlayDialView] 原生绘制，和主界面 PieTimerView 视觉一致：
+     * 实心扇形 + 中央时间 + 下方名称。最多 6 个，两行三列。
+     */
     private fun mainHandlerUpdate(list: List<TimerRuntime>) {
         val dp = resources.displayMetrics.density
         container?.post {
             val box = container ?: return@post
-            box.removeAllViews()
+
             if (list.isEmpty()) {
-                // 没有运行中的计时器时保留悬浮窗，显示占位 —— 否则用户一开启就消失，
-                // 会以为功能坏了
+                box.removeAllViews()
                 box.addView(
                     TextView(this).apply {
                         text = "暂无运行中的计时器"
@@ -196,34 +201,57 @@ class TimerOverlayService : Service() {
                 )
                 return@post
             }
-            for (rt in list.take(6)) {
-                val row = TextView(this).apply {
-                    text = buildString {
-                        append(rt.label ?: "未命名")
-                        append("   ")
-                        append(DeadlineCalculator.formatRemaining(rt.remainingMillis))
+
+            val shown = list.take(6)
+            val dialSize = (58 * dp).toInt()
+            val gap = (8 * dp).toInt()
+            val perRow = 3
+            val rows = (shown.size + perRow - 1) / perRow
+
+            // 结构不变时只更新数值，避免每次重绘都重建视图树
+            if (box.childCount == rows && box.tag == shown.size) {
+                var idx = 0
+                for (r in 0 until rows) {
+                    val row = box.getChildAt(r) as? LinearLayout ?: continue
+                    for (c in 0 until row.childCount) {
+                        val dial = row.getChildAt(c) as? OverlayDialView ?: continue
+                        val rt = shown.getOrNull(idx) ?: break
+                        dial.progress = if (rt.totalMillis > 0)
+                            (rt.remainingMillis.toFloat() / rt.totalMillis).coerceIn(0f, 1f)
+                        else 0f
+                        dial.arcColor = OverlayDialView.colorFor(dial.progress)
+                        dial.label = OverlayDialView.labelFor(rt.remainingMillis)
+                        dial.caption = rt.label ?: "未命名"
+                        idx++
                     }
-                    setTextColor(
-                        when {
-                            rt.expired -> Color.parseColor("#F44336")
-                            rt.remainingMillis < 60_000L -> Color.parseColor("#FFC107")
-                            else -> Color.parseColor("#F2F2F2")
-                        },
-                    )
-                    textSize = 13f
-                    typeface = Typeface.MONOSPACE
-                    setPadding(0, (2 * dp).toInt(), 0, (2 * dp).toInt())
+                }
+                return@post
+            }
+
+            box.removeAllViews()
+            box.tag = shown.size
+            var idx = 0
+            for (r in 0 until rows) {
+                val row = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    if (r > 0) setPadding(0, gap, 0, 0)
+                }
+                for (c in 0 until perRow) {
+                    val rt = shown.getOrNull(idx) ?: break
+                    val dial = OverlayDialView(this).apply {
+                        progress = if (rt.totalMillis > 0)
+                            (rt.remainingMillis.toFloat() / rt.totalMillis).coerceIn(0f, 1f)
+                        else 0f
+                        arcColor = OverlayDialView.colorFor(progress)
+                        label = OverlayDialView.labelFor(rt.remainingMillis)
+                        caption = rt.label ?: "未命名"
+                        layoutParams = LinearLayout.LayoutParams(dialSize, dialSize + (14 * dp).toInt())
+                            .apply { if (c > 0) marginStart = gap }
+                    }
+                    row.addView(dial)
+                    idx++
                 }
                 box.addView(row)
-            }
-            if (list.size > 6) {
-                box.addView(
-                    TextView(this).apply {
-                        text = "还有 ${list.size - 6} 个…"
-                        setTextColor(Color.parseColor("#8A8A8A"))
-                        textSize = 11f
-                    },
-                )
             }
         }
     }
