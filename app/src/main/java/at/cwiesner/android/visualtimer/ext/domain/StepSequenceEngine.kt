@@ -53,14 +53,17 @@ class StepSequenceEngine(
         /**
          * 等待用户确认进入下一步。
          *
+         * @property elapsedMillis **阶段结束后已经过去多久**，从结束那一刻起
+         *   **立刻**开始正计时（不等超时）。这是「本阶段耗时/已拖延」的直观读数。
          * @property timeoutRemainingMillis 距离超时还有多久；到 0 之后保持 0
-         * @property overtimeMillis **超时后已经过去多久**，持续递增（正计时）
+         * @property overtimeMillis 超时后又过了多久（= elapsed − timeout，供强调用）
          * @property overdue 是否已超时（界面切换为强调态）
          */
         data class AwaitingConfirm(
             val finishedStepIndex: Int,
             val finishedStep: Step,
             val nextStep: Step?,
+            val elapsedMillis: Long,
             val timeoutRemainingMillis: Long,
             val overtimeMillis: Long,
             val overdue: Boolean,
@@ -146,32 +149,36 @@ class StepSequenceEngine(
 
             val nextStep = steps.getOrNull(index + 1)
             var timeoutLeft = seq.timeoutMillis
+            var elapsed = 0L          // 从阶段结束起立刻累加
             var overtime = 0L
 
             _phase.value = Phase.AwaitingConfirm(
                 finishedStepIndex = index,
                 finishedStep = step,
                 nextStep = nextStep,
+                elapsedMillis = 0L,
                 timeoutRemainingMillis = timeoutLeft,
                 overtimeMillis = 0L,
                 overdue = false,
             )
 
-            // ---- 阶段 2：超时倒计时 → 到点后转正计时 ----
+            // ---- 阶段 2：正计时立刻开始，同时超时倒计时并行 ----
             // 注意：全程不自动前进，必须用户调用 confirm()
             while (isActive) {
                 delay(TICK_MILLIS)
+                elapsed += TICK_MILLIS            // 立刻正计时，不等超时
                 if (timeoutLeft > 0) {
                     timeoutLeft = (timeoutLeft - TICK_MILLIS).coerceAtLeast(0)
                 } else {
-                    overtime += TICK_MILLIS   // 超时后开始正计时
+                    overtime = elapsed - seq.timeoutMillis
                 }
                 _phase.value = Phase.AwaitingConfirm(
                     finishedStepIndex = index,
                     finishedStep = step,
                     nextStep = nextStep,
+                    elapsedMillis = elapsed,
                     timeoutRemainingMillis = timeoutLeft,
-                    overtimeMillis = overtime,
+                    overtimeMillis = if (overtime > 0) overtime else 0L,
                     overdue = timeoutLeft <= 0,
                 )
             }

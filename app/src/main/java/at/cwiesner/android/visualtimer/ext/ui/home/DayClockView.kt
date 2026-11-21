@@ -14,6 +14,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -53,6 +54,10 @@ fun DayClockView(
     showCenterText: Boolean = true,
 ) {
     var dragFraction by remember { mutableFloatStateOf(-1f) }
+    // 关键：把 now 放进 rememberUpdatedState，pointerInput 的 key 用 Unit。
+    // 之前 key 写的是 nowEpochMillis，now 每秒变一次 → 手势处理器每秒被取消重建，
+    // 拖动几秒后就「卡住不动」了。
+    val nowState = rememberUpdatedState(nowEpochMillis)
 
     val bgCircle = ExtColors.Surface
     val elapsedColor = ExtColors.PrimaryDim
@@ -70,24 +75,24 @@ fun DayClockView(
         Canvas(
             modifier = Modifier
                 .fillMaxSize()
-                .pointerInput(nowEpochMillis) {
+                .pointerInput(Unit) {
                     detectDragGestures(
                         onDragStart = { off ->
                             dragFraction = fractionOfDay(off, size.width, size.height)
-                            onPick(epochFromDayFraction(dragFraction, nowEpochMillis))
+                            onPick(epochFromDayFraction(dragFraction, nowState.value))
                         },
                         onDragEnd = { dragFraction = -1f },
                         onDragCancel = { dragFraction = -1f },
                         onDrag = { change, _ ->
                             dragFraction = fractionOfDay(change.position, size.width, size.height)
-                            onPick(epochFromDayFraction(dragFraction, nowEpochMillis))
+                            onPick(epochFromDayFraction(dragFraction, nowState.value))
                         },
                     )
                 }
-                .pointerInput(nowEpochMillis) {
+                .pointerInput(Unit) {
                     detectTapGestures { off ->
                         val f = fractionOfDay(off, size.width, size.height)
-                        onPick(epochFromDayFraction(f, nowEpochMillis))
+                        onPick(epochFromDayFraction(f, nowState.value))
                     }
                 },
         ) {

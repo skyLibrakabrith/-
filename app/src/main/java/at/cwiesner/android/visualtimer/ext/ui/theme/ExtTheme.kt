@@ -48,8 +48,28 @@ object ExtColors {
     val Orange = Color(0xFFFF8A3D)
     val Red = Color(0xFFF44336)
 
-    /** 变色阈值使用的调色板，下标与 ColorThreshold.paletteIndex 对应。 */
-    val Palette: List<Color> = listOf(Primary, Amber, Orange, Red)
+    /**
+     * 变色调色板（8 色，由冷到热）。
+     *
+     * 顺序即语义：越靠前越"充裕"，越靠后越"紧张"。
+     * 阈值模式、等间隔模式、表盘比例模式都按这个顺序自动取色，
+     * 用户不需要手动指定具体颜色，只需要决定"分几档"。
+     */
+    val Palette: List<Color> = listOf(
+        Color(0xFF7C9EFF), // 0 蓝紫  — 充裕
+        Color(0xFF56CCF2), // 1 天蓝
+        Color(0xFF3FD0B0), // 2 青绿
+        Color(0xFF9BD64B), // 3 草绿
+        Color(0xFFFFC107), // 4 琥珀
+        Color(0xFFFF9F1C), // 5 橙
+        Color(0xFFFF6B35), // 6 橙红
+        Color(0xFFF44336), // 7 红    — 紧张
+    )
+
+    /** 调色板档位名称，用于设置页说明。 */
+    val PaletteNames: List<String> = listOf(
+        "蓝紫", "天蓝", "青绿", "草绿", "琥珀", "橙", "橙红", "红",
+    )
 
     internal fun applyMode(mode: ThemeMode, systemDark: Boolean) {
         when (mode) {

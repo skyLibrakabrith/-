@@ -50,6 +50,8 @@ import androidx.compose.ui.unit.sp
 import at.cwiesner.android.visualtimer.ext.ExtApplication
 import at.cwiesner.android.visualtimer.ext.io.BackupManager
 import at.cwiesner.android.visualtimer.ext.service.TimerOverlayService
+import at.cwiesner.android.visualtimer.ext.ui.wheel.NumberWheel
+import at.cwiesner.android.visualtimer.ext.ui.wheel.PaletteStrip
 import at.cwiesner.android.visualtimer.ext.settings.ColorMode
 import at.cwiesner.android.visualtimer.ext.settings.ColorThreshold
 import at.cwiesner.android.visualtimer.ext.settings.SettingsRepo
@@ -80,6 +82,7 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
     val overlayEnabled by settings.overlayEnabled.collectAsState(initial = false)
     val backgroundEnabled by settings.backgroundEnabled.collectAsState(initial = true)
     val keepScreenOn by settings.keepScreenOn.collectAsState(initial = false)
+    val gridColumns by settings.gridColumns.collectAsState(initial = 2)
     // 悬浮窗权限状态（用户可能在系统里改过，每次重组重新查）
     var canOverlay by remember { mutableStateOf(Settings.canDrawOverlays(context)) }
 
@@ -150,7 +153,8 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
 
         SettingsCard(title = "变色模式") {
             Text(
-                "决定圆盘颜色随剩余时间怎么变。配色顺序固定为：主色 → 琥珀 → 橙 → 红。",
+                "决定圆盘颜色随剩余时间怎么变。配色自动取自 8 色梯度：" +
+                    ExtColors.PaletteNames.joinToString(" → ") + "。",
                 fontSize = 12.sp,
                 color = ExtColors.TextDim,
             )
@@ -193,7 +197,7 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                                 modifier = Modifier
                                     .size(14.dp)
                                     .clip(CircleShape)
-                                    .background(ExtColors.Palette[t.paletteIndex.coerceIn(0, 3)]),
+                                    .background(ExtColors.Palette[t.paletteIndex.coerceIn(0, ExtColors.Palette.size - 1)]),
                             )
                             Text(
                                 text = "剩余 ≤ ${describeMinutes(t.minutesLeft)}",
@@ -225,24 +229,17 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
 
                 ColorMode.Interval -> {
                     Text(
-                        "每 ${describeMinutes(intervalMinutes)} 换一种颜色，循环使用四色",
+                        "每 ${describeMinutes(intervalMinutes)} 换一种颜色，按调色板顺序循环",
                         fontSize = 13.sp,
                         color = ExtColors.TextPrimary,
                     )
-                    Row(
+                    NumberWheel(
+                        values = (1..60).toList(),
+                        selected = intervalMinutes.toInt().coerceIn(1, 60),
+                        onSelect = { scope.launch { settings.setIntervalMinutes(it.toLong()) } },
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        listOf(1L, 3L, 5L, 10L, 30L).forEach { m ->
-                            SelectChip(
-                                text = "${m}分",
-                                selected = intervalMinutes == m,
-                                modifier = Modifier.weight(1f),
-                            ) {
-                                scope.launch { settings.setIntervalMinutes(m) }
-                            }
-                        }
-                    }
+                        suffix = " 分",
+                    )
                 }
 
                 ColorMode.Fraction -> {
@@ -251,35 +248,14 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                         fontSize = 13.sp,
                         color = ExtColors.TextPrimary,
                     )
-                    Row(
+                    NumberWheel(
+                        values = (2..8).toList(),
+                        selected = fractionDivisions.coerceIn(2, 8),
+                        onSelect = { scope.launch { settings.setFractionDivisions(it) } },
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        listOf(2, 3, 4, 6, 8).forEach { d ->
-                            SelectChip(
-                                text = "$d 份",
-                                selected = fractionDivisions == d,
-                                modifier = Modifier.weight(1f),
-                            ) {
-                                scope.launch { settings.setFractionDivisions(d) }
-                            }
-                        }
-                    }
-                    // 预览色块
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    ) {
-                        repeat(fractionDivisions) { i ->
-                            Box(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .height(10.dp)
-                                    .clip(RoundedCornerShape(3.dp))
-                                    .background(ExtColors.Palette[i % ExtColors.Palette.size]),
-                            )
-                        }
-                    }
+                        suffix = " 份",
+                    )
+                    PaletteStrip(divisions = fractionDivisions)
                 }
             }
         }
@@ -318,6 +294,26 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
         }
 
         // ---------- 悬浮窗 ----------
+        SettingsCard(title = "表盘布局") {
+            Text(
+                "格数决定每个表盘的大小：1 列 = 单列大表盘，3 列 = 小表盘密度更高。",
+                fontSize = 12.sp,
+                color = ExtColors.TextDim,
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                listOf(1, 2, 3).forEach { n ->
+                    SelectChip(
+                        text = if (n == 1) "大（1 列）" else if (n == 2) "中（2 列）" else "小（3 列）",
+                        selected = gridColumns == n,
+                        modifier = Modifier.weight(1f),
+                    ) { scope.launch { settings.setGridColumns(n) } }
+                }
+            }
+        }
+
         SettingsCard(title = "悬浮窗") {
             Text(
                 "在别的应用上层显示正在运行的计时器。需要系统「显示在其他应用上层」权限。",

@@ -104,6 +104,11 @@ class SettingsRepo(private val context: Context) {
     /** 屏幕常亮：计时界面不自动熄屏。 */
     val keepScreenOn: Flow<Boolean> = store.data.map { it[KEY_KEEP_SCREEN_ON] ?: false }
 
+    /** 网格列数：1=单列大表盘，2=两列，3=三列小表盘。 */
+    val gridColumns: Flow<Int> = store.data.map {
+        (it[KEY_GRID_COLUMNS]?.toIntOrNull() ?: 2).coerceIn(1, 3)
+    }
+
     suspend fun setTheme(mode: ThemeMode) {
         store.edit { it[KEY_THEME] = mode.name }
     }
@@ -148,6 +153,10 @@ class SettingsRepo(private val context: Context) {
         store.edit { it[KEY_KEEP_SCREEN_ON] = enabled }
     }
 
+    suspend fun setGridColumns(n: Int) {
+        store.edit { it[KEY_GRID_COLUMNS] = n.coerceIn(1, 3).toString() }
+    }
+
     companion object {
         private val KEY_THEME = stringPreferencesKey("theme_mode")
         private val KEY_THRESHOLDS = stringPreferencesKey("color_thresholds")
@@ -159,6 +168,7 @@ class SettingsRepo(private val context: Context) {
         private val KEY_OVERLAY = booleanPreferencesKey("overlay_enabled")
         private val KEY_BACKGROUND = booleanPreferencesKey("background_enabled")
         private val KEY_KEEP_SCREEN_ON = booleanPreferencesKey("keep_screen_on")
+        private val KEY_GRID_COLUMNS = stringPreferencesKey("grid_columns")
 
         /** 默认：60 分钟起主色，10 分钟琥珀，3 分钟橙，1 分钟红。 */
         const val DEFAULT_THRESHOLDS = "60:0,10:1,3:2,1:3"

@@ -1,7 +1,9 @@
 package at.cwiesner.android.visualtimer.ext.ui.panels
 
 import android.widget.Toast
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -93,6 +95,7 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
     val colorMode by settings.colorMode.collectAsState(initial = at.cwiesner.android.visualtimer.ext.settings.ColorMode.Threshold)
     val intervalMinutes by settings.intervalMinutes.collectAsState(initial = 5L)
     val fractionDivisions by settings.fractionDivisions.collectAsState(initial = 4)
+    val gridColumns by settings.gridColumns.collectAsState(initial = 2)
 
     val panels by remember { db.panelDao().observeAll() }
         .collectAsState(initial = emptyList<Panel>())
@@ -112,6 +115,7 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
     var menuOpen by remember { mutableStateOf(false) }
 
     var listMode by remember { mutableStateOf(false) }
+    var focusTimerId by remember { mutableStateOf<Long?>(null) }
     var selectedIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
 
     val runtimeMap by runner.runtimes.collectAsState()
@@ -224,7 +228,34 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                 .fillMaxSize()
                 .padding(inner),
         ) {
-            when {
+            val focused = focusTimerId?.let { id -> timers.firstOrNull { it.id == id } }
+            if (focused != null) {
+                TimerFocusScreen(
+                    timer = focused,
+                    runtime = runtimeById[focused.id],
+                    colorMode = colorMode,
+                    intervalMinutes = intervalMinutes,
+                    fractionDivisions = fractionDivisions,
+                    thresholdMinutes = thresholdMinutes,
+                    thresholdColors = thresholdColors,
+                    onDurationChange = { d ->
+                        scope.launch { db.timerDao().upsert(focused.copy(durationMillis = d)) }
+                    },
+                    onStart = {
+                        scope.launch {
+                            runner.clear(focused.id)
+                            runner.start(focused)
+                            toast("开始计时")
+                        }
+                    },
+                    onPause = {
+                        runner.stop(focused.id)
+                        toast("已暂停")
+                    },
+                    onReset = { runner.reset(focused.id) },
+                    onClose = { focusTimerId = null },
+                )
+            } else when {
                 panels.isEmpty() -> EmptyHint("还没有面板，点右下角新建一个")
                 timers.isEmpty() -> EmptyHint("这个面板还没有计时器，点右下角添加")
 
@@ -256,7 +287,7 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                 )
 
                 else -> LazyVerticalGrid(
-                    columns = GridCells.Fixed(2),
+                    columns = GridCells.Fixed(gridColumns),
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(12.dp),
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -271,7 +302,8 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                             colorMode = colorMode,
                             intervalMinutes = intervalMinutes,
                             fractionDivisions = fractionDivisions,
-                            onClick = {
+                            onClick = { focusTimerId = timer.id },
+                            onLongClick = {
                                 scope.launch {
                                     val cur = runner.snapshot().firstOrNull { it.timerId == timer.id }
                                     val name = timer.label ?: "未命名"
@@ -410,7 +442,17 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
     }
 }
 
-/** 网格单元：一个大圆盘 + 名称。 */
+/** 时刻显示 HH:mm。 */
+private fun clockOf(epochMillis: Long): String {
+    val cal = java.util.Calendar.getInstance().apply { timeInMillis = epochMillis }
+    return "%02d:%02d".format(
+        cal.get(java.util.Calendar.HOUR_OF_DAY),
+        cal.get(java.util.Calendar.MINUTE),
+    )
+}
+
+/** 网格单元：一个大圆盘 + 名称 + 结束时刻。 */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun TimerCell(
     timer: TimerItem,
@@ -421,6 +463,7 @@ private fun TimerCell(
     intervalMinutes: Long,
     fractionDivisions: Int,
     onClick: () -> Unit,
+    onLongClick: () -> Unit,
     onDelete: () -> Unit,
 ) {
     val running = runtime?.running == true
@@ -432,7 +475,7 @@ private fun TimerCell(
         modifier = Modifier
             .fillMaxWidth()
             .aspectRatio(0.92f)
-            .clickable(onClick = onClick),
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick),
         shape = RoundedCornerShape(16.dp),
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
@@ -464,6 +507,13 @@ private fun TimerCell(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.padding(top = 2.dp),
+                )
+                // 结束时刻：运行时 = 现在 + 剩余；未运行 = 现在 + 总时长
+                Text(
+                    text = clockOf(System.currentTimeMillis() + remain) + " 结束",
+                    fontSize = 10.sp,
+                    color = ExtColors.TextDim,
+                    maxLines = 1,
                 )
             }
             IconButton(

@@ -145,7 +145,12 @@ class TimerOverlayService : Service() {
         }
 
         rootView = container
-        runCatching { windowManager.addView(container, params) }
+        val added = runCatching { windowManager.addView(container, params) }
+        if (added.isFailure) {
+            android.util.Log.e("TimerOverlay", "addView 失败: ${added.exceptionOrNull()?.message}")
+            rootView = null
+            container = null
+        }
     }
 
     private fun removeOverlay() {
@@ -175,15 +180,22 @@ class TimerOverlayService : Service() {
     }
 
     private fun mainHandlerUpdate(list: List<TimerRuntime>) {
-        if (list.isEmpty()) {
-            // 没有运行中的计时器 → 自动关闭悬浮窗
-            stopSelf()
-            return
-        }
         val dp = resources.displayMetrics.density
         container?.post {
             val box = container ?: return@post
             box.removeAllViews()
+            if (list.isEmpty()) {
+                // 没有运行中的计时器时保留悬浮窗，显示占位 —— 否则用户一开启就消失，
+                // 会以为功能坏了
+                box.addView(
+                    TextView(this).apply {
+                        text = "暂无运行中的计时器"
+                        setTextColor(Color.parseColor("#8A8A8A"))
+                        textSize = 12f
+                    },
+                )
+                return@post
+            }
             for (rt in list.take(6)) {
                 val row = TextView(this).apply {
                     text = buildString {

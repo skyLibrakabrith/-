@@ -127,45 +127,59 @@ private fun AwaitingBody(
             textAlign = TextAlign.Center,
         )
 
-        // 超时环形 → 到点后转正计时（显示已超出多久）
+        // 正计时：阶段一结束就立刻开始，显示已经过了多久
         val overdue = phase.overdue
-        val timerText = if (overdue) {
-            "+" + DeadlineCalculator.formatRemaining(phase.overtimeMillis)
-        } else {
-            "${phase.timeoutRemainingMillis / 1000}s"
-        }
-
         Box(contentAlignment = Alignment.Center) {
             TimeoutRing(overdue = overdue)
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(
-                    text = timerText,
-                    style = MaterialTheme.typography.headlineSmall,
+                    text = "+" + DeadlineCalculator.formatRemaining(phase.elapsedMillis),
+                    style = MaterialTheme.typography.headlineMedium,
                     color = if (overdue) MaterialTheme.colorScheme.error
                     else MaterialTheme.colorScheme.onSurface,
                 )
-                if (overdue) {
-                    Text(
-                        text = "已超时",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                }
+                Text(
+                    text = if (overdue) {
+                        "已超时 ${formatSec(phase.overtimeMillis)}"
+                    } else {
+                        "还可等 ${formatSec(phase.timeoutRemainingMillis)}"
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (overdue) MaterialTheme.colorScheme.error
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
 
         Text(
             text = phase.nextStep?.let {
-                "下一阶段：${it.label ?: DeadlineCalculator.formatRemaining(it.durationMillis)}"
+                "下一阶段：${it.label ?: DeadlineCalculator.formatRemaining(it.durationMillis)}" +
+                    " · 点到后 ${clockOf(System.currentTimeMillis() + it.durationMillis)} 结束"
             } ?: "这是最后一步",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
         )
 
         // 关键：超时不自动前进，必须点这里
         Button(onClick = onConfirm) { Text("下一阶段") }
         TextButton(onClick = onSkip) { Text("跳过") }
     }
+}
+
+/** 秒级格式化，用于超时倒计时。 */
+private fun formatSec(millis: Long): String {
+    val s = (millis / 1000).coerceAtLeast(0)
+    return if (s >= 60) "${s / 60}分${s % 60}秒" else "${s}秒"
+}
+
+/** 时刻显示 HH:mm。 */
+private fun clockOf(epochMillis: Long): String {
+    val cal = java.util.Calendar.getInstance().apply { timeInMillis = epochMillis }
+    return "%02d:%02d".format(
+        cal.get(java.util.Calendar.HOUR_OF_DAY),
+        cal.get(java.util.Calendar.MINUTE),
+    )
 }
 
 /** 顶部步骤条：已过的段变实心，当前段加粗。 */
