@@ -1,12 +1,17 @@
 package at.cwiesner.android.visualtimer.ext.domain
 
 import at.cwiesner.android.visualtimer.ext.data.TimerItem
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 
 /**
  * 单计时器的运行时状态。
- *
- * 与 [StepSequenceEngine] 的区别：这里只管一个计时器，且支持
- * 「DDL 模式」——到期时刻固定，剩余时长随现在流逝而变化。
  */
 data class TimerRuntime(
     val timerId: Long,
@@ -24,83 +29,131 @@ data class TimerRuntime(
 }
 
 /**
- * 面板内多个计时器的并行调度器。
+ * 计时器运行时调度器。
  *
- * 所有计时器共享一个 tick，各自独立倒计时。支持两种启动方式：
- * - 相对时长：start(timer) 以 timer.durationMillis 倒计时
- * - DDL 倒推：startUntil(timer, deadlineEpoch, now) 以固定截止时刻倒计时
+ * **生命周期**：由 [at.cwiesner.android.visualtimer.ext.ExtApplication] 持有，
+ * 不随界面销毁。这一点很关键 —— 之前它建在 Composable 的 `remember` 里，
+ * 一旦切走底部标签，组合被销毁，所有倒计时就被清空了。
+ *
+ * 内部自带 tick 循环，并把结果暴露成 [runtimes] StateFlow，
+ * 界面只负责收集，不负责驱动时间。
  */
-/**
- * 纯内存调度器：不持有数据库引用，timer 数据由 UI 层从 Room 读取后传入。
- */
-class PanelRunner {
-    private val runtimes = mutableMapOf<Long, TimerRuntime>()
+class PanelRunner(private val scope: CoroutineScope) {
 
-    fun snapshot(): List<TimerRuntime> = runtimes.values.sortedBy { it.timerId }
+    private val _runtimes = MutableStateFlow<Map<Long, TimerRuntime>>(emptyMap())
+    val runtimes: StateFlow<Map<Long, TimerRuntime>> = _runtimes.asStateFlow()
+
+    private var tickJob: Job? = null
+
+    /** 启动内部 tick 循环。重复调用无副作用。 */
+    fun startTicking() {
+        if (tickJob?.isActive == true) return
+        tickJob = scope.launch {
+            var last = System.currentTimeMillis()
+            while (isActive) {
+                delay(TICK_MILLIS)
+                val now = System.currentTimeMillis()
+                tick(now - last, now)
+                last = now
+            }
+        }
+    }
+
+    fun stopTicking() {
+        tickJob?.cancel()
+        tickJob = null
+    }
+
+    fun snapshot(): List<TimerRuntime> =
+        _runtimes.value.values.sortedBy { it.timerId }
+
+    fun get(timerId: Long): TimerRuntime? = _runtimes.value[timerId]
 
     /** 开始一个计时器（相对时长）。 */
     fun start(timer: TimerItem) {
-        runtimes[timer.id] = TimerRuntime(
-            timerId = timer.id,
-            label = timer.label,
-            totalMillis = timer.durationMillis,
-            remainingMillis = timer.durationMillis,
-            running = true,
-            deadlineEpochMillis = null,
-        )
+        _runtimes.value = _runtimes.value + (
+            timer.id to TimerRuntime(
+                timerId = timer.id,
+                label = timer.label,
+                totalMillis = timer.durationMillis,
+                remainingMillis = timer.durationMillis,
+                running = true,
+                deadlineEpochMillis = null,
+            )
+            )
     }
 
-    /** 以 DDL 方式开始：剩余时长 = 截止时刻 - 现在。 */
+    /** 以 DDL 方式开始：剩余时长 = 截止时刻 − 现在。 */
     fun startUntil(timer: TimerItem, deadlineEpochMillis: Long, now: Long) {
         val remaining = (deadlineEpochMillis - now).coerceAtLeast(0L)
-        runtimes[timer.id] = TimerRuntime(
-            timerId = timer.id,
-            label = timer.label,
-            totalMillis = remaining,
-            remainingMillis = remaining,
-            running = true,
-            deadlineEpochMillis = deadlineEpochMillis,
-        )
+        _runtimes.value = _runtimes.value + (
+            timer.id to TimerRuntime(
+                timerId = timer.id,
+                label = timer.label,
+                totalMillis = remaining,
+                remainingMillis = remaining,
+                running = true,
+                deadlineEpochMillis = deadlineEpochMillis,
+            )
+            )
     }
 
     /** 每次 tick 推进所有正在跑的计时器。 */
     fun tick(deltaMillis: Long, now: Long) {
-        val keys = runtimes.keys.toList()
-        for (k in keys) {
-            val r = runtimes[k] ?: continue
-            if (!r.running) continue
-            val next = if (r.deadlineEpochMillis != null) {
+        val current = _runtimes.value
+        if (current.isEmpty()) return
+        var changed = false
+        val next = HashMap<Long, TimerRuntime>(current.size)
+        for ((k, r) in current) {
+            if (!r.running) {
+                next[k] = r
+                continue
+            }
+            val remaining = if (r.deadlineEpochMillis != null) {
                 (r.deadlineEpochMillis - now).coerceAtLeast(0L)
             } else {
                 (r.remainingMillis - deltaMillis).coerceAtLeast(0L)
             }
-            runtimes[k] = r.copy(
-                remainingMillis = next,
-                running = next > 0L,   // 到点自动停
-            )
+            if (remaining != r.remainingMillis) {
+                changed = true
+                next[k] = r.copy(
+                    remainingMillis = remaining,
+                    running = remaining > 0L,
+                )
+                // 时长可能随时间调整（DDL 模式）—— 让 total 跟着更新，进度条才不会失真
+            } else {
+                next[k] = r
+            }
         }
+        if (changed) _runtimes.value = next
     }
 
     fun stop(timerId: Long) {
-        runtimes[timerId]?.let { runtimes[timerId] = it.copy(running = false) }
+        val r = _runtimes.value[timerId] ?: return
+        _runtimes.value = _runtimes.value + (timerId to r.copy(running = false))
     }
 
     fun reset(timerId: Long) {
-        runtimes[timerId]?.let {
-            runtimes[timerId] = it.copy(
-                remainingMillis = it.totalMillis,
-                running = false,
+        val r = _runtimes.value[timerId] ?: return
+        _runtimes.value = _runtimes.value + (
+            timerId to r.copy(remainingMillis = r.totalMillis, running = false)
             )
-        }
     }
 
     fun clear(timerId: Long) {
-        runtimes.remove(timerId)
+        _runtimes.value = _runtimes.value - timerId
     }
 
-    fun clearAll() = runtimes.clear()
+    fun clearAll() {
+        _runtimes.value = emptyMap()
+    }
 
-    /** 已到点、尚未处理的计时器（用于触发警报）。 */
+    /** 到点但还没被用户处理的计时器。 */
     fun expiredIds(): List<Long> =
-        runtimes.values.filter { it.expired }.map { it.timerId }
+        _runtimes.value.values.filter { it.expired }.map { it.timerId }
+
+    companion object {
+        /** 刷新粒度。200ms 足够顺滑，也不会过分耗电。 */
+        const val TICK_MILLIS: Long = 200L
+    }
 }

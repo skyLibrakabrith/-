@@ -86,9 +86,13 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
     val app = context.applicationContext as ExtApplication
     val db = app.database
     val scope = rememberCoroutineScope()
-    val runner = remember { PanelRunner() }
+    // 用 Application 持有的实例：切标签 / 回桌面都不会丢倒计时
+    val runner = app.panelRunner
     val settings = remember { SettingsRepo(context) }
     val thresholds by settings.thresholds.collectAsState(initial = emptyList())
+    val colorMode by settings.colorMode.collectAsState(initial = at.cwiesner.android.visualtimer.ext.settings.ColorMode.Threshold)
+    val intervalMinutes by settings.intervalMinutes.collectAsState(initial = 5L)
+    val fractionDivisions by settings.fractionDivisions.collectAsState(initial = 4)
 
     val panels by remember { db.panelDao().observeAll() }
         .collectAsState(initial = emptyList<Panel>())
@@ -110,20 +114,10 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
     var listMode by remember { mutableStateOf(false) }
     var selectedIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
 
-    var tick by remember { mutableIntStateOf(0) }
-    LaunchedEffect(Unit) {
-        var last = System.currentTimeMillis()
-        while (isActive) {
-            delay(200)
-            val now = System.currentTimeMillis()
-            runner.tick(now - last, now)
-            last = now
-            tick++
-        }
-    }
-
-    val runtimes: List<TimerRuntime> = remember(tick) { runner.snapshot() }
-    val runtimeById = remember(tick) { runtimes.associateBy { it.timerId } }
+    val runtimeMap by runner.runtimes.collectAsState()
+    val runtimes: List<TimerRuntime> = runtimeMap.values.sortedBy { it.timerId }
+    val runtimeById = runtimeMap
+    // StateFlow 已驱动 UI，无需本地 tick
     val thresholdMinutes = remember(thresholds) { thresholds.map { it.minutesLeft } }
     val thresholdColors = remember(thresholds) {
         thresholds.map { ExtColors.Palette[it.paletteIndex.coerceIn(0, 3)] }
@@ -175,14 +169,13 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                                                     runner.clear(t.id)
                                                     runner.start(t)
                                                 }
-                                                tick++
                                                 toast("已启动 ${timers.size} 个计时器")
                                             }
                                         },
                                     )
                                     DropdownMenuItem(
                                         text = { Text("清空计时状态") },
-                                        onClick = { menuOpen = false; runner.clearAll(); tick++ },
+                                        onClick = { menuOpen = false; runner.clearAll() },
                                     )
                                     DropdownMenuItem(
                                         text = { Text("删除面板") },
@@ -250,7 +243,6 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                                 currentPanel?.let { db.panelDao().removeRef(it.id, id) }
                             }
                             selectedIds = emptySet()
-                            tick++
                             toast("已删除 $n 个计时器")
                         }
                     },
@@ -258,7 +250,6 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                         scope.launch {
                             val chosen = timers.filter { it.id in selectedIds }
                             chosen.forEach { t -> runner.clear(t.id); runner.start(t) }
-                            tick++
                             toast("已启动 ${chosen.size} 个计时器")
                         }
                     },
@@ -277,6 +268,9 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                             runtime = runtimeById[timer.id],
                             thresholdMinutes = thresholdMinutes,
                             thresholdColors = thresholdColors,
+                            colorMode = colorMode,
+                            intervalMinutes = intervalMinutes,
+                            fractionDivisions = fractionDivisions,
                             onClick = {
                                 scope.launch {
                                     val cur = runner.snapshot().firstOrNull { it.timerId == timer.id }
@@ -299,14 +293,12 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                                             toast("继续：$name")
                                         }
                                     }
-                                    tick++
                                 }
                             },
                             onDelete = {
                                 scope.launch {
                                     runner.clear(timer.id)
                                     currentPanel?.let { db.panelDao().removeRef(it.id, timer.id) }
-                                    tick++
                                     toast("已删除")
                                 }
                             },
@@ -378,7 +370,6 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                     db.timerDao().get(timerId)?.let { created ->
                         if (deadlineEpoch != null) runner.startUntil(created, deadlineEpoch, now)
                     }
-                    tick++
                     toast("已添加：" + (label.ifBlank { "未命名" }) + " · " +
                         DeadlineCalculator.formatRemaining(duration))
                 }
@@ -412,7 +403,6 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                         ),
                     )
                     db.timerDao().get(timerId)?.let { runner.startUntil(it, deadlineEpoch, now) }
-                    tick++
                     toast("已创建 DDL：" + (label.ifBlank { "到点倒计时" }))
                 }
             },
@@ -427,6 +417,9 @@ private fun TimerCell(
     runtime: TimerRuntime?,
     thresholdMinutes: List<Long>,
     thresholdColors: List<Color>,
+    colorMode: at.cwiesner.android.visualtimer.ext.settings.ColorMode,
+    intervalMinutes: Long,
+    fractionDivisions: Int,
     onClick: () -> Unit,
     onDelete: () -> Unit,
 ) {
@@ -460,6 +453,9 @@ private fun TimerCell(
                     centerFontSize = 22f,
                     thresholdMinutes = thresholdMinutes,
                     thresholdColors = thresholdColors,
+                    colorMode = colorMode,
+                    intervalMinutes = intervalMinutes,
+                    fractionDivisions = fractionDivisions,
                 )
                 Text(
                     text = timer.label ?: "未命名",

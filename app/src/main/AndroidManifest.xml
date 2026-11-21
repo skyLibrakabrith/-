@@ -12,6 +12,9 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
+    <!-- 悬浮窗：在别的应用上层显示计时器（需用户在系统里单独授予） -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
     <!-- 手电筒闪烁（默认关闭，仅用户显式开启时使用） -->
     <uses-permission android:name="android.permission.FLASHLIGHT" />
     <uses-permission
@@ -53,6 +56,15 @@
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="step-sequence-timer" />
+        </service>
+
+        <service
+            android:name=".service.TimerOverlayService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="timer-overlay" />
         </service>
 
         <receiver

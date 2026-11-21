@@ -9,6 +9,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.lifecycle.lifecycleScope
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -32,6 +33,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.launch
 import at.cwiesner.android.visualtimer.ext.ui.alerts.AlertsScreen
 import at.cwiesner.android.visualtimer.ext.ui.home.HomeScreen
 import at.cwiesner.android.visualtimer.ext.ui.panels.PanelsScreen
@@ -50,6 +52,17 @@ class MainActivity : ComponentActivity() {
         ensureNotificationPermission()
 
         val settings = at.cwiesner.android.visualtimer.ext.settings.SettingsRepo(this)
+
+        // 屏幕常亮：按设置决定是否加 FLAG_KEEP_SCREEN_ON
+        lifecycleScope.launch {
+            settings.keepScreenOn.collect { on ->
+                if (on) {
+                    window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                } else {
+                    window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                }
+            }
+        }
 
         setContent {
             val mode by settings.themeMode.collectAsState(

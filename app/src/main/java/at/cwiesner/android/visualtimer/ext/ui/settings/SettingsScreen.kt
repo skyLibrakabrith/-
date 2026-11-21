@@ -1,5 +1,8 @@
 package at.cwiesner.android.visualtimer.ext.ui.settings
 
+import android.content.Intent
+import android.net.Uri
+import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -46,6 +49,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import at.cwiesner.android.visualtimer.ext.ExtApplication
 import at.cwiesner.android.visualtimer.ext.io.BackupManager
+import at.cwiesner.android.visualtimer.ext.service.TimerOverlayService
+import at.cwiesner.android.visualtimer.ext.settings.ColorMode
 import at.cwiesner.android.visualtimer.ext.settings.ColorThreshold
 import at.cwiesner.android.visualtimer.ext.settings.SettingsRepo
 import at.cwiesner.android.visualtimer.ext.settings.ThemeMode
@@ -67,8 +72,16 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
 
     val themeMode by settings.themeMode.collectAsState(initial = ThemeMode.PureBlack)
     val thresholds by settings.thresholds.collectAsState(initial = emptyList())
+    val colorMode by settings.colorMode.collectAsState(initial = ColorMode.Threshold)
+    val intervalMinutes by settings.intervalMinutes.collectAsState(initial = 5L)
+    val fractionDivisions by settings.fractionDivisions.collectAsState(initial = 4)
     val showCenterText by settings.showCenterText.collectAsState(initial = true)
     val vibrationEnabled by settings.vibrationEnabled.collectAsState(initial = true)
+    val overlayEnabled by settings.overlayEnabled.collectAsState(initial = false)
+    val backgroundEnabled by settings.backgroundEnabled.collectAsState(initial = true)
+    val keepScreenOn by settings.keepScreenOn.collectAsState(initial = false)
+    // 悬浮窗权限状态（用户可能在系统里改过，每次重组重新查）
+    var canOverlay by remember { mutableStateOf(Settings.canDrawOverlays(context)) }
 
     var status by remember { mutableStateOf<String?>(null) }
     var showAddThreshold by remember { mutableStateOf(false) }
@@ -135,54 +148,140 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
             }
         }
 
-        SettingsCard(title = "变色阈值") {
+        SettingsCard(title = "变色模式") {
             Text(
-                "剩余时间进入某个阈值后，圆盘切换成对应颜色。" +
-                    "列表按剩余时长从多到少判断，先命中的生效。",
+                "决定圆盘颜色随剩余时间怎么变。配色顺序固定为：主色 → 琥珀 → 橙 → 红。",
                 fontSize = 12.sp,
                 color = ExtColors.TextDim,
             )
-            thresholds.forEachIndexed { index, t ->
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(ExtColors.Surface)
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(14.dp)
-                            .clip(CircleShape)
-                            .background(ExtColors.Palette[t.paletteIndex.coerceIn(0, 3)]),
-                    )
-                    Text(
-                        text = "剩余 ≤ ${describeMinutes(t.minutesLeft)}",
-                        fontSize = 13.sp,
-                        color = ExtColors.TextPrimary,
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                ColorMode.entries.forEach { m ->
+                    SelectChip(
+                        text = m.label,
+                        selected = colorMode == m,
                         modifier = Modifier.weight(1f),
-                    )
-                    IconButton(
-                        onClick = {
-                            scope.launch {
-                                val next = thresholds.toMutableList().also { it.removeAt(index) }
-                                settings.setThresholds(next)
-                            }
-                        },
-                        modifier = Modifier.size(28.dp),
                     ) {
-                        Icon(
-                            Icons.Filled.Delete,
-                            contentDescription = "删除阈值",
-                            tint = ExtColors.OutlineStrong,
-                            modifier = Modifier.size(16.dp),
-                        )
+                        scope.launch {
+                            settings.setColorMode(m)
+                            toast("变色模式：" + m.label)
+                        }
                     }
                 }
             }
-            TextButton(onClick = { showAddThreshold = true }) { Text("+ 添加阈值") }
+            Text(
+                colorMode.desc,
+                fontSize = 12.sp,
+                color = ExtColors.Primary,
+            )
+
+            when (colorMode) {
+                ColorMode.Threshold -> {
+                    thresholds.forEachIndexed { index, t ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(ExtColors.Surface)
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(14.dp)
+                                    .clip(CircleShape)
+                                    .background(ExtColors.Palette[t.paletteIndex.coerceIn(0, 3)]),
+                            )
+                            Text(
+                                text = "剩余 ≤ ${describeMinutes(t.minutesLeft)}",
+                                fontSize = 13.sp,
+                                color = ExtColors.TextPrimary,
+                                modifier = Modifier.weight(1f),
+                            )
+                            IconButton(
+                                onClick = {
+                                    scope.launch {
+                                        val next = thresholds.toMutableList()
+                                            .also { it.removeAt(index) }
+                                        settings.setThresholds(next)
+                                    }
+                                },
+                                modifier = Modifier.size(28.dp),
+                            ) {
+                                Icon(
+                                    Icons.Filled.Delete,
+                                    contentDescription = "删除阈值",
+                                    tint = ExtColors.OutlineStrong,
+                                    modifier = Modifier.size(16.dp),
+                                )
+                            }
+                        }
+                    }
+                    TextButton(onClick = { showAddThreshold = true }) { Text("+ 添加阈值") }
+                }
+
+                ColorMode.Interval -> {
+                    Text(
+                        "每 ${describeMinutes(intervalMinutes)} 换一种颜色，循环使用四色",
+                        fontSize = 13.sp,
+                        color = ExtColors.TextPrimary,
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        listOf(1L, 3L, 5L, 10L, 30L).forEach { m ->
+                            SelectChip(
+                                text = "${m}分",
+                                selected = intervalMinutes == m,
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                scope.launch { settings.setIntervalMinutes(m) }
+                            }
+                        }
+                    }
+                }
+
+                ColorMode.Fraction -> {
+                    Text(
+                        "表盘按剩余比例分成 ${fractionDivisions} 份，每份一种颜色",
+                        fontSize = 13.sp,
+                        color = ExtColors.TextPrimary,
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        listOf(2, 3, 4, 6, 8).forEach { d ->
+                            SelectChip(
+                                text = "$d 份",
+                                selected = fractionDivisions == d,
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                scope.launch { settings.setFractionDivisions(d) }
+                            }
+                        }
+                    }
+                    // 预览色块
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        repeat(fractionDivisions) { i ->
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(10.dp)
+                                    .clip(RoundedCornerShape(3.dp))
+                                    .background(ExtColors.Palette[i % ExtColors.Palette.size]),
+                            )
+                        }
+                    }
+                }
+            }
         }
 
         SettingsCard(title = "显示") {
@@ -196,6 +295,86 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                 checked = vibrationEnabled,
                 onChange = { scope.launch { settings.setVibrationEnabled(it) } },
             )
+            ToggleRow(
+                label = "屏幕常亮（计时界面不自动熄屏）",
+                checked = keepScreenOn,
+                onChange = {
+                    scope.launch {
+                        settings.setKeepScreenOn(it)
+                        toast(if (it) "已开启常亮" else "已关闭常亮")
+                    }
+                },
+            )
+            ToggleRow(
+                label = "后台运行（切走继续走表）",
+                checked = backgroundEnabled,
+                onChange = {
+                    scope.launch {
+                        settings.setBackgroundEnabled(it)
+                        toast(if (it) "后台运行已开启" else "后台运行已关闭")
+                    }
+                },
+            )
+        }
+
+        // ---------- 悬浮窗 ----------
+        SettingsCard(title = "悬浮窗") {
+            Text(
+                "在别的应用上层显示正在运行的计时器。需要系统「显示在其他应用上层」权限。",
+                fontSize = 12.sp,
+                color = ExtColors.TextDim,
+            )
+            ToggleRow(
+                label = "启用悬浮窗",
+                checked = overlayEnabled,
+                onChange = { want ->
+                    if (want && !Settings.canDrawOverlays(context)) {
+                        // 没权限 → 引导去系统页授予
+                        toast("请先授予「显示在其他应用上层」权限")
+                        runCatching {
+                            context.startActivity(
+                                Intent(
+                                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                    Uri.parse("package:" + context.packageName),
+                                ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                            )
+                        }
+                    } else {
+                        scope.launch {
+                            settings.setOverlayEnabled(want)
+                            if (want) {
+                                TimerOverlayService.start(context)
+                                toast("悬浮窗已开启")
+                            } else {
+                                TimerOverlayService.stop(context)
+                                toast("悬浮窗已关闭")
+                            }
+                        }
+                    }
+                },
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    if (canOverlay) "系统权限：已授予" else "系统权限：未授予",
+                    fontSize = 12.sp,
+                    color = if (canOverlay) ExtColors.Primary else ExtColors.Red,
+                )
+                TextButton(onClick = {
+                    runCatching {
+                        context.startActivity(
+                            Intent(
+                                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                Uri.parse("package:" + context.packageName),
+                            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                        )
+                    }
+                    canOverlay = Settings.canDrawOverlays(context)
+                }) { Text("去授权") }
+            }
         }
 
         SettingsCard(title = "备份") {

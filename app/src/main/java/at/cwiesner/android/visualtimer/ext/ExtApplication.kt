@@ -3,6 +3,7 @@ package at.cwiesner.android.visualtimer.ext
 import android.app.Application
 import at.cwiesner.android.visualtimer.ext.data.AppDatabase
 import at.cwiesner.android.visualtimer.ext.data.VibrationPresets
+import at.cwiesner.android.visualtimer.ext.domain.PanelRunner
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -21,9 +22,17 @@ class ExtApplication : Application() {
 
     val database: AppDatabase by lazy { AppDatabase.get(this) }
 
+    /**
+     * 计时器运行时。挂在这里而不是界面上，
+     * 这样切走底部标签、甚至按 Home 键，倒计时都不会被清掉。
+     */
+    val panelRunner: PanelRunner by lazy { PanelRunner(appScope) }
+
     override fun onCreate() {
         super.onCreate()
         seedDefaultsIfEmpty()
+        // 立刻开始走表，不依赖任何界面存在
+        panelRunner.startTicking()
     }
 
     private fun seedDefaultsIfEmpty() {

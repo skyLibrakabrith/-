@@ -27,6 +27,20 @@ enum class ThemeMode(val label: String) {
 }
 
 /**
+ * 变色模式。
+ */
+enum class ColorMode(val label: String, val desc: String) {
+    /** 阈值模式：剩余时间进入某个阈值就切换成对应颜色。 */
+    Threshold("阈值", "剩余时间进入指定阈值时变色"),
+
+    /** 间隔模式：每经过 N 分钟换一种颜色，循环往复。 */
+    Interval("等间隔", "每过 N 分钟换一种颜色，循环使用调色板"),
+
+    /** 比例模式：把表盘按剩余比例等分，落在哪一份就用该份颜色。 */
+    Fraction("表盘比例", "表盘按剩余比例分成 N 份，每份一种颜色"),
+}
+
+/**
  * 变色阈值：剩余时间进入该档位后，圆盘切换成对应颜色。
  *
  * @property minutesLeft 剩余多少分钟时触发
@@ -59,11 +73,36 @@ class SettingsRepo(private val context: Context) {
         parseThresholds(raw)
     }
 
+    /** 变色模式。 */
+    val colorMode: Flow<ColorMode> = store.data.map { prefs ->
+        ColorMode.entries.firstOrNull { it.name == prefs[KEY_COLOR_MODE] }
+            ?: ColorMode.Threshold
+    }
+
+    /** 等间隔模式的间隔分钟数。 */
+    val intervalMinutes: Flow<Long> = store.data.map { prefs ->
+        prefs[KEY_INTERVAL_MINUTES]?.toLongOrNull()?.takeIf { it > 0 } ?: 5L
+    }
+
+    /** 比例模式把表盘分成几份。 */
+    val fractionDivisions: Flow<Int> = store.data.map { prefs ->
+        prefs[KEY_FRACTION_DIVISIONS]?.toIntOrNull()?.coerceIn(2, 12) ?: 4
+    }
+
     /** 圆盘上是否显示中央文字。 */
     val showCenterText: Flow<Boolean> = store.data.map { it[KEY_CENTER_TEXT] ?: true }
 
     /** 是否启用振动（总开关）。 */
     val vibrationEnabled: Flow<Boolean> = store.data.map { it[KEY_VIBRATE] ?: true }
+
+    /** 悬浮窗：在别的应用上层显示正在跑的计时器。 */
+    val overlayEnabled: Flow<Boolean> = store.data.map { it[KEY_OVERLAY] ?: false }
+
+    /** 后台运行：退出界面后继续走表并报警。 */
+    val backgroundEnabled: Flow<Boolean> = store.data.map { it[KEY_BACKGROUND] ?: true }
+
+    /** 屏幕常亮：计时界面不自动熄屏。 */
+    val keepScreenOn: Flow<Boolean> = store.data.map { it[KEY_KEEP_SCREEN_ON] ?: false }
 
     suspend fun setTheme(mode: ThemeMode) {
         store.edit { it[KEY_THEME] = mode.name }
@@ -77,6 +116,18 @@ class SettingsRepo(private val context: Context) {
         }
     }
 
+    suspend fun setColorMode(mode: ColorMode) {
+        store.edit { it[KEY_COLOR_MODE] = mode.name }
+    }
+
+    suspend fun setIntervalMinutes(minutes: Long) {
+        store.edit { it[KEY_INTERVAL_MINUTES] = minutes.coerceAtLeast(1).toString() }
+    }
+
+    suspend fun setFractionDivisions(divisions: Int) {
+        store.edit { it[KEY_FRACTION_DIVISIONS] = divisions.coerceIn(2, 12).toString() }
+    }
+
     suspend fun setShowCenterText(enabled: Boolean) {
         store.edit { it[KEY_CENTER_TEXT] = enabled }
     }
@@ -85,11 +136,29 @@ class SettingsRepo(private val context: Context) {
         store.edit { it[KEY_VIBRATE] = enabled }
     }
 
+    suspend fun setOverlayEnabled(enabled: Boolean) {
+        store.edit { it[KEY_OVERLAY] = enabled }
+    }
+
+    suspend fun setBackgroundEnabled(enabled: Boolean) {
+        store.edit { it[KEY_BACKGROUND] = enabled }
+    }
+
+    suspend fun setKeepScreenOn(enabled: Boolean) {
+        store.edit { it[KEY_KEEP_SCREEN_ON] = enabled }
+    }
+
     companion object {
         private val KEY_THEME = stringPreferencesKey("theme_mode")
         private val KEY_THRESHOLDS = stringPreferencesKey("color_thresholds")
+        private val KEY_COLOR_MODE = stringPreferencesKey("color_mode")
+        private val KEY_INTERVAL_MINUTES = stringPreferencesKey("interval_minutes")
+        private val KEY_FRACTION_DIVISIONS = stringPreferencesKey("fraction_divisions")
         private val KEY_CENTER_TEXT = booleanPreferencesKey("show_center_text")
         private val KEY_VIBRATE = booleanPreferencesKey("vibration_enabled")
+        private val KEY_OVERLAY = booleanPreferencesKey("overlay_enabled")
+        private val KEY_BACKGROUND = booleanPreferencesKey("background_enabled")
+        private val KEY_KEEP_SCREEN_ON = booleanPreferencesKey("keep_screen_on")
 
         /** 默认：60 分钟起主色，10 分钟琥珀，3 分钟橙，1 分钟红。 */
         const val DEFAULT_THRESHOLDS = "60:0,10:1,3:2,1:3"

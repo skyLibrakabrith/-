@@ -62,6 +62,11 @@ fun PieTimerView(
     /** 变色阈值（剩余分钟数，降序）与对应颜色；为空时用内置四段色。 */
     thresholdMinutes: List<Long> = emptyList(),
     thresholdColors: List<Color> = emptyList(),
+    /** 变色模式与对应参数。 */
+    colorMode: at.cwiesner.android.visualtimer.ext.settings.ColorMode =
+        at.cwiesner.android.visualtimer.ext.settings.ColorMode.Threshold,
+    intervalMinutes: Long = 5L,
+    fractionDivisions: Int = 4,
 ) {
     val stepMillis = stepMinutes * 60_000L
     val maxMillis = maxMinutes * 60_000L
@@ -70,7 +75,16 @@ fun PieTimerView(
 
     var dragFraction by remember { mutableFloatStateOf(-1f) }
 
-    val pieColor = colorForRemaining(remainingMillis, running, thresholdMinutes, thresholdColors)
+    val pieColor = pickColor(
+        remainingMillis = remainingMillis,
+        totalMillis = totalMillis,
+        running = running,
+        mode = colorMode,
+        thresholdMinutes = thresholdMinutes,
+        thresholdColors = thresholdColors,
+        intervalMinutes = intervalMinutes,
+        fractionDivisions = fractionDivisions,
+    )
     val trackColor = ExtColors.Track
     val tickColor = ExtColors.OutlineStrong
     val majorTickColor = ExtColors.TextDim
@@ -275,6 +289,51 @@ internal fun ringColorFor(progress: Float, running: Boolean): Color = when {
     progress > 0.2f -> ExtColors.Amber
     progress > 0.05f -> ExtColors.Orange
     else -> ExtColors.Red
+}
+
+/**
+ * 三种变色模式的统一入口。
+ *
+ * - **Threshold（阈值）**：剩余时间进入某个阈值就切成该档颜色
+ * - **Interval（等间隔）**：每过 [intervalMinutes] 分钟换一种颜色，循环使用调色板
+ * - **Fraction（表盘比例）**：把表盘按剩余比例分成 [fractionDivisions] 份，
+ *   落在哪一份就用该份颜色 —— 视觉上像表盘被切成几块扇区各自上色
+ *
+ * 未运行时统一返回主色，避免静止状态下颜色乱跳。
+ */
+internal fun pickColor(
+    remainingMillis: Long,
+    totalMillis: Long,
+    running: Boolean,
+    mode: at.cwiesner.android.visualtimer.ext.settings.ColorMode,
+    thresholdMinutes: List<Long>,
+    thresholdColors: List<Color>,
+    intervalMinutes: Long,
+    fractionDivisions: Int,
+): Color {
+    if (!running) return ExtColors.Primary
+    val palette = if (thresholdColors.isNotEmpty()) thresholdColors else ExtColors.Palette
+
+    return when (mode) {
+        at.cwiesner.android.visualtimer.ext.settings.ColorMode.Threshold ->
+            colorForRemaining(remainingMillis, running, thresholdMinutes, thresholdColors)
+
+        at.cwiesner.android.visualtimer.ext.settings.ColorMode.Interval -> {
+            val step = intervalMinutes.coerceAtLeast(1L) * 60_000L
+            // 剩余的完整间隔数越多 → 越靠前的颜色；每少一个间隔换一次色
+            val bucket = (remainingMillis / step).toInt()
+            palette[Math.floorMod(bucket, palette.size)]
+        }
+
+        at.cwiesner.android.visualtimer.ext.settings.ColorMode.Fraction -> {
+            val divisions = fractionDivisions.coerceIn(2, 12)
+            val frac = if (totalMillis <= 0L) 0f
+            else (remainingMillis.toFloat() / totalMillis).coerceIn(0f, 1f)
+            // 剩余 100% → 第 0 份；剩余 0% → 最后一份
+            val seg = ((1f - frac) * divisions).toInt().coerceIn(0, divisions - 1)
+            palette[seg % palette.size]
+        }
+    }
 }
 
 /**
