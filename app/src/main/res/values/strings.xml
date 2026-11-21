@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Visual Timer Ext</string>
+    <string name="tab_panels">面板</string>
+    <string name="tab_sequences">序列</string>
+    <string name="tab_alerts">警报</string>
+    <string name="tab_settings">设置</string>
+</resources>
