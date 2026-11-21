@@ -28,12 +28,15 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
+
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -42,12 +45,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+
+import androidx.compose.ui.unit.sp
 import at.cwiesner.android.visualtimer.ext.ExtApplication
 import at.cwiesner.android.visualtimer.ext.data.Panel
 import at.cwiesner.android.visualtimer.ext.data.PanelTimerRef
 import at.cwiesner.android.visualtimer.ext.data.TimerItem
 import at.cwiesner.android.visualtimer.ext.domain.PanelRunner
 import at.cwiesner.android.visualtimer.ext.domain.TimerRuntime
+import at.cwiesner.android.visualtimer.ext.ui.wheel.WheelTimerView
+import at.cwiesner.android.visualtimer.ext.ui.ExtColors
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.isActive
@@ -101,6 +108,16 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
 
     val runtimes: List<TimerRuntime> = remember(tick) { runner.snapshot() }
     val runtimeById = remember(tick) { runtimes.associateBy { it.timerId } }
+
+    // 当前聚焦的计时器：大轮盘显示它。默认第一个；点击格子切换。
+    var focusId by remember { mutableLongStateOf(-1L) }
+    // 轮盘拖动的本地草稿时长：只在「开始」时写库，避免每帧一次 DB 写
+    var draftDuration by remember { mutableLongStateOf(60_000L) }
+    LaunchedEffect(focusTimer?.id) {
+        focusTimer?.let { draftDuration = runtimeById[it.id]?.totalMillis ?: it.durationMillis }
+    }
+    val focusTimer = timers.firstOrNull { it.id == focusId } ?: timers.firstOrNull()
+    val focusRuntime = focusTimer?.let { runtimeById[it.id] }
 
     Scaffold(
         modifier = modifier,
@@ -176,10 +193,69 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
             when {
                 panels.isEmpty() -> EmptyHint("还没有面板，点右下角新建一个")
                 timers.isEmpty() -> EmptyHint("这个面板还没有计时器，点右下角添加")
-                else -> LazyVerticalGrid(
+                else -> Column(modifier = Modifier.fillMaxSize()) {
+                    // ---- 大轮盘：Visual Timer 风格主视图 ----
+                    if (focusTimer != null) {
+                        val runningNow = focusRuntime?.running == true
+                        val total = focusRuntime?.totalMillis ?: draftDuration
+                        val remain = focusRuntime?.remainingMillis ?: draftDuration
+
+                        WheelTimerView(
+                            totalMillis = total,
+                            remainingMillis = remain,
+                            running = runningNow,
+                            onDurationChange = { newDuration -> draftDuration = newDuration },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 24.dp, vertical = 4.dp),
+                            maxMinutes = 60,
+                            stepMinutes = 1,
+                            centerLabel = focusTimer.label,
+                        )
+
+                        // 轮盘下方操作条
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 24.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = if (runningNow) "计时中" else "时长 " +
+                                    at.cwiesner.android.visualtimer.ext.domain.DeadlineCalculator
+                                        .formatRemaining(draftDuration),
+                                fontSize = 13.sp,
+                                color = ExtColors.TextSecondary,
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                if (runningNow) {
+                                    TextButton(onClick = {
+                                        runner.stop(focusTimer.id); tick++
+                                    }) { Text("暂停") }
+                                } else {
+                                    TextButton(onClick = {
+                                        scope.launch {
+                                            val target = focusTimer.copy(durationMillis = draftDuration)
+                                            db.timerDao().upsert(target)
+                                            runner.clear(focusTimer.id)
+                                            runner.start(target)
+                                            tick++
+                                        }
+                                    }) { Text("开始") }
+                                }
+                                TextButton(onClick = {
+                                    runner.reset(focusTimer.id)
+                                    draftDuration = focusRuntime?.totalMillis ?: draftDuration
+                                    tick++
+                                }) { Text("重置") }
+                            }
+                        }
+                    }
+                    LazyVerticalGrid(
                     columns = GridCells.Fixed(2),
                     modifier = Modifier
-                        .fillMaxSize()
+                        .weight(1f)
                         .padding(12.dp),
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -189,6 +265,7 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                             timer = timer,
                             runtime = runtimeById[timer.id],
                             onClick = {
+                                focusId = timer.id
                                 scope.launch {
                                     val cur = runner.snapshot().firstOrNull { it.timerId == timer.id }
                                     when {
@@ -209,6 +286,7 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                             },
                         )
                     }
+                }
                 }
             }
         }
@@ -248,9 +326,10 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
     if (showNewTimer && currentPanel != null) {
         TimerEditDialog(
             onDismiss = { showNewTimer = false },
-            onConfirm = { label, duration ->
+            onConfirm = { label, duration, deadlineEpoch ->
                 showNewTimer = false
                 scope.launch {
+                    val now = System.currentTimeMillis()
                     val timerId = db.timerDao().upsert(
                         TimerItem(
                             label = label.ifBlank { null },
@@ -267,6 +346,12 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                             ),
                         ),
                     )
+                    val created = db.timerDao().get(timerId)
+                    if (created != null) {
+                        if (deadlineEpoch != null) {
+                            runner.startUntil(created, deadlineEpoch, now)
+                        }
+                    }
                     tick++
                 }
             },

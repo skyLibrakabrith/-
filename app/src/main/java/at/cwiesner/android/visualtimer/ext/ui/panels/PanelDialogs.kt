@@ -1,27 +1,223 @@
 package at.cwiesner.android.visualtimer.ext.ui.panels
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import at.cwiesner.android.visualtimer.ext.domain.DeadlineCalculator
-import at.cwiesner.android.visualtimer.ext.ui.duration.DurationSlider
+import at.cwiesner.android.visualtimer.ext.ui.ExtColors
+import at.cwiesner.android.visualtimer.ext.ui.duration.DeadlineTimePicker
+import at.cwiesner.android.visualtimer.ext.ui.duration.deadlineEpochMillis
+import at.cwiesner.android.visualtimer.ext.ui.duration.describeDeadline
+import at.cwiesner.android.visualtimer.ext.ui.wheel.HmsWheelPicker
+import at.cwiesner.android.visualtimer.ext.ui.wheel.WheelTimerView
+
+/** 时长输入模式。 */
+private enum class DurationMode(val label: String) {
+    Wheel("轮盘"),
+    Precise("精确"),
+    Deadline("截止时刻"),
+}
+
+/**
+ * 计时器编辑对话框。
+ *
+ * 三种设定方式并存，用顶部三个胶囊切换：
+ * - **轮盘**：拖动大圆盘设定，最直观
+ * - **精确**：时/分/秒三个滚轮
+ * - **截止时刻**：选定 DDL 后自动倒推时长
+ */
+@Composable
+fun TimerEditDialog(
+    initialLabel: String = "",
+    initialDuration: Long = 60_000L,
+    title: String = "新建计时器",
+    onDismiss: () -> Unit,
+    onConfirm: (label: String, durationMillis: Long, deadlineEpochMillis: Long?) -> Unit,
+) {
+    var label by remember { mutableStateOf(initialLabel) }
+    var duration by remember { mutableLongStateOf(initialDuration) }
+    var mode by remember { mutableStateOf(DurationMode.Wheel) }
+
+    // DDL 模式的状态
+    var dateOffset by remember { mutableIntStateOf(0) }
+    var hour by remember { mutableIntStateOf(0) }
+    var minute by remember { mutableIntStateOf(0) }
+
+    val now = System.currentTimeMillis()
+    val deadline = deadlineEpochMillis(dateOffset, hour, minute)
+    val deadlineResult = DeadlineCalculator.remainingUntil(
+        java.time.Instant.ofEpochMilli(deadline),
+        java.time.Instant.ofEpochMilli(now),
+    )
+    val deadlineValid = deadlineResult is DeadlineCalculator.Result.Ok
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = ExtColors.PureBlack,
+        titleContentColor = ExtColors.TextPrimary,
+        textContentColor = ExtColors.TextSecondary,
+        title = { Text(title) },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                OutlinedTextField(
+                    value = label,
+                    onValueChange = { label = it },
+                    label = { Text("名称（可空）") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+
+                // 模式切换
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    DurationMode.entries.forEach { m ->
+                        ModeChip(
+                            text = m.label,
+                            selected = mode == m,
+                            modifier = Modifier.weight(1f),
+                        ) { mode = m }
+                    }
+                }
+
+                when (mode) {
+                    DurationMode.Wheel -> {
+                        WheelTimerView(
+                            totalMillis = duration,
+                            remainingMillis = duration,
+                            running = false,
+                            onDurationChange = { duration = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            maxMinutes = 60,
+                            stepMinutes = 1,
+                        )
+                    }
+
+                    DurationMode.Precise -> {
+                        HmsWheelPicker(
+                            totalMillis = duration,
+                            onTotalChange = { if (it > 0) duration = it },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+
+                    DurationMode.Deadline -> {
+                        DeadlineTimePicker(
+                            dateOffsetDays = dateOffset,
+                            hour = hour,
+                            minute = minute,
+                            onDateChange = { dateOffset = it },
+                            onHourChange = { hour = it },
+                            onMinuteChange = { minute = it },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Text(
+                            text = if (deadlineValid) {
+                                "目标 " + describeDeadline(dateOffset, hour, minute) +
+                                    " · 剩余 " + DeadlineCalculator.formatRemaining(
+                                        (deadlineResult as DeadlineCalculator.Result.Ok)
+                                            .remainingMillis,
+                                    )
+                            } else {
+                                "目标时刻已过，请重新选择"
+                            },
+                            fontSize = 13.sp,
+                            color = if (deadlineValid) ExtColors.Primary else ExtColors.Red,
+                        )
+                    }
+                }
+
+                // 底部汇总
+                Text(
+                    text = when (mode) {
+                        DurationMode.Deadline ->
+                            if (deadlineValid) "倒计时 " + DeadlineCalculator.formatRemaining(
+                                (deadlineResult as DeadlineCalculator.Result.Ok).remainingMillis,
+                            ) else "—"
+                        else -> "时长 " + DeadlineCalculator.formatRemaining(duration)
+                    },
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = ExtColors.TextPrimary,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = mode != DurationMode.Deadline || deadlineValid,
+                onClick = {
+                    when (mode) {
+                        DurationMode.Deadline -> {
+                            val remain = (deadlineResult as DeadlineCalculator.Result.Ok)
+                                .remainingMillis
+                            onConfirm(label.trim(), remain, deadline)
+                        }
+                        else -> onConfirm(label.trim(), duration, null)
+                    }
+                },
+            ) { Text("确定") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
+}
+
+@Composable
+private fun ModeChip(
+    text: String,
+    selected: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    val interaction = remember { MutableInteractionSource() }
+    Box(
+        modifier = modifier
+            .height(36.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(if (selected) ExtColors.PrimaryDim else ExtColors.Surface)
+            .clickable(interactionSource = interaction, indication = null, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = text,
+            fontSize = 13.sp,
+            fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal,
+            color = if (selected) ExtColors.TextPrimary else ExtColors.TextSecondary,
+        )
+    }
+}
 
 /** 新建 / 重命名面板。 */
 @Composable
@@ -35,6 +231,8 @@ fun PanelNameDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
+        containerColor = ExtColors.PureBlack,
+        titleContentColor = ExtColors.TextPrimary,
         title = { Text(title) },
         text = {
             OutlinedTextField(
@@ -55,68 +253,37 @@ fun PanelNameDialog(
     )
 }
 
-/** 新建 / 编辑计时器：名称 + 图形化时长滑块。 */
-@Composable
-fun TimerEditDialog(
-    initialLabel: String = "",
-    initialDuration: Long = 60_000L,
-    title: String = "新建计时器",
-    onDismiss: () -> Unit,
-    onConfirm: (label: String, durationMillis: Long) -> Unit,
-) {
-    var label by remember { mutableStateOf(initialLabel) }
-    var duration by remember { mutableLongStateOf(initialDuration) }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(title) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                OutlinedTextField(
-                    value = label,
-                    onValueChange = { label = it },
-                    label = { Text("名称（可空）") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Text("时长", style = MaterialTheme.typography.labelLarge)
-                DurationSlider(
-                    durationMillis = duration,
-                    onDurationChange = { duration = it },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = { onConfirm(label.trim(), duration) }) { Text("确定") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
-    )
-}
-
-/**
- * DDL 倒推录入：用户选一个截止时刻，自动算出剩余时长。
- *
- * 输入用「几小时几分钟后」的快捷档 + 精确到分钟的目标时刻，
- * 下方 [DeadlineTimeline] 实时显示剩余量与 24h 阈值。
- */
+/** DDL 倒推对话框（独立入口，供菜单直接调用）。 */
 @Composable
 fun DeadlineDialog(
     onDismiss: () -> Unit,
     onConfirm: (label: String, deadlineEpochMillis: Long) -> Unit,
 ) {
     var label by remember { mutableStateOf("") }
-    // 用「距现在多少毫秒」表达，避免日期选择器依赖
-    var offsetMillis by remember { mutableLongStateOf(60L * 60 * 1000) }
+    var dateOffset by remember { mutableIntStateOf(0) }
+    var hour by remember { mutableIntStateOf(0) }
+    var minute by remember { mutableIntStateOf(0) }
 
     val now = System.currentTimeMillis()
-    val deadline = now + offsetMillis
+    val deadline = deadlineEpochMillis(dateOffset, hour, minute)
+    val result = DeadlineCalculator.remainingUntil(
+        java.time.Instant.ofEpochMilli(deadline),
+        java.time.Instant.ofEpochMilli(now),
+    )
+    val valid = result is DeadlineCalculator.Result.Ok
 
     AlertDialog(
         onDismissRequest = onDismiss,
+        containerColor = ExtColors.PureBlack,
+        titleContentColor = ExtColors.TextPrimary,
         title = { Text("倒计时到某个时刻") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
                 OutlinedTextField(
                     value = label,
                     onValueChange = { label = it },
@@ -124,25 +291,33 @@ fun DeadlineDialog(
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
-                Text("距离目标时刻", style = MaterialTheme.typography.labelLarge)
-                DurationSlider(
-                    durationMillis = offsetMillis,
-                    onDurationChange = { offsetMillis = it },
-                    nowEpochMillis = now,
+                DeadlineTimePicker(
+                    dateOffsetDays = dateOffset,
+                    hour = hour,
+                    minute = minute,
+                    onDateChange = { dateOffset = it },
+                    onHourChange = { hour = it },
+                    onMinuteChange = { minute = it },
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Text(
-                    "目标：" + DeadlineCalculator.describe(
-                        java.time.Instant.ofEpochMilli(deadline),
-                        java.time.Instant.ofEpochMilli(now),
-                    ),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    text = if (valid) {
+                        "剩余 " + DeadlineCalculator.formatRemaining(
+                            (result as DeadlineCalculator.Result.Ok).remainingMillis,
+                        ) + " · 目标 " + describeDeadline(dateOffset, hour, minute)
+                    } else {
+                        "目标时刻已过"
+                    },
+                    fontSize = 13.sp,
+                    color = if (valid) ExtColors.Primary else ExtColors.Red,
                 )
             }
         },
         confirmButton = {
-            TextButton(onClick = { onConfirm(label.trim(), deadline) }) { Text("确定") }
+            TextButton(
+                enabled = valid,
+                onClick = { onConfirm(label.trim(), deadline) },
+            ) { Text("开始") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     )
