@@ -1,5 +1,6 @@
 package at.cwiesner.android.visualtimer.ext.ui.home
 
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -70,6 +71,10 @@ fun HomeScreen(modifier: Modifier = Modifier) {
     val target = picked ?: (now + 30 * 60_000L)
     val remaining = (target - now).coerceAtLeast(0L)
 
+    fun toast(msg: String) {
+        Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+    }
+
     val panels by remember { db.panelDao().observeAll() }
         .collectAsState(initial = emptyList<Panel>())
 
@@ -132,6 +137,9 @@ fun HomeScreen(modifier: Modifier = Modifier) {
                         deadline = null,
                         label = "到 " + clockText(target),
                     )
+                    toast("已创建倒计时：剩余 " +
+                        at.cwiesner.android.visualtimer.ext.domain.DeadlineCalculator
+                            .formatRemaining(remaining))
                 }
             }
             BigAction(
@@ -148,6 +156,7 @@ fun HomeScreen(modifier: Modifier = Modifier) {
                         deadline = target,
                         label = "DDL " + clockText(target),
                     )
+                    toast("已创建 DDL：" + describeTarget(target, now))
                 }
             }
         }

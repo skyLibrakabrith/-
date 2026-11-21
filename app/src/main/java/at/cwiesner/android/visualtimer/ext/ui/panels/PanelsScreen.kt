@@ -1,26 +1,32 @@
 package at.cwiesner.android.visualtimer.ext.ui.panels
 
+import android.widget.Toast
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Checklist
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.Card
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -32,7 +38,6 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
-
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -40,33 +45,28 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.foundation.layout.size
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.foundation.background
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-
 import androidx.compose.ui.unit.sp
 import at.cwiesner.android.visualtimer.ext.ExtApplication
 import at.cwiesner.android.visualtimer.ext.data.Panel
 import at.cwiesner.android.visualtimer.ext.data.PanelTimerRef
 import at.cwiesner.android.visualtimer.ext.data.TimerItem
+import at.cwiesner.android.visualtimer.ext.domain.DeadlineCalculator
 import at.cwiesner.android.visualtimer.ext.domain.PanelRunner
 import at.cwiesner.android.visualtimer.ext.domain.TimerRuntime
-import at.cwiesner.android.visualtimer.ext.ui.wheel.PieTimerView
+import at.cwiesner.android.visualtimer.ext.settings.SettingsRepo
 import at.cwiesner.android.visualtimer.ext.ui.ExtColors
+import at.cwiesner.android.visualtimer.ext.ui.wheel.PieTimerView
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.isActive
@@ -75,9 +75,9 @@ import kotlinx.coroutines.launch
 /**
  * 多面板主界面。
  *
- * - 顶部 Tab 切换面板，右上角菜单可重命名 / 删除面板
- * - 网格展示面板内计时器，每格可点击启动/暂停/重置
- * - 右下角 FAB 新建计时器；格子右上角可删除
+ * 两种呈现：
+ * - **网格**：每个计时器一个大圆盘，全部同时可见、同时运行。点圆盘开始/暂停。
+ * - **列表**：紧凑列表 + 多选，批量开始 / 批量删除。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -87,6 +87,8 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
     val db = app.database
     val scope = rememberCoroutineScope()
     val runner = remember { PanelRunner() }
+    val settings = remember { SettingsRepo(context) }
+    val thresholds by settings.thresholds.collectAsState(initial = emptyList())
 
     val panels by remember { db.panelDao().observeAll() }
         .collectAsState(initial = emptyList<Panel>())
@@ -105,7 +107,9 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
     var showDeadline by remember { mutableStateOf(false) }
     var menuOpen by remember { mutableStateOf(false) }
 
-    // 运行时状态：每 200ms 推进一次并触发重组
+    var listMode by remember { mutableStateOf(false) }
+    var selectedIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
+
     var tick by remember { mutableIntStateOf(0) }
     LaunchedEffect(Unit) {
         var last = System.currentTimeMillis()
@@ -120,15 +124,13 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
 
     val runtimes: List<TimerRuntime> = remember(tick) { runner.snapshot() }
     val runtimeById = remember(tick) { runtimes.associateBy { it.timerId } }
+    val thresholdMinutes = remember(thresholds) { thresholds.map { it.minutesLeft } }
+    val thresholdColors = remember(thresholds) {
+        thresholds.map { ExtColors.Palette[it.paletteIndex.coerceIn(0, 3)] }
+    }
 
-    // 当前聚焦的计时器：大轮盘显示它。默认第一个；点击格子切换。
-    var focusId by remember { mutableLongStateOf(-1L) }
-    // 轮盘拖动的本地草稿时长：只在「开始」时写库，避免每帧一次 DB 写
-    var draftDuration by remember { mutableLongStateOf(60_000L) }
-    val focusTimer = timers.firstOrNull { it.id == focusId } ?: timers.firstOrNull()
-    val focusRuntime = focusTimer?.let { runtimeById[it.id] }
-    LaunchedEffect(focusTimer?.id) {
-        focusTimer?.let { draftDuration = runtimeById[it.id]?.totalMillis ?: it.durationMillis }
+    fun toast(msg: String) {
+        Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
     }
 
     Scaffold(
@@ -139,6 +141,15 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                     title = { Text(currentPanel?.name ?: "多面板") },
                     actions = {
                         if (currentPanel != null) {
+                            IconButton(onClick = {
+                                listMode = !listMode
+                                selectedIds = emptySet()
+                            }) {
+                                Icon(
+                                    if (listMode) Icons.Filled.GridView else Icons.Filled.Checklist,
+                                    contentDescription = if (listMode) "网格" else "批量管理",
+                                )
+                            }
                             Box {
                                 IconButton(onClick = { menuOpen = true }) {
                                     Icon(Icons.Filled.MoreVert, contentDescription = "更多")
@@ -156,6 +167,20 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                                         onClick = { menuOpen = false; showDeadline = true },
                                     )
                                     DropdownMenuItem(
+                                        text = { Text("开始全部") },
+                                        onClick = {
+                                            menuOpen = false
+                                            scope.launch {
+                                                timers.forEach { t ->
+                                                    runner.clear(t.id)
+                                                    runner.start(t)
+                                                }
+                                                tick++
+                                                toast("已启动 ${timers.size} 个计时器")
+                                            }
+                                        },
+                                    )
+                                    DropdownMenuItem(
                                         text = { Text("清空计时状态") },
                                         onClick = { menuOpen = false; runner.clearAll(); tick++ },
                                     )
@@ -166,6 +191,7 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                                             scope.launch {
                                                 db.panelDao().deleteById(currentPanel.id)
                                                 selectedPanel = 0
+                                                toast("面板已删除")
                                             }
                                         },
                                     )
@@ -175,11 +201,15 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                     },
                 )
                 if (panels.isNotEmpty()) {
-                    TabRow(selectedTabIndex = safeIndex) {
+                    TabRow(
+                        selectedTabIndex = safeIndex,
+                        containerColor = ExtColors.PureBlack,
+                        contentColor = ExtColors.Primary,
+                    ) {
                         panels.forEachIndexed { index, panel ->
                             Tab(
                                 selected = index == safeIndex,
-                                onClick = { selectedPanel = index },
+                                onClick = { selectedPanel = index; selectedIds = emptySet() },
                                 text = { Text(panel.name) },
                             )
                         }
@@ -189,9 +219,8 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
         },
         floatingActionButton = {
             ExtendedFloatingActionButton(
-                onClick = {
-                    if (panels.isEmpty()) showNewPanel = true else showNewTimer = true
-                },
+                onClick = { if (panels.isEmpty()) showNewPanel = true else showNewTimer = true },
+                containerColor = ExtColors.Primary,
                 icon = { Icon(Icons.Filled.Add, contentDescription = null) },
                 text = { Text(if (panels.isEmpty()) "新建面板" else "加计时器") },
             )
@@ -205,91 +234,40 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
             when {
                 panels.isEmpty() -> EmptyHint("还没有面板，点右下角新建一个")
                 timers.isEmpty() -> EmptyHint("这个面板还没有计时器，点右下角添加")
-                else -> Column(modifier = Modifier.fillMaxSize()) {
-                    // ---- 大轮盘：Visual Timer 风格主视图 ----
-                    if (focusTimer != null) {
-                        val runningNow = focusRuntime?.running == true
-                        // 未运行时一律用本地草稿：修掉了「拖动只改左下角、中间数字不动」的 bug
-                        val total = if (runningNow) (focusRuntime?.totalMillis ?: draftDuration) else draftDuration
-                        val remain = if (runningNow) (focusRuntime?.remainingMillis ?: draftDuration) else draftDuration
 
-                        PieTimerView(
-                            totalMillis = total,
-                            remainingMillis = remain,
-                            running = runningNow,
-                            onDurationChange = { newDuration -> draftDuration = newDuration },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 24.dp, vertical = 4.dp),
-                            maxMinutes = 60,
-                            stepMinutes = 1,
-                            centerLabel = focusTimer.label,
-                        )
-
-                        // ---- 所有计时器横向条带：同时显示、点一下切换聚焦 ----
-                        if (timers.size > 1) {
-                            LazyRow(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(vertical = 6.dp),
-                                contentPadding = PaddingValues(horizontal = 20.dp),
-                                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                            ) {
-                                items(timers, key = { it.id }) { t ->
-                                    TimerChip(
-                                        timer = t,
-                                        runtime = runtimeById[t.id],
-                                        focused = t.id == focusTimer.id,
-                                        onClick = { focusId = t.id },
-                                    )
-                                }
+                listMode -> TimerList(
+                    timers = timers,
+                    runtimeById = runtimeById,
+                    selectedIds = selectedIds,
+                    onToggle = { id ->
+                        selectedIds = if (id in selectedIds) selectedIds - id else selectedIds + id
+                    },
+                    onBatchDelete = {
+                        scope.launch {
+                            val n = selectedIds.size
+                            selectedIds.forEach { id ->
+                                runner.clear(id)
+                                currentPanel?.let { db.panelDao().removeRef(it.id, id) }
                             }
+                            selectedIds = emptySet()
+                            tick++
+                            toast("已删除 $n 个计时器")
                         }
+                    },
+                    onBatchStart = {
+                        scope.launch {
+                            val chosen = timers.filter { it.id in selectedIds }
+                            chosen.forEach { t -> runner.clear(t.id); runner.start(t) }
+                            tick++
+                            toast("已启动 ${chosen.size} 个计时器")
+                        }
+                    },
+                )
 
-                        // 轮盘下方操作条
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 24.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(
-                                text = if (runningNow) "计时中" else "时长 " +
-                                    at.cwiesner.android.visualtimer.ext.domain.DeadlineCalculator
-                                        .formatRemaining(draftDuration),
-                                fontSize = 13.sp,
-                                color = ExtColors.TextSecondary,
-                            )
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                if (runningNow) {
-                                    TextButton(onClick = {
-                                        runner.stop(focusTimer.id); tick++
-                                    }) { Text("暂停") }
-                                } else {
-                                    TextButton(onClick = {
-                                        scope.launch {
-                                            val target = focusTimer.copy(durationMillis = draftDuration)
-                                            db.timerDao().upsert(target)
-                                            runner.clear(focusTimer.id)
-                                            runner.start(target)
-                                            tick++
-                                        }
-                                    }) { Text("开始") }
-                                }
-                                TextButton(onClick = {
-                                    runner.reset(focusTimer.id)
-                                    draftDuration = focusRuntime?.totalMillis ?: draftDuration
-                                    tick++
-                                }) { Text("重置") }
-                            }
-                        }
-                    }
-                    LazyVerticalGrid(
+                else -> LazyVerticalGrid(
                     columns = GridCells.Fixed(2),
-                    modifier = Modifier
-                        .weight(1f)
-                        .padding(12.dp),
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(12.dp),
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
@@ -297,15 +275,29 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                         TimerCell(
                             timer = timer,
                             runtime = runtimeById[timer.id],
+                            thresholdMinutes = thresholdMinutes,
+                            thresholdColors = thresholdColors,
                             onClick = {
-                                focusId = timer.id
                                 scope.launch {
                                     val cur = runner.snapshot().firstOrNull { it.timerId == timer.id }
+                                    val name = timer.label ?: "未命名"
                                     when {
-                                        cur == null -> runner.start(timer)
-                                        cur.running -> runner.stop(timer.id)
-                                        cur.expired -> runner.reset(timer.id)
-                                        else -> runner.start(timer)
+                                        cur == null -> {
+                                            runner.start(timer)
+                                            toast("开始：$name")
+                                        }
+                                        cur.running -> {
+                                            runner.stop(timer.id)
+                                            toast("暂停：$name")
+                                        }
+                                        cur.expired -> {
+                                            runner.reset(timer.id)
+                                            toast("已重置：$name")
+                                        }
+                                        else -> {
+                                            runner.start(timer)
+                                            toast("继续：$name")
+                                        }
                                     }
                                     tick++
                                 }
@@ -315,11 +307,11 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                                     runner.clear(timer.id)
                                     currentPanel?.let { db.panelDao().removeRef(it.id, timer.id) }
                                     tick++
+                                    toast("已删除")
                                 }
                             },
                         )
                     }
-                }
                 }
             }
         }
@@ -339,6 +331,7 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                         listOf(PanelTimerRef(panelId = panelId, timerId = timerId, order = 0)),
                     )
                     selectedPanel = panels.size
+                    toast("面板「$name」已创建")
                 }
             },
         )
@@ -351,7 +344,10 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
             onDismiss = { showRenamePanel = false },
             onConfirm = { name ->
                 showRenamePanel = false
-                scope.launch { db.panelDao().upsert(currentPanel.copy(name = name)) }
+                scope.launch {
+                    db.panelDao().upsert(currentPanel.copy(name = name))
+                    toast("已改名为「$name」")
+                }
             },
         )
     }
@@ -379,13 +375,12 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                             ),
                         ),
                     )
-                    val created = db.timerDao().get(timerId)
-                    if (created != null) {
-                        if (deadlineEpoch != null) {
-                            runner.startUntil(created, deadlineEpoch, now)
-                        }
+                    db.timerDao().get(timerId)?.let { created ->
+                        if (deadlineEpoch != null) runner.startUntil(created, deadlineEpoch, now)
                     }
                     tick++
+                    toast("已添加：" + (label.ifBlank { "未命名" }) + " · " +
+                        DeadlineCalculator.formatRemaining(duration))
                 }
             },
         )
@@ -403,6 +398,7 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                         TimerItem(
                             label = label.ifBlank { "到点倒计时" },
                             durationMillis = remaining,
+                            deadlineEpochMillis = deadlineEpoch,
                         ),
                     )
                     val existing = db.panelDao().refsOf(currentPanel.id)
@@ -417,60 +413,162 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                     )
                     db.timerDao().get(timerId)?.let { runner.startUntil(it, deadlineEpoch, now) }
                     tick++
+                    toast("已创建 DDL：" + (label.ifBlank { "到点倒计时" }))
                 }
             },
         )
     }
 }
 
+/** 网格单元：一个大圆盘 + 名称。 */
 @Composable
 private fun TimerCell(
     timer: TimerItem,
     runtime: TimerRuntime?,
+    thresholdMinutes: List<Long>,
+    thresholdColors: List<Color>,
     onClick: () -> Unit,
     onDelete: () -> Unit,
 ) {
-    val remaining = runtime?.remainingMillis ?: timer.durationMillis
-    val total = runtime?.totalMillis ?: timer.durationMillis
     val running = runtime?.running == true
+    val remain = if (running) (runtime?.remainingMillis ?: timer.durationMillis) else timer.durationMillis
+    val total = if (running) (runtime?.totalMillis ?: timer.durationMillis) else timer.durationMillis
+    val frac = if (total <= 0L) 0f else (remain.toFloat() / total).coerceIn(0f, 1f)
 
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .aspectRatio(1f)
+            .aspectRatio(0.92f)
             .clickable(onClick = onClick),
+        shape = RoundedCornerShape(16.dp),
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(12.dp),
+                    .padding(6.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center,
             ) {
-                MiniTimerRing(
-                    label = timer.label,
-                    remainingMillis = remaining,
+                PieTimerView(
                     totalMillis = total,
+                    remainingMillis = remain,
                     running = running,
+                    onDurationChange = null,
+                    modifier = Modifier.fillMaxWidth(),
+                    maxMinutes = 60,
+                    centerFontSize = 22f,
+                    thresholdMinutes = thresholdMinutes,
+                    thresholdColors = thresholdColors,
                 )
-                if (runtime?.deadlineEpochMillis != null) {
-                    Text(
-                        "DDL",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.tertiary,
-                    )
-                }
+                Text(
+                    text = timer.label ?: "未命名",
+                    fontSize = 11.sp,
+                    color = ExtColors.TextSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
             }
             IconButton(
                 onClick = onDelete,
-                modifier = Modifier.align(Alignment.TopEnd),
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .size(32.dp),
             ) {
                 Icon(
                     Icons.Filled.Delete,
                     contentDescription = "删除",
-                    tint = MaterialTheme.colorScheme.outline,
+                    tint = ExtColors.OutlineStrong,
+                    modifier = Modifier.size(16.dp),
                 )
+            }
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(10.dp)
+                    .size(7.dp)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(
+                        when {
+                            !running -> ExtColors.TextDim
+                            frac > 0.5f -> ExtColors.Primary
+                            frac > 0.2f -> ExtColors.Amber
+                            else -> ExtColors.Red
+                        },
+                    ),
+            )
+        }
+    }
+}
+
+/** 列表模式：多选 + 批量操作。 */
+@Composable
+private fun TimerList(
+    timers: List<TimerItem>,
+    runtimeById: Map<Long, TimerRuntime>,
+    selectedIds: Set<Long>,
+    onToggle: (Long) -> Unit,
+    onBatchDelete: () -> Unit,
+    onBatchStart: () -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        if (selectedIds.isNotEmpty()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "已选 ${selectedIds.size}",
+                    fontSize = 13.sp,
+                    color = ExtColors.TextSecondary,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = onBatchStart) { Text("开始") }
+                TextButton(onClick = onBatchDelete) { Text("删除") }
+            }
+        }
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            items(timers, key = { it.id }) { timer ->
+                val rt = runtimeById[timer.id]
+                val running = rt?.running == true
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(ExtColors.Surface)
+                        .clickable { onToggle(timer.id) }
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Checkbox(
+                        checked = timer.id in selectedIds,
+                        onCheckedChange = { onToggle(timer.id) },
+                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            timer.label ?: "未命名",
+                            fontSize = 14.sp,
+                            color = ExtColors.TextPrimary,
+                        )
+                        Text(
+                            (if (running) "运行中 · " else "已停止 · ") +
+                                DeadlineCalculator.formatRemaining(
+                                    rt?.remainingMillis ?: timer.durationMillis,
+                                ),
+                            fontSize = 12.sp,
+                            color = ExtColors.TextDim,
+                        )
+                    }
+                }
             }
         }
     }
@@ -479,70 +577,11 @@ private fun TimerCell(
 @Composable
 private fun EmptyHint(text: String) {
     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Row {
-            Text(
-                text = text,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-    }
-}
-
-/**
- * 横向条带里的计时器小胶囊。
- *
- * 显示：类型色点、名称、剩余时间、运行状态。
- * 所有计时器在条带里**同时可见**，点一下把大轮盘切换到它。
- */
-@Composable
-private fun TimerChip(
-    timer: TimerItem,
-    runtime: TimerRuntime?,
-    focused: Boolean,
-    onClick: () -> Unit,
-) {
-    val running = runtime?.running == true
-    val remain = runtime?.remainingMillis ?: timer.durationMillis
-    val total = runtime?.totalMillis ?: timer.durationMillis
-    val frac = if (total <= 0L) 0f else (remain.toFloat() / total).coerceIn(0f, 1f)
-    val dotColor = when {
-        !running -> ExtColors.TextDim
-        frac > 0.5f -> ExtColors.Primary
-        frac > 0.2f -> ExtColors.Amber
-        else -> ExtColors.Red
-    }
-
-    val interaction = remember { MutableInteractionSource() }
-    Row(
-        modifier = Modifier
-            .height(64.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .background(if (focused) ExtColors.PrimaryDim else ExtColors.Surface)
-            .clickable(interactionSource = interaction, indication = null, onClick = onClick)
-            .padding(horizontal = 14.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        Box(
-            modifier = Modifier
-                .size(9.dp)
-                .clip(CircleShape)
-                .background(dotColor),
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(24.dp),
         )
-        Column {
-            Text(
-                text = timer.label ?: "未命名",
-                fontSize = 13.sp,
-                color = if (focused) ExtColors.TextPrimary else ExtColors.TextSecondary,
-            )
-            Text(
-                text = at.cwiesner.android.visualtimer.ext.domain.DeadlineCalculator
-                    .formatRemaining(remain),
-                fontSize = 15.sp,
-                fontWeight = FontWeight.Medium,
-                color = ExtColors.TextPrimary,
-            )
-        }
     }
 }

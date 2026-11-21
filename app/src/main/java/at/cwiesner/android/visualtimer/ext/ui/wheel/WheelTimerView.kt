@@ -57,6 +57,11 @@ fun PieTimerView(
     centerLabel: String? = null,
     showCenterText: Boolean = true,
     innerDial: Boolean = true,
+    /** 中央时间字号，网格里用小号。 */
+    centerFontSize: Float = 40f,
+    /** 变色阈值（剩余分钟数，降序）与对应颜色；为空时用内置四段色。 */
+    thresholdMinutes: List<Long> = emptyList(),
+    thresholdColors: List<Color> = emptyList(),
 ) {
     val stepMillis = stepMinutes * 60_000L
     val maxMillis = maxMinutes * 60_000L
@@ -65,7 +70,7 @@ fun PieTimerView(
 
     var dragFraction by remember { mutableFloatStateOf(-1f) }
 
-    val pieColor = ringColorFor(progress, running)
+    val pieColor = colorForRemaining(remainingMillis, running, thresholdMinutes, thresholdColors)
     val trackColor = ExtColors.Track
     val tickColor = ExtColors.OutlineStrong
     val majorTickColor = ExtColors.TextDim
@@ -237,7 +242,7 @@ fun PieTimerView(
                 Text(
                     text = formatBig(remainingMillis),
                     color = if (running) Color.White else ExtColors.TextPrimary,
-                    fontSize = 40.sp,
+                    fontSize = centerFontSize.sp,
                     fontWeight = FontWeight.Light,
                 )
                 if (centerLabel != null) {
@@ -263,13 +268,45 @@ internal fun formatBig(millis: Long): String {
     return if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%d:%02d".format(m, s)
 }
 
-/** 剩余比例 → 颜色。 */
+/** 剩余比例 → 颜色（旧接口，保留给非阈值场景）。 */
 internal fun ringColorFor(progress: Float, running: Boolean): Color = when {
     !running -> ExtColors.Primary
     progress > 0.5f -> ExtColors.Primary
     progress > 0.2f -> ExtColors.Amber
     progress > 0.05f -> ExtColors.Orange
     else -> ExtColors.Red
+}
+
+/**
+ * 按用户配置的「变色阈值」决定当前颜色。
+ *
+ * 阈值列表按剩余分钟数降序；剩余时间落进哪一档就用哪一档的颜色。
+ * 剩余时间还大于第一档时，用第一档颜色。
+ */
+internal fun colorForRemaining(
+    remainingMillis: Long,
+    running: Boolean,
+    thresholdMinutes: List<Long>,
+    thresholdColors: List<Color>,
+): Color {
+    if (!running) return ExtColors.Primary
+    if (thresholdMinutes.isEmpty() || thresholdColors.isEmpty()) {
+        // 无配置时退回内置四段
+        return when {
+            remainingMillis > 60 * 60_000L -> ExtColors.Primary
+            remainingMillis > 10 * 60_000L -> ExtColors.Amber
+            remainingMillis > 3 * 60_000L -> ExtColors.Orange
+            else -> ExtColors.Red
+        }
+    }
+    val mins = remainingMillis / 60_000L
+    for (i in thresholdMinutes.indices) {
+        if (mins <= thresholdMinutes[i]) {
+            return thresholdColors.getOrElse(i) { ExtColors.Primary }
+        }
+    }
+    // 大于所有阈值 → 用第一档（最宽松）的颜色
+    return thresholdColors.firstOrNull() ?: ExtColors.Primary
 }
 
 /** 手势位置 → 圈的比例（12 点为 0，顺时针 0..1）。 */

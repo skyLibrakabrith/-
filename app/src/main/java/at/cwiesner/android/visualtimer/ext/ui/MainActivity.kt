@@ -24,6 +24,7 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
@@ -48,8 +49,13 @@ class MainActivity : ComponentActivity() {
 
         ensureNotificationPermission()
 
+        val settings = at.cwiesner.android.visualtimer.ext.settings.SettingsRepo(this)
+
         setContent {
-            ExtTheme {
+            val mode by settings.themeMode.collectAsState(
+                initial = at.cwiesner.android.visualtimer.ext.settings.ThemeMode.PureBlack,
+            )
+            ExtTheme(mode = mode) {
                 MainScaffold()
             }
         }
