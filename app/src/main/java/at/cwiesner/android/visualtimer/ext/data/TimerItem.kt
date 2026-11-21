@@ -19,6 +19,10 @@ data class TimerItem(
     val durationMillis: Long,
     val alertProfileId: Long? = null,
     val position: Int = 0,
+    /** 计时器类型；旧数据迁移后默认 Countdown。 */
+    val kind: TimerKind = TimerKind.Countdown,
+    /** Deadline 类型绑定的绝对截止时刻（epoch millis）；其他类型为 null。 */
+    val deadlineEpochMillis: Long? = null,
 )
 
 /**

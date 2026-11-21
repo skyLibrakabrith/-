@@ -8,7 +8,11 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -44,6 +48,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.foundation.layout.size
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.foundation.background
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 
 import androidx.compose.ui.unit.sp
@@ -53,7 +65,7 @@ import at.cwiesner.android.visualtimer.ext.data.PanelTimerRef
 import at.cwiesner.android.visualtimer.ext.data.TimerItem
 import at.cwiesner.android.visualtimer.ext.domain.PanelRunner
 import at.cwiesner.android.visualtimer.ext.domain.TimerRuntime
-import at.cwiesner.android.visualtimer.ext.ui.wheel.WheelTimerView
+import at.cwiesner.android.visualtimer.ext.ui.wheel.PieTimerView
 import at.cwiesner.android.visualtimer.ext.ui.ExtColors
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.flowOf
@@ -197,10 +209,11 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                     // ---- 大轮盘：Visual Timer 风格主视图 ----
                     if (focusTimer != null) {
                         val runningNow = focusRuntime?.running == true
-                        val total = focusRuntime?.totalMillis ?: draftDuration
-                        val remain = focusRuntime?.remainingMillis ?: draftDuration
+                        // 未运行时一律用本地草稿：修掉了「拖动只改左下角、中间数字不动」的 bug
+                        val total = if (runningNow) (focusRuntime?.totalMillis ?: draftDuration) else draftDuration
+                        val remain = if (runningNow) (focusRuntime?.remainingMillis ?: draftDuration) else draftDuration
 
-                        WheelTimerView(
+                        PieTimerView(
                             totalMillis = total,
                             remainingMillis = remain,
                             running = runningNow,
@@ -212,6 +225,26 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                             stepMinutes = 1,
                             centerLabel = focusTimer.label,
                         )
+
+                        // ---- 所有计时器横向条带：同时显示、点一下切换聚焦 ----
+                        if (timers.size > 1) {
+                            LazyRow(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 6.dp),
+                                contentPadding = PaddingValues(horizontal = 20.dp),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                items(timers, key = { it.id }) { t ->
+                                    TimerChip(
+                                        timer = t,
+                                        runtime = runtimeById[t.id],
+                                        focused = t.id == focusTimer.id,
+                                        onClick = { focusId = t.id },
+                                    )
+                                }
+                            }
+                        }
 
                         // 轮盘下方操作条
                         Row(
@@ -451,6 +484,64 @@ private fun EmptyHint(text: String) {
                 text = text,
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/**
+ * 横向条带里的计时器小胶囊。
+ *
+ * 显示：类型色点、名称、剩余时间、运行状态。
+ * 所有计时器在条带里**同时可见**，点一下把大轮盘切换到它。
+ */
+@Composable
+private fun TimerChip(
+    timer: TimerItem,
+    runtime: TimerRuntime?,
+    focused: Boolean,
+    onClick: () -> Unit,
+) {
+    val running = runtime?.running == true
+    val remain = runtime?.remainingMillis ?: timer.durationMillis
+    val total = runtime?.totalMillis ?: timer.durationMillis
+    val frac = if (total <= 0L) 0f else (remain.toFloat() / total).coerceIn(0f, 1f)
+    val dotColor = when {
+        !running -> ExtColors.TextDim
+        frac > 0.5f -> ExtColors.Primary
+        frac > 0.2f -> ExtColors.Amber
+        else -> ExtColors.Red
+    }
+
+    val interaction = remember { MutableInteractionSource() }
+    Row(
+        modifier = Modifier
+            .height(64.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(if (focused) ExtColors.PrimaryDim else ExtColors.Surface)
+            .clickable(interactionSource = interaction, indication = null, onClick = onClick)
+            .padding(horizontal = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .size(9.dp)
+                .clip(CircleShape)
+                .background(dotColor),
+        )
+        Column {
+            Text(
+                text = timer.label ?: "未命名",
+                fontSize = 13.sp,
+                color = if (focused) ExtColors.TextPrimary else ExtColors.TextSecondary,
+            )
+            Text(
+                text = at.cwiesner.android.visualtimer.ext.domain.DeadlineCalculator
+                    .formatRemaining(remain),
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Medium,
+                color = ExtColors.TextPrimary,
             )
         }
     }

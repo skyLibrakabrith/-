@@ -123,7 +123,7 @@ interface AlertProfileDao {
     suspend fun count(): Int
 }
 
-@androidx.room.TypeConverters(Converters::class)
+@androidx.room.TypeConverters(Converters::class, TimerKindConverter::class)
 @Database(
     entities = [
         TimerItem::class,
@@ -133,7 +133,7 @@ interface AlertProfileDao {
         StepSequence::class,
         AlertProfile::class,
     ],
-    version = 1,
+    version = 2,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -146,13 +146,27 @@ abstract class AppDatabase : RoomDatabase() {
         @Volatile
         private var INSTANCE: AppDatabase? = null
 
+        /**
+         * v1 → v2：计时器新增类型与截止时刻两列。
+         * 用加法迁移而非重建表，保住用户已有的计时器数据。
+         */
+        private val MIGRATION_1_2 = object : androidx.room.migration.Migration(1, 2) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE timers ADD COLUMN kind TEXT NOT NULL DEFAULT 'Countdown'")
+                db.execSQL("ALTER TABLE timers ADD COLUMN deadlineEpochMillis INTEGER")
+            }
+        }
+
         fun get(context: Context): AppDatabase =
             INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
                     context.applicationContext,
                     AppDatabase::class.java,
                     "visual-timer-ext.db",
-                ).fallbackToDestructiveMigration().build().also { INSTANCE = it }
+                ).addMigrations(MIGRATION_1_2)
+                    .fallbackToDestructiveMigration()
+                    .build()
+                    .also { INSTANCE = it }
             }
     }
 }

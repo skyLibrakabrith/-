@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AccessTime
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.PlayCircle
@@ -31,6 +32,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.core.content.ContextCompat
 import at.cwiesner.android.visualtimer.ext.ui.alerts.AlertsScreen
+import at.cwiesner.android.visualtimer.ext.ui.home.HomeScreen
 import at.cwiesner.android.visualtimer.ext.ui.panels.PanelsScreen
 import at.cwiesner.android.visualtimer.ext.ui.sequences.SequencesScreen
 import at.cwiesner.android.visualtimer.ext.ui.settings.SettingsScreen
@@ -68,6 +70,7 @@ private enum class Dest(
     val label: String,
     val icon: ImageVector,
 ) {
+    Home("时钟", Icons.Filled.AccessTime),
     Panels("面板", Icons.Filled.GridView),
     Sequences("序列", Icons.Filled.PlayCircle),
     Alerts("警报", Icons.Filled.Notifications),
@@ -99,6 +102,7 @@ private fun MainScaffold() {
                 .padding(inner),
         ) {
             when (dests[selected]) {
+                Dest.Home -> HomeScreen()
                 Dest.Panels -> PanelsScreen()
                 Dest.Sequences -> SequencesScreen()
                 Dest.Alerts -> AlertsScreen()
