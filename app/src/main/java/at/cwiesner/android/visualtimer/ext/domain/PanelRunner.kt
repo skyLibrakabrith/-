@@ -20,12 +20,19 @@ data class TimerRuntime(
     val remainingMillis: Long,
     val running: Boolean,
     val deadlineEpochMillis: Long?,
+    /**
+     * 到点之后已经超时多久（正计时）。
+     * 倒计时走完不会停下，而是转入这个字段继续累加，
+     * 这样用户能看到「已经超时多久」，而不是时间冻结在 00:00。
+     */
+    val overdueMillis: Long = 0L,
 ) {
     val progress: Float
         get() = if (totalMillis <= 0L) 0f
         else (remainingMillis.toFloat() / totalMillis).coerceIn(0f, 1f)
 
-    val expired: Boolean get() = remainingMillis <= 0L && totalMillis > 0L
+    /** 是否已经到点（进入超时正计时）。 */
+    val expired: Boolean get() = overdueMillis > 0L || (remainingMillis <= 0L && totalMillis > 0L)
 }
 
 /**
@@ -114,15 +121,21 @@ class PanelRunner(private val scope: CoroutineScope) {
             } else {
                 (r.remainingMillis - deltaMillis).coerceAtLeast(0L)
             }
-            if (remaining != r.remainingMillis) {
+
+            if (remaining > 0L) {
+                if (remaining != r.remainingMillis) {
+                    changed = true
+                    next[k] = r.copy(remainingMillis = remaining, overdueMillis = 0L)
+                } else {
+                    next[k] = r
+                }
+            } else {
+                // 到点：剩余归零，转入正计时，保持 running 以便继续累加
                 changed = true
                 next[k] = r.copy(
-                    remainingMillis = remaining,
-                    running = remaining > 0L,
+                    remainingMillis = 0L,
+                    overdueMillis = r.overdueMillis + deltaMillis,
                 )
-                // 时长可能随时间调整（DDL 模式）—— 让 total 跟着更新，进度条才不会失真
-            } else {
-                next[k] = r
             }
         }
         if (changed) _runtimes.value = next

@@ -113,10 +113,13 @@ fun TimerFocusScreen(
             fractionDivisions = fractionDivisions,
             thresholdMinutes = thresholdMinutes,
             thresholdColors = thresholdColors,
+            overdueMillis = runtime?.overdueMillis ?: 0L,
         )
 
         Text(
-            text = if (running) {
+            text = if ((runtime?.overdueMillis ?: 0L) > 0L) {
+                "已超时 " + DeadlineCalculator.formatRemaining(runtime!!.overdueMillis)
+            } else if (running) {
                 "剩余 " + DeadlineCalculator.formatRemaining(remain) +
                     " · " + clockOf(System.currentTimeMillis() + remain) + " 结束"
             } else {

@@ -69,6 +69,8 @@ fun PieTimerView(
         at.cwiesner.android.visualtimer.ext.settings.ColorMode.Threshold,
     intervalMinutes: Long = 5L,
     fractionDivisions: Int = 4,
+    /** 到点后的超时正计时；>0 时中央显示 +MM:SS 并转红色。 */
+    overdueMillis: Long = 0L,
 ) {
     val stepMillis = stepMinutes * 60_000L
     val maxMillis = maxMinutes * 60_000L
@@ -77,7 +79,8 @@ fun PieTimerView(
 
     var dragFraction by remember { mutableFloatStateOf(-1f) }
 
-    val pieColor = pickColor(
+    val isOverdue = overdueMillis > 0L
+    val pieColor = if (isOverdue) ExtColors.Red else pickColor(
         remainingMillis = remainingMillis,
         totalMillis = totalMillis,
         running = running,
@@ -264,8 +267,12 @@ fun PieTimerView(
         if (showCenterText) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(
-                    text = formatBig(remainingMillis),
-                    color = if (running) Color.White else ExtColors.TextPrimary,
+                    text = if (isOverdue) "+" + formatBig(overdueMillis) else formatBig(remainingMillis),
+                    color = when {
+                        isOverdue -> Color.White
+                        running -> Color.White
+                        else -> ExtColors.TextPrimary
+                    },
                     fontSize = centerFontSize.sp,
                     fontWeight = FontWeight.Light,
                 )

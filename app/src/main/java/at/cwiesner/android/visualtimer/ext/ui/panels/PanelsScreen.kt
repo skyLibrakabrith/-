@@ -505,6 +505,7 @@ private fun TimerCell(
                     colorMode = colorMode,
                     intervalMinutes = intervalMinutes,
                     fractionDivisions = fractionDivisions,
+                    overdueMillis = runtime?.overdueMillis ?: 0L,
                 )
                 Text(
                     text = timer.label ?: "未命名",
@@ -514,11 +515,16 @@ private fun TimerCell(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.padding(top = 2.dp),
                 )
-                // 结束时刻：运行时 = 现在 + 剩余；未运行 = 现在 + 总时长
+                // 运行中显示结束时刻；超时后改显示超时时长
                 Text(
-                    text = clockOf(System.currentTimeMillis() + remain) + " 结束",
+                    text = if ((runtime?.overdueMillis ?: 0L) > 0L) {
+                        "超时 " + DeadlineCalculator.formatRemaining(runtime!!.overdueMillis)
+                    } else {
+                        clockOf(System.currentTimeMillis() + remain) + " 结束"
+                    },
                     fontSize = 10.sp,
-                    color = ExtColors.TextDim,
+                    color = if ((runtime?.overdueMillis ?: 0L) > 0L) ExtColors.Red
+                    else ExtColors.TextDim,
                     maxLines = 1,
                 )
             }
