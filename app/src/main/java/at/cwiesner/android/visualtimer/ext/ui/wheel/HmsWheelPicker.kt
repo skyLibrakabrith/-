@@ -30,7 +30,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import at.cwiesner.android.visualtimer.ext.ui.ExtColors
-import kotlin.math.roundToInt
 
 /**
  * 精确时分秒选择器：三个可滚动的滚轮。
@@ -243,7 +242,7 @@ private fun StepBtn(text: String, onClick: () -> Unit) {
 
 /** 把毫秒转成「时:分:秒」显示。 */
 internal fun hmsText(millis: Long): String {
-    val t = (millis / 1000).roundToInt().coerceAtLeast(0)
+    val t = (millis / 1000L).toInt().coerceAtLeast(0)
     return "%02d:%02d:%02d".format(t / 3600, (t % 3600) / 60, t % 60)
 }
 
