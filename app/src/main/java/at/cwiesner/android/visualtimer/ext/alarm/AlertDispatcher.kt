@@ -69,6 +69,15 @@ class AlertDispatcher(
         vibration.preview(pattern.toLongArray())
     }
 
+    /**
+     * 到点时的屏幕闪烁：不震动（震动由 Application 统一负责，避免重复）。
+     *
+     * @param times 闪烁次数；0 表示一直闪到 [stopAll]
+     */
+    fun flashOnly(times: Int = 0) {
+        screenFlash.start(scope, flashMillis = 320L, gapMillis = 220L, times = times)
+    }
+
     /** 播放一段固定闪烁，用于用户预览「屏幕闪烁」效果。 */
     fun previewScreenFlash() {
         screenFlash.start(scope, times = 3)

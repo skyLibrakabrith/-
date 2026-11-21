@@ -50,6 +50,16 @@ class PanelRunner(private val scope: CoroutineScope) {
     private val _runtimes = MutableStateFlow<Map<Long, TimerRuntime>>(emptyMap())
     val runtimes: StateFlow<Map<Long, TimerRuntime>> = _runtimes.asStateFlow()
 
+    /**
+     * 到点事件流：每个计时器**每次**到点只发一次。
+     * 界面和常驻服务都订阅它来触发震动 / 闪烁 / 通知，
+     * 这样即使没有界面，倒计时到点也能提醒。
+     */
+    private val _alerts = kotlinx.coroutines.flow.MutableSharedFlow<TimerRuntime>(
+        extraBufferCapacity = 16,
+    )
+    val alerts: kotlinx.coroutines.flow.SharedFlow<TimerRuntime> = _alerts.asSharedFlow()
+
     private var tickJob: Job? = null
 
     /** 启动内部 tick 循环。重复调用无副作用。 */
@@ -131,11 +141,14 @@ class PanelRunner(private val scope: CoroutineScope) {
                 }
             } else {
                 // 到点：剩余归零，转入正计时，保持 running 以便继续累加
+                val justExpired = r.overdueMillis == 0L
                 changed = true
-                next[k] = r.copy(
+                val updated = r.copy(
                     remainingMillis = 0L,
                     overdueMillis = r.overdueMillis + deltaMillis,
                 )
+                next[k] = updated
+                if (justExpired) _alerts.tryEmit(updated)
             }
         }
         if (changed) _runtimes.value = next

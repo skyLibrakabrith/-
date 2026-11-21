@@ -53,6 +53,18 @@ class MainActivity : ComponentActivity() {
 
         val settings = at.cwiesner.android.visualtimer.ext.settings.SettingsRepo(this)
 
+        // 到点时的屏幕闪烁：需要本 Activity 的 window，所以只能在前台做
+        val app = application as ExtApplication
+        val flashDispatcher = at.cwiesner.android.visualtimer.ext.alarm.AlertDispatcher(
+            this,
+            lifecycleScope,
+        )
+        lifecycleScope.launch {
+            app.panelRunner.alerts.collect {
+                runCatching { flashDispatcher.flashOnly(times = 6) }
+            }
+        }
+
         // 屏幕常亮：按设置决定是否加 FLAG_KEEP_SCREEN_ON
         lifecycleScope.launch {
             settings.keepScreenOn.collect { on ->

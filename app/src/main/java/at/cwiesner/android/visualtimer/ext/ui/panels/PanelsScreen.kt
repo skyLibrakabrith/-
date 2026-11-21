@@ -125,7 +125,22 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
     // StateFlow 已驱动 UI，无需本地 tick
     val thresholdMinutes = remember(thresholds) { thresholds.map { it.minutesLeft } }
     val thresholdColors = remember(thresholds) {
-        thresholds.map { ExtColors.Palette[it.paletteIndex.coerceIn(0, 3)] }
+        thresholds.map {
+            ExtColors.Palette[it.paletteIndex.coerceIn(0, ExtColors.Palette.size - 1)]
+        }
+    }
+
+    // 各面板运行中的计时器数量 —— 让「别的面板也在跑」这件事可见
+    var runningCountByPanel by remember { mutableStateOf<Map<Long, Int>>(emptyMap()) }
+    LaunchedEffect(runtimeMap, panels) {
+        val map = mutableMapOf<Long, Int>()
+        for (p in panels) {
+            val ids = runCatching { db.panelDao().refsOf(p.id).map { it.timerId } }
+                .getOrDefault(emptyList())
+            val n = ids.count { id -> runtimeMap[id]?.running == true }
+            if (n > 0) map[p.id] = n
+        }
+        runningCountByPanel = map
     }
 
     fun toast(msg: String) {
@@ -137,7 +152,19 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
         topBar = {
             Column {
                 TopAppBar(
-                    title = { Text(currentPanel?.name ?: "多面板") },
+                    title = {
+                        Column {
+                            Text(currentPanel?.name ?: "多面板")
+                            val runningCount = runtimes.count { it.running }
+                            if (runningCount > 0) {
+                                Text(
+                                    "$runningCount 个运行中",
+                                    fontSize = 11.sp,
+                                    color = ExtColors.Primary,
+                                )
+                            }
+                        }
+                    },
                     actions = {
                         if (currentPanel != null) {
                             IconButton(onClick = {
@@ -208,7 +235,12 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                             Tab(
                                 selected = index == safeIndex,
                                 onClick = { selectedPanel = index; selectedIds = emptySet() },
-                                text = { Text(panel.name) },
+                                text = {
+                                    val active = runningCountByPanel[panel.id] ?: 0
+                                    Text(
+                                        if (active > 0) "${panel.name} ·$active" else panel.name,
+                                    )
+                                },
                             )
                         }
                     }
