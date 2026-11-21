@@ -6,6 +6,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -20,6 +21,8 @@ data class TimerRuntime(
     val remainingMillis: Long,
     val running: Boolean,
     val deadlineEpochMillis: Long?,
+    /** 绑定的警报配置 id；到点时按它取振动波形。 */
+    val alertProfileId: Long? = null,
     /**
      * 到点之后已经超时多久（正计时）。
      * 倒计时走完不会停下，而是转入这个字段继续累加，
@@ -96,6 +99,7 @@ class PanelRunner(private val scope: CoroutineScope) {
                 remainingMillis = timer.durationMillis,
                 running = true,
                 deadlineEpochMillis = null,
+                alertProfileId = timer.alertProfileId,
             )
             )
     }
@@ -111,6 +115,7 @@ class PanelRunner(private val scope: CoroutineScope) {
                 remainingMillis = remaining,
                 running = true,
                 deadlineEpochMillis = deadlineEpochMillis,
+                alertProfileId = timer.alertProfileId,
             )
             )
     }
