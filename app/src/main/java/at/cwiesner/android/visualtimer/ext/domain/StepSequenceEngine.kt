@@ -179,7 +179,8 @@ class StepSequenceEngine(
                     elapsedMillis = elapsed,
                     timeoutRemainingMillis = timeoutLeft,
                     overtimeMillis = if (overtime > 0) overtime else 0L,
-                    overdue = timeoutLeft <= 0,
+                    // timeout=0 时表示「不设超时」，永远不进入强调态
+                    overdue = seq.timeoutMillis > 0L && timeoutLeft <= 0,
                 )
             }
         }

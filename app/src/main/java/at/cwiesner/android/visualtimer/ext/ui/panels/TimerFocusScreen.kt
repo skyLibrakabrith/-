@@ -13,6 +13,10 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -35,10 +39,11 @@ private fun clockOf(epochMillis: Long): String {
 }
 
 /**
- * 单个表盘的整页视图 —— 与首页 24 小时时钟同构的全屏形态。
+ * 单个表盘的整页编辑视图。
  *
- * 只有一个大圆盘和底部一行操作，看单个计时器时视线不被别的内容干扰。
- * 未运行时可以直接在盘面上拖动改时长（[onDurationChange]）。
+ * **性能要点**：拖动盘面时只更新本地 [draft]，**不写数据库**。
+ * 之前的写法是每帧 `db.timerDao().upsert(...)`，Room 写盘造成明显卡顿。
+ * 现在只在拖动结束（`onDurationCommit`）时提交一次。
  */
 @Composable
 fun TimerFocusScreen(
@@ -49,7 +54,7 @@ fun TimerFocusScreen(
     fractionDivisions: Int,
     thresholdMinutes: List<Long>,
     thresholdColors: List<Color>,
-    onDurationChange: (Long) -> Unit,
+    onDurationCommit: (Long) -> Unit,
     onStart: () -> Unit,
     onPause: () -> Unit,
     onReset: () -> Unit,
@@ -57,8 +62,11 @@ fun TimerFocusScreen(
     modifier: Modifier = Modifier,
 ) {
     val running = runtime?.running == true
-    val remain = if (running) (runtime?.remainingMillis ?: timer.durationMillis) else timer.durationMillis
-    val total = if (running) (runtime?.totalMillis ?: timer.durationMillis) else timer.durationMillis
+    // 本地草稿：拖动期间只改这个，不触碰数据库
+    var draft by remember(timer.id) { mutableLongStateOf(timer.durationMillis) }
+
+    val remain = if (running) (runtime?.remainingMillis ?: draft) else draft
+    val total = if (running) (runtime?.totalMillis ?: draft) else draft
 
     Column(
         modifier = modifier
@@ -90,7 +98,11 @@ fun TimerFocusScreen(
             totalMillis = total,
             remainingMillis = remain,
             running = running,
-            onDurationChange = if (running) null else onDurationChange,
+            onDurationChange = if (running) null else { d -> draft = d },
+            onDurationCommit = if (running) null else { d ->
+                draft = d
+                onDurationCommit(d)
+            },
             modifier = Modifier.fillMaxWidth(),
             maxMinutes = 60,
             stepMinutes = 1,
@@ -108,8 +120,8 @@ fun TimerFocusScreen(
                 "剩余 " + DeadlineCalculator.formatRemaining(remain) +
                     " · " + clockOf(System.currentTimeMillis() + remain) + " 结束"
             } else {
-                "时长 " + DeadlineCalculator.formatRemaining(timer.durationMillis) +
-                    " · " + clockOf(System.currentTimeMillis() + timer.durationMillis) + " 结束"
+                "时长 " + DeadlineCalculator.formatRemaining(draft) +
+                    " · " + clockOf(System.currentTimeMillis() + draft) + " 结束"
             },
             fontSize = 13.sp,
             color = ExtColors.TextDim,

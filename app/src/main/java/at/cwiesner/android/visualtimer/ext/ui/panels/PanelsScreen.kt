@@ -238,7 +238,7 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                     fractionDivisions = fractionDivisions,
                     thresholdMinutes = thresholdMinutes,
                     thresholdColors = thresholdColors,
-                    onDurationChange = { d ->
+                    onDurationCommit = { d ->
                         scope.launch { db.timerDao().upsert(focused.copy(durationMillis = d)) }
                     },
                     onStart = {
@@ -302,8 +302,7 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                             colorMode = colorMode,
                             intervalMinutes = intervalMinutes,
                             fractionDivisions = fractionDivisions,
-                            onClick = { focusTimerId = timer.id },
-                            onLongClick = {
+                            onClick = {
                                 scope.launch {
                                     val cur = runner.snapshot().firstOrNull { it.timerId == timer.id }
                                     val name = timer.label ?: "未命名"
@@ -327,6 +326,7 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                                     }
                                 }
                             },
+                            onLongClick = { focusTimerId = timer.id },
                             onDelete = {
                                 scope.launch {
                                     runner.clear(timer.id)

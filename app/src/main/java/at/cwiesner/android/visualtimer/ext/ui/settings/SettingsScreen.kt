@@ -360,7 +360,7 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                     color = if (canOverlay) ExtColors.Primary else ExtColors.Red,
                 )
                 TextButton(onClick = {
-                    runCatching {
+                    val ok = runCatching {
                         context.startActivity(
                             Intent(
                                 Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
@@ -368,9 +368,31 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                             ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
                         )
                     }
-                    canOverlay = Settings.canDrawOverlays(context)
+                    if (ok.isFailure) {
+                        // 有些 ROM 没有这个 Action，退回「设置首页」让用户自己找
+                        runCatching {
+                            context.startActivity(
+                                Intent(Settings.ACTION_SETTINGS)
+                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                            )
+                        }
+                        toast("本机没有直达页，请在「设置 → 应用 → 特殊权限 → 显示在其他应用上层」里手动开启")
+                    }
                 }) { Text("去授权") }
             }
+            // 手动刷新：从系统页返回后重新读权限状态
+            TextButton(onClick = {
+                canOverlay = Settings.canDrawOverlays(context)
+                toast(if (canOverlay) "已获得悬浮窗权限" else "仍未获得权限")
+            }) { Text("刷新权限状态") }
+            TextButton(onClick = {
+                if (!Settings.canDrawOverlays(context)) {
+                    toast("请先授予悬浮窗权限")
+                } else {
+                    TimerOverlayService.start(context)
+                    toast("已尝试拉起悬浮窗，若看到卡片则正常")
+                }
+            }) { Text("测试悬浮窗") }
         }
 
         SettingsCard(title = "备份") {

@@ -50,6 +50,8 @@ fun PieTimerView(
     remainingMillis: Long,
     running: Boolean,
     onDurationChange: ((Long) -> Unit)?,
+    /** 拖动结束时提交一次 —— 持久化这类重活应该挂在这里，而不是每帧回调。 */
+    onDurationCommit: ((Long) -> Unit)? = null,
     modifier: Modifier = Modifier,
     maxMinutes: Int = 60,
     stepMinutes: Int = 1,
@@ -105,7 +107,7 @@ fun PieTimerView(
         Canvas(
             modifier = Modifier
                 .fillMaxSize()
-                .pointerInput(running, onDurationChange, stepMillis, maxMillis) {
+                .pointerInput(running, onDurationChange, onDurationCommit, stepMillis, maxMillis) {
                     val editable = !running && onDurationChange != null
                     if (!editable) return@pointerInput
                     detectDragGestures(
@@ -115,7 +117,14 @@ fun PieTimerView(
                                 fractionToDuration(dragFraction, maxMillis, stepMillis),
                             )
                         },
-                        onDragEnd = { dragFraction = -1f },
+                        onDragEnd = {
+                            if (dragFraction >= 0f) {
+                                onDurationCommit?.invoke(
+                                    fractionToDuration(dragFraction, maxMillis, stepMillis),
+                                )
+                            }
+                            dragFraction = -1f
+                        },
                         onDragCancel = { dragFraction = -1f },
                         onDrag = { change, _ ->
                             dragFraction = angleToFraction(change.position, size.width, size.height)
@@ -167,10 +176,11 @@ fun PieTimerView(
 
             // ---- 3. 外圈刻度（在饼外面一圈短刻度） ----
             val tickRadius = diameter * 0.485f
-            val tickCount = (maxMinutes / tickMinutes).coerceAtLeast(1)
+            val tickStep = if (maxMinutes / tickMinutes > 24) 5 else tickMinutes
+            val tickCount = (maxMinutes / tickStep).coerceAtLeast(1)
             for (i in 0 until tickCount) {
                 val angleDeg = 360f * i / tickCount - 90f
-                val isMajor = i == 0 || (i * tickMinutes) % 15 == 0
+                val isMajor = i == 0 || (i * tickStep) % 15 == 0
                 val len = if (isMajor) diameter * 0.030f else diameter * 0.014f
                 val rad = Math.toRadians(angleDeg.toDouble())
                 val outer = Offset(
