@@ -46,6 +46,7 @@ fun SequenceEditorScreen(
     steps: List<Step>,
     onDismiss: () -> Unit,
     onSave: (name: String, timeoutMillis: Long, steps: List<Pair<String, Long>>) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     var name by remember { mutableStateOf(sequence.name) }
     var timeout by remember { mutableLongStateOf(sequence.timeoutMillis) }
@@ -56,7 +57,7 @@ fun SequenceEditorScreen(
     var showAddStep by remember { mutableStateOf(false) }
 
     Column(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxSize()
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
