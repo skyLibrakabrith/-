@@ -36,7 +36,7 @@ import at.cwiesner.android.visualtimer.ext.ui.duration.DeadlineTimePicker
 import at.cwiesner.android.visualtimer.ext.ui.duration.deadlineEpochMillis
 import at.cwiesner.android.visualtimer.ext.ui.duration.describeDeadline
 import at.cwiesner.android.visualtimer.ext.ui.wheel.HmsWheelPicker
-import at.cwiesner.android.visualtimer.ext.ui.wheel.WheelTimerView
+import at.cwiesner.android.visualtimer.ext.ui.wheel.PieTimerView
 
 /** 时长输入模式。 */
 private enum class DurationMode(val label: String) {
@@ -115,7 +115,7 @@ fun TimerEditDialog(
 
                 when (mode) {
                     DurationMode.Wheel -> {
-                        WheelTimerView(
+                        PieTimerView(
                             totalMillis = duration,
                             remainingMillis = duration,
                             running = false,
