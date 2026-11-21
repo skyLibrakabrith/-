@@ -230,22 +230,15 @@ private fun StepBtn(text: String, onClick: () -> Unit) {
             .height(30.dp)
             .clip(RoundedCornerShape(6.dp))
             .background(ExtColors.Surface)
-            .clickableNoRipple(onClick),
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onClick,
+            ),
         contentAlignment = Alignment.Center,
     ) {
         Text(text, fontSize = 18.sp, color = ExtColors.Primary)
     }
-}
-
-/** 极简点击（不引入 ripple 以保持纯黑界面干净）。 */
-@Composable
-private fun Modifier.clickableNoRipple(onClick: () -> Unit): Modifier {
-    val interaction = remember { MutableInteractionSource() }
-    return this.clickable(
-        interactionSource = interaction,
-        indication = null,
-        onClick = onClick,
-    )
 }
 
 /** 把毫秒转成「时:分:秒」显示。 */

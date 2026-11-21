@@ -113,11 +113,11 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
     var focusId by remember { mutableLongStateOf(-1L) }
     // 轮盘拖动的本地草稿时长：只在「开始」时写库，避免每帧一次 DB 写
     var draftDuration by remember { mutableLongStateOf(60_000L) }
+    val focusTimer = timers.firstOrNull { it.id == focusId } ?: timers.firstOrNull()
+    val focusRuntime = focusTimer?.let { runtimeById[it.id] }
     LaunchedEffect(focusTimer?.id) {
         focusTimer?.let { draftDuration = runtimeById[it.id]?.totalMillis ?: it.durationMillis }
     }
-    val focusTimer = timers.firstOrNull { it.id == focusId } ?: timers.firstOrNull()
-    val focusRuntime = focusTimer?.let { runtimeById[it.id] }
 
     Scaffold(
         modifier = modifier,
