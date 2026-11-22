@@ -63,6 +63,25 @@ class PanelRunner(private val scope: CoroutineScope) {
     )
     val alerts: kotlinx.coroutines.flow.SharedFlow<TimerRuntime> = _alerts.asSharedFlow()
 
+    /**
+     * 尚未被用户处理的到点计时器。
+     *
+     * 只要里面还有 id，震动和闪屏就应该**持续**进行 ——
+     * 之前只震一下、闪 6 次就停，等于没有提醒作用。
+     * 用户重置 / 停止 / 关闭悬浮窗时才会移出。
+     */
+    private val _alerting = MutableStateFlow<Set<Long>>(emptySet())
+    val alerting: StateFlow<Set<Long>> = _alerting.asStateFlow()
+
+    /** 用户已处理某个计时器，停止它的持续提醒。 */
+    fun acknowledge(timerId: Long) {
+        _alerting.value = _alerting.value - timerId
+    }
+
+    fun acknowledgeAll() {
+        _alerting.value = emptySet()
+    }
+
     private var tickJob: Job? = null
 
     /** 启动内部 tick 循环。重复调用无副作用。 */
@@ -91,6 +110,7 @@ class PanelRunner(private val scope: CoroutineScope) {
 
     /** 开始一个计时器（相对时长）。 */
     fun start(timer: TimerItem) {
+        acknowledge(timer.id)
         _runtimes.value = _runtimes.value + (
             timer.id to TimerRuntime(
                 // 全新开始：超时计数归零
@@ -107,6 +127,7 @@ class PanelRunner(private val scope: CoroutineScope) {
 
     /** 以 DDL 方式开始：剩余时长 = 截止时刻 − 现在。 */
     fun startUntil(timer: TimerItem, deadlineEpochMillis: Long, now: Long) {
+        acknowledge(timer.id)
         val remaining = (deadlineEpochMillis - now).coerceAtLeast(0L)
         _runtimes.value = _runtimes.value + (
             timer.id to TimerRuntime(
@@ -154,7 +175,10 @@ class PanelRunner(private val scope: CoroutineScope) {
                     overdueMillis = r.overdueMillis + deltaMillis,
                 )
                 next[k] = updated
-                if (justExpired) _alerts.tryEmit(updated)
+                if (justExpired) {
+                    _alerting.value = _alerting.value + k
+                    _alerts.tryEmit(updated)
+                }
             }
         }
         if (changed) _runtimes.value = next
@@ -172,6 +196,7 @@ class PanelRunner(private val scope: CoroutineScope) {
      * 剩余时长还原、却仍然停在超时态，界面继续显示 +MM:SS，看起来像没重置。
      */
     fun reset(timerId: Long) {
+        acknowledge(timerId)
         val r = _runtimes.value[timerId] ?: return
         _runtimes.value = _runtimes.value + (
             timerId to r.copy(
@@ -183,10 +208,12 @@ class PanelRunner(private val scope: CoroutineScope) {
     }
 
     fun clear(timerId: Long) {
+        acknowledge(timerId)
         _runtimes.value = _runtimes.value - timerId
     }
 
     fun clearAll() {
+        _alerting.value = emptySet()
         _runtimes.value = emptyMap()
     }
 

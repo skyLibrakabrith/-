@@ -148,6 +148,10 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
         }
     }
 
+    // 警报配置（供计时器选择提醒方式）
+    val alertProfiles by remember { db.alertProfileDao().observeAll() }
+        .collectAsState(initial = emptyList<at.cwiesner.android.visualtimer.ext.data.AlertProfile>())
+
     // 全部序列（编辑器里分配面板时用）
     val allSequences by remember { db.sequenceDao().observeAll() }
         .collectAsState(initial = emptyList<StepSequence>())
@@ -803,8 +807,9 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
 
     if (showNewTimer && currentPanel != null) {
         TimerEditDialog(
+            alertProfiles = alertProfiles,
             onDismiss = { showNewTimer = false },
-            onConfirm = { label, duration, deadlineEpoch ->
+            onConfirm = { label, duration, deadlineEpoch, alertProfileId ->
                 showNewTimer = false
                 scope.launch {
                     val now = System.currentTimeMillis()
@@ -812,6 +817,7 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                         TimerItem(
                             label = label.ifBlank { null },
                             durationMillis = duration,
+                            alertProfileId = alertProfileId,
                         ),
                     )
                     val existing = db.panelDao().refsOf(currentPanel.id)

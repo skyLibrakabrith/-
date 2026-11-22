@@ -56,18 +56,18 @@ class MainActivity : ComponentActivity() {
 
         val app = application as ExtApplication
 
-        // 到点时的屏幕闪烁：把亮度临时拉高，配合界面的全屏覆盖层一起用
+        // 有未处理提醒时把亮度拉满，离开提醒后还原
         lifecycleScope.launch {
-            app.panelRunner.alerts.collect {
+            app.panelRunner.alerting.collect { ids ->
                 runCatching {
                     val attrs = window.attributes
-                    attrs.screenBrightness = 1f
+                    if (ids.isEmpty()) {
+                        attrs.screenBrightness =
+                            android.view.WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+                    } else {
+                        attrs.screenBrightness = 1f
+                    }
                     window.attributes = attrs
-                    kotlinx.coroutines.delay(1_800)
-                    val back = window.attributes
-                    back.screenBrightness =
-                        android.view.WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
-                    window.attributes = back
                 }
             }
         }
@@ -91,7 +91,7 @@ class MainActivity : ComponentActivity() {
                 Box(modifier = Modifier.fillMaxSize()) {
                     MainScaffold()
                     ScreenFlashOverlay(
-                        alerts = app.panelRunner.alerts,
+                        alerting = app.panelRunner.alerting,
                         modifier = Modifier.fillMaxSize(),
                     )
                 }

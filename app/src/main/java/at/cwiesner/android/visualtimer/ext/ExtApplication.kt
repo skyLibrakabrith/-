@@ -15,6 +15,7 @@ import at.cwiesner.android.visualtimer.ext.domain.DeadlineCalculator
 import at.cwiesner.android.visualtimer.ext.domain.PanelRunner
 import at.cwiesner.android.visualtimer.ext.domain.TimerRuntime
 import at.cwiesner.android.visualtimer.ext.service.AlertOverlayService
+import at.cwiesner.android.visualtimer.ext.service.TimerOverlayService
 import at.cwiesner.android.visualtimer.ext.settings.SettingsRepo
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -87,11 +88,10 @@ class ExtApplication : Application() {
     // ---------------- 到点提醒 ----------------
 
     private fun observeAlerts() {
+        // 1) 新到点：发通知 + 拉起全屏闪烁悬浮窗
         appScope.launch {
             panelRunner.alerts.collect { rt ->
-                runCatching { fireVibration(rt) }
                 runCatching { postNotification(rt) }
-                // 有悬浮窗权限时，用全屏闪烁悬浮窗提醒（应用不在前台也能看到）
                 runCatching {
                     AlertOverlayService.start(
                         this@ExtApplication,
@@ -101,6 +101,53 @@ class ExtApplication : Application() {
                 }
             }
         }
+
+        // 2) 持续震动：只要还有未处理的到点计时器就一直震
+        appScope.launch {
+            panelRunner.alerting.collect { ids ->
+                if (ids.isEmpty()) {
+                    runCatching { vibration.cancel() }
+                } else {
+                    runCatching { startLoopingVibration(ids) }
+                }
+            }
+        }
+
+        // 3) 迷你悬浮窗随运行中的计时器自动起停
+        appScope.launch {
+            panelRunner.runtimes.collect { map ->
+                val running = map.values.count { it.running }
+                val enabled = runCatching { settings.overlayEnabled.first() }.getOrDefault(false)
+                if (enabled && running > 0) {
+                    runCatching { TimerOverlayService.start(this@ExtApplication) }
+                } else if (running == 0) {
+                    runCatching { TimerOverlayService.stop(this@ExtApplication) }
+                }
+            }
+        }
+    }
+
+    /**
+     * 循环震动。
+     *
+     * 之前是「震一轮就停」，很容易错过。现在用 repeatIndex = 0 循环播放，
+     * 直到用户重置计时器 / 关闭悬浮窗。
+     */
+    private suspend fun startLoopingVibration(ids: Set<Long>) {
+        val enabled = runCatching { settings.vibrationEnabled.first() }.getOrDefault(true)
+        if (!enabled) return
+
+        val first = ids.firstNotNullOfOrNull { panelRunner.get(it) } ?: return
+        val profile: AlertProfile? = first.alertProfileId?.let { id ->
+            runCatching { database.alertProfileDao().get(id) }.getOrNull()
+        } ?: runCatching {
+            database.alertProfileDao().observeAllOnce().firstOrNull()
+        }.getOrNull()
+
+        val pattern = (profile?.vibrationPattern?.takeIf { it.isNotEmpty() }
+            ?: listOf(0L, 600L, 200L, 600L, 600L)).toLongArray()
+
+        vibration.play(pattern, repeatIndex = 0)
     }
 
     private suspend fun fireVibration(rt: TimerRuntime) {

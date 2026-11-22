@@ -55,15 +55,18 @@ private enum class DurationMode(val label: String) {
  */
 @Composable
 fun TimerEditDialog(
+    alertProfiles: List<at.cwiesner.android.visualtimer.ext.data.AlertProfile> = emptyList(),
     initialLabel: String = "",
     initialDuration: Long = 60_000L,
     title: String = "新建计时器",
     onDismiss: () -> Unit,
-    onConfirm: (label: String, durationMillis: Long, deadlineEpochMillis: Long?) -> Unit,
+    onConfirm: (label: String, durationMillis: Long, deadlineEpochMillis: Long?, alertProfileId: Long?) -> Unit,
 ) {
     var label by remember { mutableStateOf(initialLabel) }
     var duration by remember { mutableLongStateOf(initialDuration) }
     var mode by remember { mutableStateOf(DurationMode.Wheel) }
+    var alertProfileId by remember { mutableStateOf<Long?>(null) }
+    var showAlertPicker by remember { mutableStateOf(false) }
 
     // DDL 模式的状态
     var dateOffset by remember { mutableIntStateOf(0) }
@@ -111,6 +114,29 @@ fun TimerEditDialog(
                             modifier = Modifier.weight(1f),
                         ) { mode = m }
                     }
+                }
+
+                // 警报配置
+                val currentProfile = alertProfiles.firstOrNull { it.id == alertProfileId }
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(40.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(ExtColors.Surface)
+                        .clickable { showAlertPicker = true }
+                        .padding(horizontal = 12.dp),
+                    contentAlignment = Alignment.CenterStart,
+                ) {
+                    Text(
+                        text = if (currentProfile != null) {
+                            "提醒：" + currentProfile.name
+                        } else {
+                            "提醒：默认（点击选择）"
+                        },
+                        fontSize = 13.sp,
+                        color = ExtColors.TextSecondary,
+                    )
                 }
 
                 when (mode) {
@@ -183,15 +209,24 @@ fun TimerEditDialog(
                         DurationMode.Deadline -> {
                             val remain = (deadlineResult as DeadlineCalculator.Result.Ok)
                                 .remainingMillis
-                            onConfirm(label.trim(), remain, deadline)
+                            onConfirm(label.trim(), remain, deadline, alertProfileId)
                         }
-                        else -> onConfirm(label.trim(), duration, null)
+                        else -> onConfirm(label.trim(), duration, null, alertProfileId)
                     }
                 },
             ) { Text("确定") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     )
+
+    if (showAlertPicker) {
+        AlertProfilePickerDialog(
+            profiles = alertProfiles,
+            selectedId = alertProfileId,
+            onDismiss = { showAlertPicker = false },
+            onSelect = { alertProfileId = it },
+        )
+    }
 }
 
 @Composable
@@ -320,5 +355,77 @@ fun DeadlineDialog(
             ) { Text("开始") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
+}
+
+/**
+ * 警报配置选择器。
+ *
+ * 列出所有提醒配置，每条用波形条展示节奏 —— 用户不需要记「交响乐/心跳」
+ * 这类名字，看图形就能分辨。
+ */
+@Composable
+fun AlertProfilePickerDialog(
+    profiles: List<at.cwiesner.android.visualtimer.ext.data.AlertProfile>,
+    selectedId: Long?,
+    onDismiss: () -> Unit,
+    onSelect: (Long?) -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = ExtColors.PureBlack,
+        titleContentColor = ExtColors.TextPrimary,
+        title = { Text("选择提醒方式") },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                // 默认项
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(
+                            if (selectedId == null) ExtColors.PrimaryDim else ExtColors.Surface,
+                        )
+                        .clickable { onSelect(null); onDismiss() }
+                        .padding(12.dp),
+                ) {
+                    Text(
+                        "默认（用第一个配置）",
+                        fontSize = 13.sp,
+                        color = ExtColors.TextPrimary,
+                    )
+                }
+
+                profiles.forEach { profile ->
+                    val selected = profile.id == selectedId
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(if (selected) ExtColors.PrimaryDim else ExtColors.Surface)
+                            .clickable { onSelect(profile.id); onDismiss() }
+                            .padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Text(
+                            profile.name,
+                            fontSize = 13.sp,
+                            color = ExtColors.TextPrimary,
+                        )
+                        at.cwiesner.android.visualtimer.ext.ui.alerts.VibrationWaveform(
+                            pattern = profile.vibrationPattern,
+                            modifier = Modifier.fillMaxWidth(),
+                            height = 20.dp,
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
     )
 }

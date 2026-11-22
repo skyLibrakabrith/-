@@ -10,8 +10,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import at.cwiesner.android.visualtimer.ext.domain.TimerRuntime
-import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.isActive
 
 /**
@@ -28,18 +27,22 @@ import kotlinx.coroutines.isActive
  */
 @Composable
 fun ScreenFlashOverlay(
-    alerts: SharedFlow<TimerRuntime>,
+    alerting: StateFlow<Set<Long>>,
     modifier: Modifier = Modifier,
-    flashTimes: Int = 6,
 ) {
     val alpha = remember { Animatable(0f) }
 
-    LaunchedEffect(alerts) {
-        alerts.collect {
-            repeat(flashTimes) {
-                if (!isActive) return@collect
-                alpha.animateTo(0.85f, animationSpec = tween(durationMillis = 110))
-                alpha.animateTo(0f, animationSpec = tween(durationMillis = 170))
+    // 只要还有未处理的到点计时器，就一直闪；
+    // 用户重置 / 关闭提醒后集合清空，闪烁自然停止。
+    LaunchedEffect(alerting) {
+        alerting.collect { ids ->
+            if (ids.isEmpty()) {
+                alpha.animateTo(0f, animationSpec = tween(durationMillis = 120))
+            } else {
+                while (isActive && alerting.value.isNotEmpty()) {
+                    alpha.animateTo(0.85f, animationSpec = tween(durationMillis = 120))
+                    alpha.animateTo(0f, animationSpec = tween(durationMillis = 180))
+                }
             }
         }
     }
