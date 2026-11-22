@@ -55,6 +55,10 @@ interface PanelDao {
     @Query("SELECT * FROM panel_timers WHERE panelId = :panelId ORDER BY \"order\" ASC")
     fun observeRefs(panelId: Long): Flow<List<PanelTimerRef>>
 
+    /** 全量关联：按组总览时一次拿齐，避免逐面板查询。 */
+    @Query("SELECT * FROM panel_timers ORDER BY panelId ASC, \"order\" ASC")
+    fun observeAllRefs(): Flow<List<PanelTimerRef>>
+
     @Upsert
     suspend fun upsertRefs(refs: List<PanelTimerRef>)
 

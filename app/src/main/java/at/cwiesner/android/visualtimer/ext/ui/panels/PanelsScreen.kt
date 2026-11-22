@@ -116,12 +116,16 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
     var menuOpen by remember { mutableStateOf(false) }
 
     var listMode by remember { mutableStateOf(false) }
+    var overviewMode by remember { mutableStateOf(false) }
+    var showPanelManager by remember { mutableStateOf(false) }
     var focusTimerId by remember { mutableStateOf<Long?>(null) }
     var selectedIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
 
     // 编辑器需要「全部计时器」作为候选池
     val allTimers by remember { db.timerDao().observeAll() }
         .collectAsState(initial = emptyList<TimerItem>())
+    val allRefs by remember { db.panelDao().observeAllRefs() }
+        .collectAsState(initial = emptyList<PanelTimerRef>())
     val memberIds by remember(currentPanel?.id) {
         currentPanel?.let { p ->
             kotlinx.coroutines.flow.flow {
@@ -196,7 +200,15 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                                     onDismissRequest = { menuOpen = false },
                                 ) {
                                     DropdownMenuItem(
-                                        text = { Text("编辑面板") },
+                                        text = { Text("面板管理") },
+                                        onClick = { menuOpen = false; showPanelManager = true },
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text(if (overviewMode) "退出总览" else "按组总览") },
+                                        onClick = { menuOpen = false; overviewMode = !overviewMode },
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("编辑当前面板") },
                                         onClick = { menuOpen = false; showPanelEditor = true },
                                     )
                                     DropdownMenuItem(
@@ -272,6 +284,40 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                 .fillMaxSize()
                 .padding(inner),
         ) {
+            if (overviewMode) {
+                // 按组总览：所有面板作为「文件夹」平铺，像手机桌面
+                val byPanel: Map<Long, List<TimerItem>> = remember(allRefs, allTimers) {
+                    val timerById = allTimers.associateBy { it.id }
+                    allRefs.groupBy { it.panelId }.mapValues { (_, refs) ->
+                        refs.sortedBy { it.order }.mapNotNull { timerById[it.timerId] }
+                    }
+                }
+                LazyVerticalGrid(
+                    columns = GridCells.Fixed(2),
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    items(panels, key = { it.id }) { p ->
+                        PanelGroupTile(
+                            panel = p,
+                            timers = byPanel[p.id].orEmpty(),
+                            runtimeById = runtimeById,
+                            colorMode = colorMode,
+                            intervalMinutes = intervalMinutes,
+                            fractionDivisions = fractionDivisions,
+                            thresholdMinutes = thresholdMinutes,
+                            thresholdColors = thresholdColors,
+                            onClick = {
+                                val idx = panels.indexOfFirst { it.id == p.id }
+                                if (idx >= 0) selectedPanel = idx
+                                overviewMode = false
+                            },
+                        )
+                    }
+                }
+            } else {
             val focused = focusTimerId?.let { id -> timers.firstOrNull { it.id == id } }
             if (focused != null) {
                 TimerFocusScreen(
@@ -392,7 +438,48 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                     }
                 }
             }
+            }   // end else (非总览)
         }
+    }
+
+    if (showPanelManager) {
+        // 每个面板的 (成员数, 运行中数)
+        val counts = remember(allRefs, runtimeMap) {
+            allRefs.groupBy { it.panelId }.mapValues { (_, refs) ->
+                refs.size to refs.count { runtimeMap[it.timerId]?.running == true }
+            }
+        }
+        PanelManagerDialog(
+            panels = panels,
+            counts = counts,
+            onDismiss = { showPanelManager = false },
+            onOpen = { opened ->
+                val idx = panels.indexOfFirst { it.id == opened.id }
+                if (idx >= 0) selectedPanel = idx
+                showPanelManager = false
+            },
+            onCreate = { name ->
+                scope.launch {
+                    db.panelDao().upsert(Panel(name = name, sortOrder = panels.size))
+                    selectedPanel = panels.size
+                    showPanelManager = false
+                    toast("面板「" + name + "」已创建")
+                }
+            },
+            onRename = { target, name ->
+                scope.launch {
+                    db.panelDao().upsert(target.copy(name = name))
+                    toast("已改名为「" + name + "」")
+                }
+            },
+            onDelete = { target ->
+                scope.launch {
+                    db.panelDao().deleteById(target.id)
+                    selectedPanel = 0
+                    toast("面板「" + target.name + "」已删除")
+                }
+            },
+        )
     }
 
     if (showNewPanel) {
