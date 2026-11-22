@@ -93,6 +93,7 @@ class PanelRunner(private val scope: CoroutineScope) {
     fun start(timer: TimerItem) {
         _runtimes.value = _runtimes.value + (
             timer.id to TimerRuntime(
+                // 全新开始：超时计数归零
                 timerId = timer.id,
                 label = timer.label,
                 totalMillis = timer.durationMillis,
@@ -164,10 +165,20 @@ class PanelRunner(private val scope: CoroutineScope) {
         _runtimes.value = _runtimes.value + (timerId to r.copy(running = false))
     }
 
+    /**
+     * 重置到原始时长。
+     *
+     * 必须同时清掉 [TimerRuntime.overdueMillis] —— 否则「超时后重置」会把
+     * 剩余时长还原、却仍然停在超时态，界面继续显示 +MM:SS，看起来像没重置。
+     */
     fun reset(timerId: Long) {
         val r = _runtimes.value[timerId] ?: return
         _runtimes.value = _runtimes.value + (
-            timerId to r.copy(remainingMillis = r.totalMillis, running = false)
+            timerId to r.copy(
+                remainingMillis = r.totalMillis,
+                overdueMillis = 0L,
+                running = false,
+            )
             )
     }
 

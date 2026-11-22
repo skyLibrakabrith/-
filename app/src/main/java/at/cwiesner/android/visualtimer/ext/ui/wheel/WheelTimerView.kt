@@ -71,6 +71,14 @@ fun PieTimerView(
     fractionDivisions: Int = 4,
     /** 到点后的超时正计时；>0 时中央显示 +MM:SS 并转红色。 */
     overdueMillis: Long = 0L,
+    /**
+     * true 时盘面填满父容器而不是强制正方形。
+     *
+     * 网格单元高度有限，强制 aspectRatio(1f) 会把内容顶出边界，
+     * 造成中央时间被裁掉一截。Canvas 内部按 minDimension 取直径，
+     * 所以填满容器也不会让圆变形。
+     */
+    fillParent: Boolean = false,
 ) {
     val stepMillis = stepMinutes * 60_000L
     val maxMillis = maxMinutes * 60_000L
@@ -102,9 +110,11 @@ fun PieTimerView(
     else ((remainingMillis % subUnit).toFloat() / subUnit).coerceIn(0f, 1f)
 
     Box(
-        modifier = modifier
-            .fillMaxWidth()
-            .aspectRatio(1f),
+        modifier = if (fillParent) {
+            modifier.fillMaxSize()
+        } else {
+            modifier.fillMaxWidth().aspectRatio(1f)
+        },
         contentAlignment = Alignment.Center,
     ) {
         Canvas(

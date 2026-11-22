@@ -345,18 +345,23 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                                     val cur = runner.snapshot().firstOrNull { it.timerId == timer.id }
                                     val name = timer.label ?: "未命名"
                                     when {
+                                        // 未启动
                                         cur == null -> {
                                             runner.start(timer)
                                             toast("开始：$name")
                                         }
-                                        cur.running -> {
-                                            runner.stop(timer.id)
-                                            toast("暂停：$name")
-                                        }
+                                        // 已超时：点一下直接回到原始时长（优先级高于暂停，
+                                        // 否则用户以为点了没反应，实际只是暂停了超时计数）
                                         cur.expired -> {
                                             runner.reset(timer.id)
                                             toast("已重置：$name")
                                         }
+                                        // 运行中且未超时 → 暂停
+                                        cur.running -> {
+                                            runner.stop(timer.id)
+                                            toast("暂停：$name")
+                                        }
+                                        // 已暂停 → 继续
                                         else -> {
                                             runner.start(timer)
                                             toast("继续：$name")
@@ -522,23 +527,31 @@ private fun TimerCell(
                     .fillMaxSize()
                     .padding(6.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center,
+                verticalArrangement = Arrangement.Top,
             ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    contentAlignment = Alignment.Center,
+                ) {
                 PieTimerView(
                     totalMillis = total,
                     remainingMillis = remain,
                     running = running,
                     onDurationChange = null,
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxSize(),
                     maxMinutes = 60,
-                    centerFontSize = 22f,
+                    centerFontSize = 20f,
                     thresholdMinutes = thresholdMinutes,
                     thresholdColors = thresholdColors,
                     colorMode = colorMode,
                     intervalMinutes = intervalMinutes,
                     fractionDivisions = fractionDivisions,
                     overdueMillis = runtime?.overdueMillis ?: 0L,
+                    fillParent = true,
                 )
+                }
                 Text(
                     text = timer.label ?: "未命名",
                     fontSize = 11.sp,
