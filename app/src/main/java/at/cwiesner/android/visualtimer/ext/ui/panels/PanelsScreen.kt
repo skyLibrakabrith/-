@@ -148,6 +148,13 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
         }
     }
 
+    // 全部序列（编辑器里分配面板时用）
+    val allSequences by remember { db.sequenceDao().observeAll() }
+        .collectAsState(initial = emptyList<StepSequence>())
+    val sequencePanelMap = remember(allSequences) {
+        allSequences.associate { it.id to it.panelId }
+    }
+
     // 归属当前面板的序列
     val panelSequences by remember(currentPanel?.id) {
         currentPanel?.let { db.sequenceDao().observeByPanel(it.id) } ?: flowOf(emptyList())
