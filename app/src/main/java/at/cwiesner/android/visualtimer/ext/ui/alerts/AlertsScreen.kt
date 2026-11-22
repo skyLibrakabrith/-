@@ -34,7 +34,10 @@ import kotlinx.coroutines.launch
  * 点击卡片试听（震动 + 屏幕闪烁），开关直接改库。
  */
 @Composable
-fun AlertsScreen(modifier: Modifier = Modifier) {
+fun AlertsScreen(
+    modifier: Modifier = Modifier,
+    onPreviewFlash: () -> Unit = {},
+) {
     val context = LocalContext.current
     val app = context.applicationContext as ExtApplication
     val db = app.database
@@ -56,7 +59,10 @@ fun AlertsScreen(modifier: Modifier = Modifier) {
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable { dispatcher?.previewVibration(profile.vibrationPattern) },
+                    .clickable {
+                        dispatcher?.previewVibration(profile.vibrationPattern)
+                        onPreviewFlash()
+                    },
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text(profile.name, style = MaterialTheme.typography.titleSmall)

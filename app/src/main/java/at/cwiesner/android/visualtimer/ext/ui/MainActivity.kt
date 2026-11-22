@@ -54,15 +54,21 @@ class MainActivity : ComponentActivity() {
 
         val settings = at.cwiesner.android.visualtimer.ext.settings.SettingsRepo(this)
 
-        // 到点时的屏幕闪烁：需要本 Activity 的 window，所以只能在前台做
         val app = application as ExtApplication
-        val flashDispatcher = at.cwiesner.android.visualtimer.ext.alarm.AlertDispatcher(
-            this,
-            lifecycleScope,
-        )
+
+        // 到点时的屏幕闪烁：把亮度临时拉高，配合界面的全屏覆盖层一起用
         lifecycleScope.launch {
             app.panelRunner.alerts.collect {
-                runCatching { flashDispatcher.flashOnly(times = 6) }
+                runCatching {
+                    val attrs = window.attributes
+                    attrs.screenBrightness = 1f
+                    window.attributes = attrs
+                    kotlinx.coroutines.delay(1_800)
+                    val back = window.attributes
+                    back.screenBrightness =
+                        android.view.WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+                    window.attributes = back
+                }
             }
         }
 
@@ -82,7 +88,13 @@ class MainActivity : ComponentActivity() {
                 initial = at.cwiesner.android.visualtimer.ext.settings.ThemeMode.PureBlack,
             )
             ExtTheme(mode = mode) {
-                MainScaffold()
+                Box(modifier = Modifier.fillMaxSize()) {
+                    MainScaffold()
+                    ScreenFlashOverlay(
+                        alerts = app.panelRunner.alerts,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
             }
         }
     }
