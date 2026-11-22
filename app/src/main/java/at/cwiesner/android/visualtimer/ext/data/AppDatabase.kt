@@ -78,6 +78,12 @@ interface SequenceDao {
     @Query("SELECT * FROM sequences ORDER BY sortOrder ASC, id ASC")
     fun observeAll(): Flow<List<StepSequence>>
 
+    @Query("SELECT * FROM sequences WHERE panelId = :panelId ORDER BY sortOrder ASC, id ASC")
+    fun observeByPanel(panelId: Long): Flow<List<StepSequence>>
+
+    @Query("SELECT * FROM sequences WHERE panelId IS NULL ORDER BY sortOrder ASC, id ASC")
+    fun observeUnassigned(): Flow<List<StepSequence>>
+
     @Query("SELECT * FROM sequences ORDER BY sortOrder ASC, id ASC")
     suspend fun observeAllOnce(): List<StepSequence>
 
@@ -169,7 +175,7 @@ interface GroupDao {
         TimerGroup::class,
         GroupMember::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -191,6 +197,15 @@ abstract class AppDatabase : RoomDatabase() {
             override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE timers ADD COLUMN kind TEXT NOT NULL DEFAULT 'Countdown'")
                 db.execSQL("ALTER TABLE timers ADD COLUMN deadlineEpochMillis INTEGER")
+            }
+        }
+
+        /**
+         * v3 → v4：序列增加所属面板。纯加法。
+         */
+        private val MIGRATION_3_4 = object : androidx.room.migration.Migration(3, 4) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE sequences ADD COLUMN panelId INTEGER")
             }
         }
 
@@ -222,7 +237,7 @@ abstract class AppDatabase : RoomDatabase() {
                     context.applicationContext,
                     AppDatabase::class.java,
                     "visual-timer-ext.db",
-                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                     .fallbackToDestructiveMigration()
                     .build()
                     .also { INSTANCE = it }

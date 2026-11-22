@@ -38,4 +38,9 @@ data class StepSequence(
     val timeoutMillis: Long = 0L,
     val timeoutAutoAdvance: Boolean = false,
     val sortOrder: Int = 0,
+    /**
+     * 所属面板；null 表示还没归属任何面板（在序列页单独管理）。
+     * 归属后它会作为一张卡片出现在该面板的网格里。
+     */
+    val panelId: Long? = null,
 )

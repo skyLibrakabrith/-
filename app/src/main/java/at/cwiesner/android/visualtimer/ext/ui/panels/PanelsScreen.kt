@@ -65,9 +65,12 @@ import at.cwiesner.android.visualtimer.ext.data.Panel
 import at.cwiesner.android.visualtimer.ext.data.PanelTimerRef
 import at.cwiesner.android.visualtimer.ext.data.GroupMember
 import at.cwiesner.android.visualtimer.ext.data.TimerGroup
+import at.cwiesner.android.visualtimer.ext.data.Step
+import at.cwiesner.android.visualtimer.ext.data.StepSequence
 import at.cwiesner.android.visualtimer.ext.data.TimerItem
 import at.cwiesner.android.visualtimer.ext.domain.DeadlineCalculator
 import at.cwiesner.android.visualtimer.ext.domain.PanelRunner
+import at.cwiesner.android.visualtimer.ext.domain.StepSequenceEngine
 import at.cwiesner.android.visualtimer.ext.domain.TimerRuntime
 import at.cwiesner.android.visualtimer.ext.settings.SettingsRepo
 import at.cwiesner.android.visualtimer.ext.ui.ExtColors
@@ -138,6 +141,25 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
         allGroupMembers.groupBy { it.groupId }.mapValues { (_, list) ->
             list.sortedBy { it.order }.map { it.timerId }
         }
+    }
+
+    // 归属当前面板的序列
+    val panelSequences by remember(currentPanel?.id) {
+        currentPanel?.let { db.sequenceDao().observeByPanel(it.id) } ?: flowOf(emptyList())
+    }.collectAsState(initial = emptyList<StepSequence>())
+
+    // 引擎状态：订阅以便序列卡片实时刷新
+    val enginePhase by app.sequenceEngine.phase.collectAsState()
+    val engineActiveId = app.sequenceEngine.activeSequenceId
+
+    // 当前面板序列的步骤（用于卡片显示阶段数）
+    var stepsBySequence by remember { mutableStateOf<Map<Long, List<Step>>>(emptyMap()) }
+    LaunchedEffect(panelSequences) {
+        val map = mutableMapOf<Long, List<Step>>()
+        panelSequences.forEach { sq ->
+            map[sq.id] = runCatching { db.sequenceDao().steps(sq.id) }.getOrDefault(emptyList())
+        }
+        stepsBySequence = map
     }
 
     // 已归属某个组的计时器：网格里不再单独显示
@@ -369,6 +391,32 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
+                    // 序列：每张卡片占一个格子
+                    items(panelSequences, key = { sq -> "s" + sq.id }) { sq ->
+                        val stepList = stepsBySequence[sq.id].orEmpty()
+                        val active = engineActiveId == sq.id
+                        SequenceCell(
+                            sequence = sq,
+                            steps = stepList,
+                            phase = if (active) enginePhase else StepSequenceEngine.Phase.Idle,
+                            isActive = active,
+                            onClick = {
+                                scope.launch {
+                                    if (active) {
+                                        app.sequenceEngine.stop()
+                                        toast("已停止序列「" + sq.name + "」")
+                                    } else if (stepList.isEmpty()) {
+                                        toast("这个序列还没有阶段，去序列页编辑")
+                                    } else {
+                                        app.sequenceEngine.start(sq, stepList)
+                                        toast("开始序列「" + sq.name + "」")
+                                    }
+                                }
+                            },
+                            onLongClick = { showPanelEditor = true },
+                        )
+                    }
+
                     // 先渲染组（每组一个格子，与单计时器同尺寸）
                     items(groups, key = { g -> "g" + g.id }) { group ->
                         val memberIdsOfGroup = groupMembersMap[group.id].orEmpty()
@@ -523,11 +571,14 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
 
     if (showPanelEditor && currentPanel != null) {
         PanelEditorDialog(
+            panelId = currentPanel.id,
             panelName = currentPanel.name,
             allTimers = allTimers,
             memberIds = memberIds,
             groups = groups,
             groupMembers = groupMembersMap,
+            allSequences = allSequences,
+            sequencePanelMap = sequencePanelMap,
             onDismiss = { showPanelEditor = false },
             onSave = { name, ids ->
                 showPanelEditor = false
@@ -579,6 +630,15 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                     db.groupDao().clearMembers(target.id)
                     db.groupDao().deleteGroup(target.id)
                     toast("已删除组「" + target.name + "」")
+                }
+            },
+            onToggleSequence = { seqId, on ->
+                scope.launch {
+                    val target = allSequences.firstOrNull { it.id == seqId } ?: return@launch
+                    db.sequenceDao().upsert(
+                        target.copy(panelId = if (on) currentPanel.id else null),
+                    )
+                    toast(if (on) "已加入面板" else "已移出面板")
                 }
             },
         )

@@ -50,11 +50,14 @@ fun SequenceEditorScreen(
     onSave: (name: String, timeoutMillis: Long, steps: List<Pair<String, Long>>) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    var name by remember { mutableStateOf(sequence.name) }
-    var timeout by remember { mutableLongStateOf(sequence.timeoutMillis) }
-    var timeoutEnabled by remember { mutableStateOf(sequence.timeoutMillis > 0L) }
-    // 用 (label, duration) 列表维护，保存时整体重建
-    var draft by remember {
+    // 全部以 sequence.id 为 key —— 否则切换到另一个序列时，
+    // remember 会沿用上一个序列的草稿，保存出来内容就串了
+    var name by remember(sequence.id) { mutableStateOf(sequence.name) }
+    var timeout by remember(sequence.id) { mutableLongStateOf(sequence.timeoutMillis) }
+    var timeoutEnabled by remember(sequence.id) {
+        mutableStateOf(sequence.timeoutMillis > 0L)
+    }
+    var draft by remember(sequence.id) {
         mutableStateOf(steps.map { (it.label ?: "") to it.durationMillis })
     }
     var showAddStep by remember { mutableStateOf(false) }

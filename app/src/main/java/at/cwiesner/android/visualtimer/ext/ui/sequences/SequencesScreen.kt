@@ -54,6 +54,10 @@ fun SequencesScreen(modifier: Modifier = Modifier) {
     val db = app.database
     val scope = rememberCoroutineScope()
 
+    fun toastText(msg: String) {
+        android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
+    }
+
     val sequences by remember { db.sequenceDao().observeAll() }
         .collectAsState(initial = emptyList<StepSequence>())
 
@@ -83,10 +87,11 @@ fun SequencesScreen(modifier: Modifier = Modifier) {
             onDismiss = { editing = null },
             onSave = { name, timeout, stepPairs ->
                 scope.launch {
+                    // 新建时 id=0，upsert 会插入并返回真实 id
                     val seqId = db.sequenceDao().upsert(
                         editTarget.copy(name = name, timeoutMillis = timeout),
                     )
-                    // 重建步骤：先删旧的
+                    // 重建步骤：先删旧的再按新草稿写入
                     db.sequenceDao().steps(seqId).forEach {
                         db.sequenceDao().deleteStep(it.id)
                     }
@@ -101,6 +106,7 @@ fun SequencesScreen(modifier: Modifier = Modifier) {
                         )
                     }
                     editing = null
+                    toastText("序列「" + name + "」已保存，" + stepPairs.size + " 个阶段")
                 }
             },
             modifier = modifier,
@@ -131,13 +137,9 @@ fun SequencesScreen(modifier: Modifier = Modifier) {
         floatingActionButton = {
             ExtendedFloatingActionButton(
                 onClick = {
-                    scope.launch {
-                        val id = db.sequenceDao().upsert(StepSequence(name = "新序列"))
-                        db.sequenceDao().get(id)?.let {
-                            editingSteps = emptyList()
-                            editing = it
-                        }
-                    }
+                    // 不立刻写库：取消编辑时不会留下空记录
+                    editingSteps = emptyList()
+                    editing = StepSequence(id = 0L, name = "新序列")
                 },
                 icon = { Icon(Icons.Filled.Add, contentDescription = null) },
                 text = { Text("新建序列") },

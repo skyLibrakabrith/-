@@ -53,16 +53,20 @@ import at.cwiesner.android.visualtimer.ext.ui.ExtColors
  */
 @Composable
 fun PanelEditorDialog(
+    panelId: Long,
     panelName: String,
     allTimers: List<TimerItem>,
     memberIds: Set<Long>,
     groups: List<TimerGroup>,
     groupMembers: Map<Long, List<Long>>,
+    allSequences: List<at.cwiesner.android.visualtimer.ext.data.StepSequence>,
+    sequencePanelMap: Map<Long, Long?>,
     onDismiss: () -> Unit,
     onSave: (name: String, memberIds: Set<Long>) -> Unit,
     onDelete: () -> Unit,
     onCreateGroup: (name: String, timerIds: List<Long>) -> Unit,
     onDeleteGroup: (TimerGroup) -> Unit,
+    onToggleSequence: (Long, Boolean) -> Unit,
 ) {
     var name by remember { mutableStateOf(panelName) }
     var selected by remember { mutableStateOf(memberIds) }
@@ -206,6 +210,55 @@ fun PanelEditorDialog(
                                 fontSize = 11.sp,
                                 color = if (owner != null) ExtColors.Amber else ExtColors.TextDim,
                             )
+                        }
+                    }
+                }
+
+                // ---- 序列 ----
+                if (allSequences.isNotEmpty()) {
+                    Text(
+                        "序列（勾选加入本面板）",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = ExtColors.TextSecondary,
+                    )
+                    allSequences.forEach { sq ->
+                        val belongsHere = sequencePanelMap[sq.id] == panelId
+                        val belongsElsewhere =
+                            sequencePanelMap[sq.id] != null && !belongsHere
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(ExtColors.Surface)
+                                .clickable {
+                                    onToggleSequence(sq.id, !belongsHere)
+                                }
+                                .padding(horizontal = 8.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Checkbox(
+                                checked = belongsHere || belongsElsewhere,
+                                onCheckedChange = { on -> onToggleSequence(sq.id, on) },
+                            )
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    sq.name,
+                                    fontSize = 13.sp,
+                                    color = ExtColors.TextPrimary,
+                                )
+                                Text(
+                                    if (belongsHere) "已在本面板"
+                                    else if (belongsElsewhere) "已在其他面板（勾选会移动过来）"
+                                    else "未分配",
+                                    fontSize = 11.sp,
+                                    color = when {
+                                        belongsHere -> ExtColors.Palette[2]
+                                        belongsElsewhere -> ExtColors.Amber
+                                        else -> ExtColors.TextDim
+                                    },
+                                )
+                            }
                         }
                     }
                 }

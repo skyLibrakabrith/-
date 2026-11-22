@@ -76,6 +76,10 @@ class StepSequenceEngine(
     val phase: StateFlow<Phase> = _phase.asStateFlow()
 
     private var tickJob: Job? = null
+    /** 当前正在跑的序列 id；null 表示空闲。界面据此判断哪张序列卡片处于活动状态。 */
+    var activeSequenceId: Long? = null
+        private set
+
     private var sequence: StepSequence? = null
     private var steps: List<Step> = emptyList()
 
@@ -88,6 +92,7 @@ class StepSequenceEngine(
         }
         this.sequence = seq
         this.steps = steps
+        this.activeSequenceId = seq.id
         runStep(0)
     }
 
@@ -124,6 +129,7 @@ class StepSequenceEngine(
     fun stop() {
         tickJob?.cancel()
         tickJob = null
+        activeSequenceId = null
         _phase.value = Phase.Idle
     }
 
