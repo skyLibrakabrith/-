@@ -127,6 +127,36 @@ interface AlertProfileDao {
     suspend fun count(): Int
 }
 
+@Dao
+interface GroupDao {
+    @Query("SELECT * FROM timer_groups WHERE panelId = :panelId ORDER BY \"order\" ASC, id ASC")
+    fun observeGroups(panelId: Long): Flow<List<TimerGroup>>
+
+    @Query("SELECT * FROM timer_groups")
+    fun observeAllGroups(): Flow<List<TimerGroup>>
+
+    @Upsert
+    suspend fun upsertGroup(group: TimerGroup): Long
+
+    @Query("DELETE FROM timer_groups WHERE id = :id")
+    suspend fun deleteGroup(id: Long)
+
+    @Query("SELECT * FROM group_members WHERE groupId = :groupId ORDER BY \"order\" ASC")
+    suspend fun members(groupId: Long): List<GroupMember>
+
+    @Query("SELECT * FROM group_members")
+    fun observeAllMembers(): Flow<List<GroupMember>>
+
+    @Upsert
+    suspend fun upsertMembers(members: List<GroupMember>)
+
+    @Query("DELETE FROM group_members WHERE groupId = :groupId")
+    suspend fun clearMembers(groupId: Long)
+
+    @Query("SELECT t.* FROM timers t INNER JOIN group_members m ON t.id = m.timerId WHERE m.groupId = :groupId ORDER BY m.\"order\" ASC")
+    suspend fun memberTimers(groupId: Long): List<TimerItem>
+}
+
 @androidx.room.TypeConverters(Converters::class, TimerKindConverter::class)
 @Database(
     entities = [
@@ -136,8 +166,10 @@ interface AlertProfileDao {
         Step::class,
         StepSequence::class,
         AlertProfile::class,
+        TimerGroup::class,
+        GroupMember::class,
     ],
-    version = 2,
+    version = 3,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -145,6 +177,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun panelDao(): PanelDao
     abstract fun sequenceDao(): SequenceDao
     abstract fun alertProfileDao(): AlertProfileDao
+    abstract fun groupDao(): GroupDao
 
     companion object {
         @Volatile
@@ -161,13 +194,35 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v2 → v3：新增「组」两张表。纯加法，不动已有数据。
+         */
+        private val MIGRATION_2_3 = object : androidx.room.migration.Migration(2, 3) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `timer_groups` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`panelId` INTEGER NOT NULL, " +
+                        "`name` TEXT NOT NULL, " +
+                        "`order` INTEGER NOT NULL)",
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `group_members` (" +
+                        "`groupId` INTEGER NOT NULL, " +
+                        "`timerId` INTEGER NOT NULL, " +
+                        "`order` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`groupId`, `timerId`))",
+                )
+            }
+        }
+
         fun get(context: Context): AppDatabase =
             INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
                     context.applicationContext,
                     AppDatabase::class.java,
                     "visual-timer-ext.db",
-                ).addMigrations(MIGRATION_1_2)
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                     .fallbackToDestructiveMigration()
                     .build()
                     .also { INSTANCE = it }

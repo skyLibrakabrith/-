@@ -63,6 +63,8 @@ import androidx.compose.ui.unit.sp
 import at.cwiesner.android.visualtimer.ext.ExtApplication
 import at.cwiesner.android.visualtimer.ext.data.Panel
 import at.cwiesner.android.visualtimer.ext.data.PanelTimerRef
+import at.cwiesner.android.visualtimer.ext.data.GroupMember
+import at.cwiesner.android.visualtimer.ext.data.TimerGroup
 import at.cwiesner.android.visualtimer.ext.data.TimerItem
 import at.cwiesner.android.visualtimer.ext.domain.DeadlineCalculator
 import at.cwiesner.android.visualtimer.ext.domain.PanelRunner
@@ -116,7 +118,6 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
     var menuOpen by remember { mutableStateOf(false) }
 
     var listMode by remember { mutableStateOf(false) }
-    var overviewMode by remember { mutableStateOf(false) }
     var showPanelManager by remember { mutableStateOf(false) }
     var focusTimerId by remember { mutableStateOf<Long?>(null) }
     var selectedIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
@@ -126,6 +127,23 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
         .collectAsState(initial = emptyList<TimerItem>())
     val allRefs by remember { db.panelDao().observeAllRefs() }
         .collectAsState(initial = emptyList<PanelTimerRef>())
+
+    // 当前面板的组与成员关系
+    val groups by remember(currentPanel?.id) {
+        currentPanel?.let { db.groupDao().observeGroups(it.id) } ?: flowOf(emptyList())
+    }.collectAsState(initial = emptyList<TimerGroup>())
+    val allGroupMembers by remember { db.groupDao().observeAllMembers() }
+        .collectAsState(initial = emptyList<GroupMember>())
+    val groupMembersMap = remember(allGroupMembers) {
+        allGroupMembers.groupBy { it.groupId }.mapValues { (_, list) ->
+            list.sortedBy { it.order }.map { it.timerId }
+        }
+    }
+
+    // 已归属某个组的计时器：网格里不再单独显示
+    val groupedTimerIds = remember(allGroupMembers) {
+        allGroupMembers.map { it.timerId }.toSet()
+    }
     val memberIds by remember(currentPanel?.id) {
         currentPanel?.let { p ->
             kotlinx.coroutines.flow.flow {
@@ -204,10 +222,6 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                                         onClick = { menuOpen = false; showPanelManager = true },
                                     )
                                     DropdownMenuItem(
-                                        text = { Text(if (overviewMode) "退出总览" else "按组总览") },
-                                        onClick = { menuOpen = false; overviewMode = !overviewMode },
-                                    )
-                                    DropdownMenuItem(
                                         text = { Text("编辑当前面板") },
                                         onClick = { menuOpen = false; showPanelEditor = true },
                                     )
@@ -284,40 +298,7 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                 .fillMaxSize()
                 .padding(inner),
         ) {
-            if (overviewMode) {
-                // 按组总览：所有面板作为「文件夹」平铺，像手机桌面
-                val byPanel: Map<Long, List<TimerItem>> = remember(allRefs, allTimers) {
-                    val timerById = allTimers.associateBy { it.id }
-                    allRefs.groupBy { it.panelId }.mapValues { (_, refs) ->
-                        refs.sortedBy { it.order }.mapNotNull { timerById[it.timerId] }
-                    }
-                }
-                LazyVerticalGrid(
-                    columns = GridCells.Fixed(2),
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(12.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    items(panels, key = { it.id }) { p ->
-                        PanelGroupTile(
-                            panel = p,
-                            timers = byPanel[p.id].orEmpty(),
-                            runtimeById = runtimeById,
-                            colorMode = colorMode,
-                            intervalMinutes = intervalMinutes,
-                            fractionDivisions = fractionDivisions,
-                            thresholdMinutes = thresholdMinutes,
-                            thresholdColors = thresholdColors,
-                            onClick = {
-                                val idx = panels.indexOfFirst { it.id == p.id }
-                                if (idx >= 0) selectedPanel = idx
-                                overviewMode = false
-                            },
-                        )
-                    }
-                }
-            } else {
+            run {
             val focused = focusTimerId?.let { id -> timers.firstOrNull { it.id == id } }
             if (focused != null) {
                 TimerFocusScreen(
@@ -388,7 +369,45 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    items(timers, key = { it.id }) { timer ->
+                    // 先渲染组（每组一个格子，与单计时器同尺寸）
+                    items(groups, key = { g -> "g" + g.id }) { group ->
+                        val memberIdsOfGroup = groupMembersMap[group.id].orEmpty()
+                        val memberTimers = memberIdsOfGroup.mapNotNull { id ->
+                            timers.firstOrNull { it.id == id }
+                        }
+                        TimerGroupCell(
+                            group = group,
+                            members = memberTimers,
+                            runtimeById = runtimeById,
+                            colorMode = colorMode,
+                            intervalMinutes = intervalMinutes,
+                            fractionDivisions = fractionDivisions,
+                            thresholdMinutes = thresholdMinutes,
+                            thresholdColors = thresholdColors,
+                            onClick = {
+                                // 点组：整体启动/暂停组内所有计时器
+                                scope.launch {
+                                    val snap = runner.snapshot()
+                                    val anyRunning = memberTimers.any { mt ->
+                                        snap.firstOrNull { rt -> rt.timerId == mt.id }?.running == true
+                                    }
+                                    if (anyRunning) {
+                                        memberTimers.forEach { runner.stop(it.id) }
+                                        toast("已暂停组「" + group.name + "」")
+                                    } else {
+                                        memberTimers.forEach { t ->
+                                            runner.clear(t.id)
+                                            runner.start(t)
+                                        }
+                                        toast("已启动组「" + group.name + "」")
+                                    }
+                                }
+                            },
+                            onLongClick = { showPanelEditor = true },
+                        )
+                    }
+                    // 再渲染没被编组的单计时器
+                    items(timers.filter { it.id !in groupedTimerIds }, key = { it.id }) { timer ->
                         TimerCell(
                             timer = timer,
                             runtime = runtimeById[timer.id],
@@ -438,7 +457,7 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                     }
                 }
             }
-            }   // end else (非总览)
+            }
         }
     }
 
@@ -507,6 +526,8 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
             panelName = currentPanel.name,
             allTimers = allTimers,
             memberIds = memberIds,
+            groups = groups,
+            groupMembers = groupMembersMap,
             onDismiss = { showPanelEditor = false },
             onSave = { name, ids ->
                 showPanelEditor = false
@@ -529,6 +550,35 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                     db.panelDao().deleteById(currentPanel.id)
                     selectedPanel = 0
                     toast("面板已删除")
+                }
+            },
+            onCreateGroup = { gname, timerIds ->
+                scope.launch {
+                    val gid = db.groupDao().upsertGroup(
+                        TimerGroup(panelId = currentPanel.id, name = gname, order = groups.size),
+                    )
+                    // 一个计时器只能属于一个组：先从旧组里摘掉
+                    timerIds.forEach { tid ->
+                        allGroupMembers.filter { it.timerId == tid }.forEach { old ->
+                            db.groupDao().clearMembers(old.groupId)
+                            db.groupDao().upsertMembers(
+                                allGroupMembers
+                                    .filter { it.groupId == old.groupId && it.timerId != tid }
+                                    .map { GroupMember(it.groupId, it.timerId, it.order) },
+                            )
+                        }
+                    }
+                    db.groupDao().upsertMembers(
+                        timerIds.mapIndexed { idx, tid -> GroupMember(gid, tid, idx) },
+                    )
+                    toast("已创建组「" + gname + "」，" + timerIds.size + " 个成员")
+                }
+            },
+            onDeleteGroup = { target ->
+                scope.launch {
+                    db.groupDao().clearMembers(target.id)
+                    db.groupDao().deleteGroup(target.id)
+                    toast("已删除组「" + target.name + "」")
                 }
             },
         )
