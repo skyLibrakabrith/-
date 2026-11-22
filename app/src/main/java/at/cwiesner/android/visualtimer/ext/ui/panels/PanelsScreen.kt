@@ -120,6 +120,7 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
     var showPanelEditor by remember { mutableStateOf(false) }
     var editingGroupId by remember { mutableStateOf<Long?>(null) }
     var editingSequenceId by remember { mutableStateOf<Long?>(null) }
+    var showOrderDialog by remember { mutableStateOf(false) }
     var showNewTimer by remember { mutableStateOf(false) }
     var showDeadline by remember { mutableStateOf(false) }
     var menuOpen by remember { mutableStateOf(false) }
@@ -286,6 +287,10 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                                         onClick = { menuOpen = false; showPanelManager = true },
                                     )
                                     DropdownMenuItem(
+                                        text = { Text("调整顺序") },
+                                        onClick = { menuOpen = false; showOrderDialog = true },
+                                    )
+                                    DropdownMenuItem(
                                         text = { Text("编辑当前面板") },
                                         onClick = { menuOpen = false; showPanelEditor = true },
                                     )
@@ -427,7 +432,13 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                 )
 
                 else -> LazyVerticalGrid(
-                    columns = GridCells.Fixed(gridColumns),
+                    columns = GridCells.Fixed(
+                        if (at.cwiesner.android.visualtimer.ext.ui.isLandscape()) {
+                            (gridColumns + 1).coerceAtMost(4)
+                        } else {
+                            gridColumns
+                        },
+                    ),
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(12.dp),
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -500,7 +511,10 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                         )
                     }
                     // 再渲染没被编组的单计时器
-                    items(timers.filter { it.id !in groupedTimerIds }, key = { it.id }) { timer ->
+                    items(
+                        timers.filter { it.id !in groupedTimerIds }.sortedBy { it.position },
+                        key = { it.id },
+                    ) { timer ->
                         TimerCell(
                             timer = timer,
                             runtime = runtimeById[timer.id],
@@ -552,6 +566,54 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
             }
             }
         }
+    }
+
+    // ---- 调整顺序 ----
+    if (showOrderDialog && currentPanel != null) {
+        // 把序列 / 组 / 未成组计时器拍平成统一列表
+        val entries = remember(panelSequences, groups, timers, groupedTimerIds) {
+            val list = mutableListOf<PanelEntry>()
+            panelSequences.forEach {
+                list += PanelEntry(EntryKind.Sequence, it.id, it.name, it.sortOrder)
+            }
+            groups.forEach {
+                list += PanelEntry(EntryKind.Group, it.id, it.name, it.order)
+            }
+            timers.filter { it.id !in groupedTimerIds }.forEach {
+                list += PanelEntry(EntryKind.Timer, it.id, it.label ?: "未命名", it.position)
+            }
+            list
+        }
+        PanelOrderDialog(
+            entries = entries,
+            onDismiss = { showOrderDialog = false },
+            onSave = { ordered ->
+                showOrderDialog = false
+                scope.launch {
+                    // 统一重新编号，再按类型写回各自的 order 字段
+                    ordered.forEachIndexed { idx, entry ->
+                        when (entry.kind) {
+                            EntryKind.Sequence -> {
+                                allSequences.firstOrNull { it.id == entry.refId }?.let { sq ->
+                                    db.sequenceDao().upsert(sq.copy(sortOrder = idx))
+                                }
+                            }
+                            EntryKind.Group -> {
+                                groups.firstOrNull { it.id == entry.refId }?.let { g ->
+                                    db.groupDao().upsertGroup(g.copy(order = idx))
+                                }
+                            }
+                            EntryKind.Timer -> {
+                                timers.firstOrNull { it.id == entry.refId }?.let { t ->
+                                    db.timerDao().upsert(t.copy(position = idx))
+                                }
+                            }
+                        }
+                    }
+                    toast("顺序已保存")
+                }
+            },
+        )
     }
 
     // ---- 组编辑（长按组卡片进入）----

@@ -116,11 +116,15 @@ fun SequenceBlock(
             }
 
             // 大圆盘
+            val landscape = at.cwiesner.android.visualtimer.ext.ui.isLandscape()
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(min = 200.dp, max = 260.dp)
-                    .padding(vertical = 8.dp),
+                    .heightIn(
+                        min = if (landscape) 150.dp else 200.dp,
+                        max = if (landscape) 190.dp else 260.dp,
+                    )
+                    .padding(vertical = if (landscape) 4.dp else 8.dp),
                 contentAlignment = Alignment.Center,
             ) {
                 SequenceDial(

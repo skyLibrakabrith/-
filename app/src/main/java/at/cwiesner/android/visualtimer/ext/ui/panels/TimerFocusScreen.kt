@@ -6,6 +6,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.Icon
@@ -71,8 +73,10 @@ fun TimerFocusScreen(
     Column(
         modifier = modifier
             .fillMaxSize()
+            .verticalScroll(rememberScrollState())
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -103,7 +107,11 @@ fun TimerFocusScreen(
                 draft = d
                 onDurationCommit(d)
             },
-            modifier = Modifier.fillMaxWidth(),
+            modifier = if (at.cwiesner.android.visualtimer.ext.ui.isLandscape()) {
+                Modifier.fillMaxWidth(0.6f)
+            } else {
+                Modifier.fillMaxWidth()
+            },
             maxMinutes = 60,
             stepMinutes = 1,
             centerFontSize = 56f,

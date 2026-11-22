@@ -85,12 +85,23 @@ fun HomeScreen(modifier: Modifier = Modifier) {
             .padding(horizontal = 20.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        DayClockView(
-            nowEpochMillis = now,
-            pickedEpochMillis = if (picked != null) target else null,
-            onPick = { picked = it },
+        // 横屏时把时钟按可用高度约束宽度并居中，避免正方形盘面顶出屏幕
+        val landscape = at.cwiesner.android.visualtimer.ext.ui.isLandscape()
+        Box(
             modifier = Modifier.fillMaxWidth(),
-        )
+            contentAlignment = Alignment.Center,
+        ) {
+            DayClockView(
+                nowEpochMillis = now,
+                pickedEpochMillis = if (picked != null) target else null,
+                onPick = { picked = it },
+                modifier = if (landscape) {
+                    Modifier.fillMaxWidth(0.62f)
+                } else {
+                    Modifier.fillMaxWidth()
+                },
+            )
+        }
 
         // 目标信息
         Row(
