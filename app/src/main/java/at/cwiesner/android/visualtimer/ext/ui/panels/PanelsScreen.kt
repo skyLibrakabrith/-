@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
@@ -74,6 +75,7 @@ import at.cwiesner.android.visualtimer.ext.domain.StepSequenceEngine
 import at.cwiesner.android.visualtimer.ext.domain.TimerRuntime
 import at.cwiesner.android.visualtimer.ext.settings.SettingsRepo
 import at.cwiesner.android.visualtimer.ext.ui.ExtColors
+import at.cwiesner.android.visualtimer.ext.ui.sequences.SequenceEditorScreen
 import at.cwiesner.android.visualtimer.ext.ui.wheel.PieTimerView
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.flowOf
@@ -116,6 +118,8 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
 
     var showNewPanel by remember { mutableStateOf(false) }
     var showPanelEditor by remember { mutableStateOf(false) }
+    var editingGroupId by remember { mutableStateOf<Long?>(null) }
+    var editingSequenceId by remember { mutableStateOf<Long?>(null) }
     var showNewTimer by remember { mutableStateOf(false) }
     var showDeadline by remember { mutableStateOf(false) }
     var menuOpen by remember { mutableStateOf(false) }
@@ -200,6 +204,44 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
 
     fun toast(msg: String) {
         Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+    }
+
+    // ---- 序列编辑（长按序列块进入）：就地渲染全屏编辑器 ----
+    val editingSeq = editingSequenceId?.let { sid ->
+        allSequences.firstOrNull { it.id == sid }
+    }
+    if (editingSeq != null) {
+        SequenceEditorScreen(
+            sequence = editingSeq,
+            steps = stepsBySequence[editingSeq.id].orEmpty(),
+            onDismiss = { editingSequenceId = null },
+            onSave = { name, timeout, stepPairs ->
+                scope.launch {
+                    val seqId = db.sequenceDao().upsert(
+                        editingSeq.copy(
+                            name = name,
+                            timeoutMillis = timeout,
+                            panelId = editingSeq.panelId ?: currentPanel?.id,
+                        ),
+                    )
+                    db.sequenceDao().steps(seqId).forEach { db.sequenceDao().deleteStep(it.id) }
+                    stepPairs.forEachIndexed { idx, pair ->
+                        db.sequenceDao().upsertStep(
+                            Step(
+                                sequenceId = seqId,
+                                durationMillis = pair.second,
+                                label = pair.first.ifBlank { null },
+                                order = idx,
+                            ),
+                        )
+                    }
+                    editingSequenceId = null
+                    toast("序列「" + name + "」已保存，" + stepPairs.size + " 个阶段")
+                }
+            },
+            modifier = Modifier.fillMaxSize(),
+        )
+        return
     }
 
     Scaffold(
@@ -391,32 +433,35 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    // 序列：每张卡片占一个格子
-                    items(panelSequences, key = { sq -> "s" + sq.id }) { sq ->
+                    // 序列：整块占满一行，盘面尺寸与首页时钟同级
+                    items(
+                        items = panelSequences,
+                        key = { sq -> "s" + sq.id },
+                        span = { GridItemSpan(maxLineSpan) },
+                    ) { sq ->
                         val stepList = stepsBySequence[sq.id].orEmpty()
                         val active = engineActiveId == sq.id
-                        SequenceCell(
+                        SequenceBlock(
                             sequence = sq,
                             steps = stepList,
                             phase = if (active) enginePhase else StepSequenceEngine.Phase.Idle,
                             isActive = active,
-                            onClick = {
-                                scope.launch {
-                                    if (active) {
-                                        app.sequenceEngine.stop()
-                                        toast("已停止序列「" + sq.name + "」")
-                                    } else if (stepList.isEmpty()) {
-                                        toast("这个序列还没有阶段，去序列页编辑")
-                                    } else {
-                                        app.sequenceEngine.start(sq, stepList)
-                                        toast("开始序列「" + sq.name + "」")
-                                    }
+                            onStart = {
+                                if (stepList.isEmpty()) {
+                                    toast("这个序列还没有阶段，去序列页编辑")
+                                } else {
+                                    app.sequenceEngine.start(sq, stepList)
+                                    toast("开始序列「" + sq.name + "」")
                                 }
                             },
-                            onLongClick = { showPanelEditor = true },
+                            onNext = { app.sequenceEngine.confirm() },
+                            onStop = {
+                                app.sequenceEngine.stop()
+                                toast("已停止序列「" + sq.name + "」")
+                            },
+                            onLongClick = { editingSequenceId = sq.id },
                         )
                     }
-
                     // 先渲染组（每组一个格子，与单计时器同尺寸）
                     items(groups, key = { g -> "g" + g.id }) { group ->
                         val memberIdsOfGroup = groupMembersMap[group.id].orEmpty()
@@ -451,7 +496,7 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                                     }
                                 }
                             },
-                            onLongClick = { showPanelEditor = true },
+                            onLongClick = { editingGroupId = group.id },
                         )
                     }
                     // 再渲染没被编组的单计时器
@@ -507,6 +552,49 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
             }
             }
         }
+    }
+
+    // ---- 组编辑（长按组卡片进入）----
+    val editingGroup = editingGroupId?.let { gid -> groups.firstOrNull { it.id == gid } }
+    if (editingGroup != null) {
+        val occupied = remember(allGroupMembers, groups) {
+            val nameById = groups.associate { it.id to it.name }
+            val map = mutableMapOf<Long, String>()
+            allGroupMembers.forEach { m ->
+                if (m.groupId != editingGroup.id) {
+                    nameById[m.groupId]?.let { map[m.timerId] = it }
+                }
+            }
+            map
+        }
+        GroupEditorDialog(
+            group = editingGroup,
+            candidateTimers = timers,
+            memberIds = groupMembersMap[editingGroup.id].orEmpty().toSet(),
+            occupiedBy = occupied,
+            onDismiss = { editingGroupId = null },
+            onSave = { gname, ids ->
+                editingGroupId = null
+                scope.launch {
+                    db.groupDao().upsertGroup(editingGroup.copy(name = gname))
+                    db.groupDao().clearMembers(editingGroup.id)
+                    db.groupDao().upsertMembers(
+                        ids.mapIndexed { idx, tid ->
+                            GroupMember(editingGroup.id, tid, idx)
+                        },
+                    )
+                    toast("组「" + gname + "」已保存，" + ids.size + " 个成员")
+                }
+            },
+            onDelete = {
+                editingGroupId = null
+                scope.launch {
+                    db.groupDao().clearMembers(editingGroup.id)
+                    db.groupDao().deleteGroup(editingGroup.id)
+                    toast("已删除组「" + editingGroup.name + "」")
+                }
+            },
+        )
     }
 
     if (showPanelManager) {
