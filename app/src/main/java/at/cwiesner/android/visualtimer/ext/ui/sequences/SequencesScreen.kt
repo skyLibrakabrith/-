@@ -60,15 +60,19 @@ fun SequencesScreen(modifier: Modifier = Modifier) {
     var running by remember { mutableStateOf<StepSequence?>(null) }
     var editing by remember { mutableStateOf<StepSequence?>(null) }
     var editingSteps by remember { mutableStateOf<List<Step>>(emptyList()) }
-    val engine = remember { StepSequenceEngine(scope = scope, onStepFinished = { }) }
+    // 用 Application 持有的引擎：悬浮窗的「下一阶段」按钮也要能推进它
+    val engine = app.sequenceEngine
     val phase by engine.phase.collectAsState()
 
     // 当前序列的步骤数：DAO 查询是 suspend，不能放在 remember 里，用 LaunchedEffect
+    var currentSteps by remember { mutableStateOf<List<Step>>(emptyList()) }
     var stepCount by remember { mutableIntStateOf(0) }
     LaunchedEffect(running?.id) {
-        stepCount = running?.let {
-            runCatching { db.sequenceDao().steps(it.id).size }.getOrDefault(0)
-        } ?: 0
+        val list = running?.let {
+            runCatching { db.sequenceDao().steps(it.id) }.getOrDefault(emptyList())
+        } ?: emptyList()
+        currentSteps = list
+        stepCount = list.size
     }
 
     val editTarget = editing
@@ -108,6 +112,7 @@ fun SequencesScreen(modifier: Modifier = Modifier) {
     if (current != null) {
         SequenceRunnerScreen(
             phase = phase,
+            steps = currentSteps,
             stepCount = stepCount,
             onConfirm = { engine.confirm() },
             onSkip = { engine.skip() },

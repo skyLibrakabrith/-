@@ -37,6 +37,7 @@ import at.cwiesner.android.visualtimer.ext.domain.DeadlineCalculator
 @Composable
 fun SequenceRunnerScreen(
     phase: StepSequenceEngine.Phase,
+    steps: List<at.cwiesner.android.visualtimer.ext.data.Step>,
     stepCount: Int,
     onConfirm: () -> Unit,
     onSkip: () -> Unit,
@@ -72,7 +73,11 @@ fun SequenceRunnerScreen(
                     is StepSequenceEngine.Phase.Finished ->
                         Text("已完成", style = MaterialTheme.typography.headlineMedium)
 
-                    is StepSequenceEngine.Phase.Running -> RunningBody(phase)
+                    is StepSequenceEngine.Phase.Running -> SequenceWheelView(
+                        steps = steps,
+                        phase = phase,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
 
                     is StepSequenceEngine.Phase.AwaitingConfirm -> AwaitingBody(
                         phase = phase,

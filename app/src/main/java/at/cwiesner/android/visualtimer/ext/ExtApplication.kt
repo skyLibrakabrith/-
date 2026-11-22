@@ -14,6 +14,7 @@ import at.cwiesner.android.visualtimer.ext.data.VibrationPresets
 import at.cwiesner.android.visualtimer.ext.domain.DeadlineCalculator
 import at.cwiesner.android.visualtimer.ext.domain.PanelRunner
 import at.cwiesner.android.visualtimer.ext.domain.TimerRuntime
+import at.cwiesner.android.visualtimer.ext.service.AlertOverlayService
 import at.cwiesner.android.visualtimer.ext.settings.SettingsRepo
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -45,6 +46,32 @@ class ExtApplication : Application() {
      */
     val panelRunner: PanelRunner by lazy { PanelRunner(appScope) }
 
+    /**
+     * 逐步间隔的运行时引擎。
+     *
+     * 挂在 Application 上，这样悬浮窗的「下一阶段」按钮
+     * 可以在应用不在前台时也推进序列。
+     */
+    val sequenceEngine: at.cwiesner.android.visualtimer.ext.domain.StepSequenceEngine by lazy {
+        at.cwiesner.android.visualtimer.ext.domain.StepSequenceEngine(
+            scope = appScope,
+            onStepFinished = { step ->
+                val name = step.label ?: "阶段完成"
+                AlertOverlayService.start(
+                    this@ExtApplication,
+                    name,
+                    step.id,
+                    sequenceId = step.sequenceId,
+                )
+            },
+        )
+    }
+
+    /** 悬浮窗点「下一阶段」时调用。 */
+    fun advanceSequence() {
+        sequenceEngine.confirm()
+    }
+
     private val vibration: VibrationAlerter by lazy { VibrationAlerter(this) }
     private val settings: SettingsRepo by lazy { SettingsRepo(this) }
 
@@ -64,6 +91,14 @@ class ExtApplication : Application() {
             panelRunner.alerts.collect { rt ->
                 runCatching { fireVibration(rt) }
                 runCatching { postNotification(rt) }
+                // 有悬浮窗权限时，用全屏闪烁悬浮窗提醒（应用不在前台也能看到）
+                runCatching {
+                    AlertOverlayService.start(
+                        this@ExtApplication,
+                        rt.label ?: "计时结束",
+                        rt.timerId,
+                    )
+                }
             }
         }
     }

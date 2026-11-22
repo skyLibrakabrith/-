@@ -110,7 +110,7 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
     }.collectAsState(initial = emptyList<TimerItem>())
 
     var showNewPanel by remember { mutableStateOf(false) }
-    var showRenamePanel by remember { mutableStateOf(false) }
+    var showPanelEditor by remember { mutableStateOf(false) }
     var showNewTimer by remember { mutableStateOf(false) }
     var showDeadline by remember { mutableStateOf(false) }
     var menuOpen by remember { mutableStateOf(false) }
@@ -118,6 +118,17 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
     var listMode by remember { mutableStateOf(false) }
     var focusTimerId by remember { mutableStateOf<Long?>(null) }
     var selectedIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
+
+    // 编辑器需要「全部计时器」作为候选池
+    val allTimers by remember { db.timerDao().observeAll() }
+        .collectAsState(initial = emptyList<TimerItem>())
+    val memberIds by remember(currentPanel?.id) {
+        currentPanel?.let { p ->
+            kotlinx.coroutines.flow.flow {
+                emit(db.panelDao().refsOf(p.id).map { it.timerId }.toSet())
+            }
+        } ?: kotlinx.coroutines.flow.flowOf(emptySet())
+    }.collectAsState(initial = emptySet())
 
     val runtimeMap by runner.runtimes.collectAsState()
     val runtimes: List<TimerRuntime> = runtimeMap.values.sortedBy { it.timerId }
@@ -185,8 +196,8 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                                     onDismissRequest = { menuOpen = false },
                                 ) {
                                     DropdownMenuItem(
-                                        text = { Text("重命名面板") },
-                                        onClick = { menuOpen = false; showRenamePanel = true },
+                                        text = { Text("编辑面板") },
+                                        onClick = { menuOpen = false; showPanelEditor = true },
                                     )
                                     DropdownMenuItem(
                                         text = { Text("倒计时到某个时刻") },
@@ -404,16 +415,33 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
         )
     }
 
-    if (showRenamePanel && currentPanel != null) {
-        PanelNameDialog(
-            initialName = currentPanel.name,
-            title = "重命名面板",
-            onDismiss = { showRenamePanel = false },
-            onConfirm = { name ->
-                showRenamePanel = false
+    if (showPanelEditor && currentPanel != null) {
+        PanelEditorDialog(
+            panelName = currentPanel.name,
+            allTimers = allTimers,
+            memberIds = memberIds,
+            onDismiss = { showPanelEditor = false },
+            onSave = { name, ids ->
+                showPanelEditor = false
                 scope.launch {
                     db.panelDao().upsert(currentPanel.copy(name = name))
-                    toast("已改名为「$name」")
+                    // 重建成员关系：先清空再按新集合写入
+                    val old = db.panelDao().refsOf(currentPanel.id)
+                    old.forEach { db.panelDao().removeRef(currentPanel.id, it.timerId) }
+                    db.panelDao().upsertRefs(
+                        ids.mapIndexed { idx, tid ->
+                            PanelTimerRef(panelId = currentPanel.id, timerId = tid, order = idx)
+                        },
+                    )
+                    toast("已保存：${ids.size} 个计时器")
+                }
+            },
+            onDelete = {
+                showPanelEditor = false
+                scope.launch {
+                    db.panelDao().deleteById(currentPanel.id)
+                    selectedPanel = 0
+                    toast("面板已删除")
                 }
             },
         )
