@@ -88,7 +88,8 @@ fun TimerFocusScreen(
     val landscape = at.cwiesner.android.visualtimer.ext.ui.isLandscape()
 
     // 中央控件只在「运行中 / 超时」时出现；静止状态由外圈拖动设定时长
-    val showInner = running || overdue
+    val isStopwatchTimer = timer.kind == at.cwiesner.android.visualtimer.ext.data.TimerKind.Stopwatch
+    val showInner = running || overdue || isStopwatchTimer
 
     Column(
         modifier = modifier
@@ -124,8 +125,9 @@ fun TimerFocusScreen(
                 .padding(vertical = 4.dp),
             contentAlignment = Alignment.Center,
         ) {
+            val isStopwatch = timer.kind == at.cwiesner.android.visualtimer.ext.data.TimerKind.Stopwatch
             PieTimerView(
-                totalMillis = total,
+                totalMillis = if (isStopwatch) 0L else total,
                 remainingMillis = remain,
                 running = running,
                 onDurationChange = if (running) null else { d -> draft = d },
@@ -172,6 +174,8 @@ fun TimerFocusScreen(
 
         Text(
             text = when {
+                timer.kind == at.cwiesner.android.visualtimer.ext.data.TimerKind.Stopwatch ->
+                    "已计 " + DeadlineCalculator.formatRemaining(remain)
                 overdue -> "已超时 " + DeadlineCalculator.formatRemaining(runtime?.overdueMillis ?: 0L)
                 running -> "剩余 " + DeadlineCalculator.formatRemaining(remain) +
                     " · " + clockOf(System.currentTimeMillis() + remain) + " 结束"

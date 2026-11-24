@@ -12,7 +12,10 @@ import androidx.room.TypeConverter
 enum class TimerKind {
     Countdown,
     Deadline,
-    Clock;
+    Clock,
+
+    /** 正计时：从 0 往上数，用于「记录已经过了多久」。 */
+    Stopwatch;
 
     companion object {
         fun fromKey(key: String?): TimerKind =

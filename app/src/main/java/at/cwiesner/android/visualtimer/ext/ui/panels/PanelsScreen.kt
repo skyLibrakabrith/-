@@ -71,6 +71,7 @@ import at.cwiesner.android.visualtimer.ext.data.TimerGroup
 import at.cwiesner.android.visualtimer.ext.data.Step
 import at.cwiesner.android.visualtimer.ext.data.StepSequence
 import at.cwiesner.android.visualtimer.ext.data.TimerItem
+import at.cwiesner.android.visualtimer.ext.data.TimerKind
 import at.cwiesner.android.visualtimer.ext.domain.DeadlineCalculator
 import at.cwiesner.android.visualtimer.ext.domain.PanelRunner
 import at.cwiesner.android.visualtimer.ext.domain.StepSequenceEngine
@@ -568,23 +569,31 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                                     when {
                                         // 未启动
                                         cur == null -> {
-                                            runner.start(timer)
-                                            toast("开始：$name")
+                                            if (timer.kind == TimerKind.Stopwatch) {
+                                                runner.startStopwatch(timer)
+                                                toast("正计时开始：$name")
+                                            } else {
+                                                runner.start(timer)
+                                                toast("开始：$name")
+                                            }
                                         }
-                                        // 已超时：点一下直接回到原始时长（优先级高于暂停，
-                                        // 否则用户以为点了没反应，实际只是暂停了超时计数）
-                                        cur.expired -> {
+                                        // 正在超时（未暂停）→ 重置
+                                        cur.isOverdue -> {
                                             runner.reset(timer.id)
                                             toast("已重置：$name")
                                         }
-                                        // 运行中且未超时 → 暂停
+                                        // 运行中（含超时已暂停后继续）→ 暂停
                                         cur.running -> {
                                             runner.stop(timer.id)
                                             toast("暂停：$name")
                                         }
                                         // 已暂停 → 继续
                                         else -> {
-                                            runner.start(timer)
+                                            if (timer.kind == TimerKind.Stopwatch) {
+                                                runner.startStopwatch(timer)
+                                            } else {
+                                                runner.start(timer)
+                                            }
                                             toast("继续：$name")
                                         }
                                     }
@@ -848,7 +857,7 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
             initialDuration = editingTimer.durationMillis,
             title = "编辑计时器",
             onDismiss = { editingTimerId = null },
-            onConfirm = { label, duration, deadlineEpoch, alertProfileId ->
+            onConfirm = { label, duration, deadlineEpoch, alertProfileId, isStopwatch ->
                 editingTimerId = null
                 scope.launch {
                     db.timerDao().upsert(
@@ -856,6 +865,8 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                             label = label.ifBlank { null },
                             durationMillis = duration,
                             alertProfileId = alertProfileId,
+                            kind = if (isStopwatch) TimerKind.Stopwatch
+                            else TimerKind.Countdown,
                         ),
                     )
                     // 时长变了，运行状态重置，避免旧的倒计时残留
@@ -870,7 +881,7 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
         TimerEditDialog(
             alertProfiles = alertProfiles,
             onDismiss = { showNewTimer = false },
-            onConfirm = { label, duration, deadlineEpoch, alertProfileId ->
+            onConfirm = { label, duration, deadlineEpoch, alertProfileId, isStopwatch ->
                 showNewTimer = false
                 scope.launch {
                     val now = System.currentTimeMillis()
@@ -879,6 +890,7 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                             label = label.ifBlank { null },
                             durationMillis = duration,
                             alertProfileId = alertProfileId,
+                            kind = if (isStopwatch) TimerKind.Stopwatch else TimerKind.Countdown,
                         ),
                     )
                     val existing = db.panelDao().refsOf(currentPanel.id)
@@ -892,7 +904,11 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                         ),
                     )
                     db.timerDao().get(timerId)?.let { created ->
-                        if (deadlineEpoch != null) runner.startUntil(created, deadlineEpoch, now)
+                        when {
+                            isStopwatch -> runner.startStopwatch(created)
+                            deadlineEpoch != null ->
+                                runner.startUntil(created, deadlineEpoch, now)
+                        }
                     }
                     toast("已添加：" + (label.ifBlank { "未命名" }) + " · " +
                         DeadlineCalculator.formatRemaining(duration))
@@ -1010,18 +1026,47 @@ private fun TimerCell(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.padding(top = 2.dp),
                 )
-                // 运行中显示结束时刻；超时后改显示超时时长
-                Text(
-                    text = if ((runtime?.overdueMillis ?: 0L) > 0L) {
-                        "超时 " + DeadlineCalculator.formatRemaining(runtime!!.overdueMillis)
-                    } else {
-                        clockOf(System.currentTimeMillis() + remain) + " 结束"
-                    },
-                    fontSize = 10.sp,
-                    color = if ((runtime?.overdueMillis ?: 0L) > 0L) ExtColors.Red
-                    else ExtColors.TextDim,
-                    maxLines = 1,
-                )
+                // 状态行：左「结束时刻 / 超时时长」，右「重置」按钮
+                // 两者用 Row 并排，之前重置按钮绝对定位在底部会压住这行文字
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 1.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = when {
+                            timer.kind == TimerKind.Stopwatch ->
+                                "已计 " + DeadlineCalculator.formatRemaining(remain)
+                            (runtime?.overdueMillis ?: 0L) > 0L ->
+                                "超时 " + DeadlineCalculator.formatRemaining(
+                                    runtime!!.overdueMillis,
+                                )
+                            else -> clockOf(System.currentTimeMillis() + remain) + " 结束"
+                        },
+                        fontSize = 10.sp,
+                        color = if ((runtime?.overdueMillis ?: 0L) > 0L) ExtColors.Red
+                        else ExtColors.TextDim,
+                        maxLines = 1,
+                        modifier = Modifier.weight(1f),
+                    )
+                    // 只有「暂停 / 超时」才需要重置，运行时占位保持宽度稳定
+                    if (runtime != null && (!running || runtime.isOverdue)) {
+                        Box(
+                            modifier = Modifier
+                                .height(18.dp)
+                                .clip(RoundedCornerShape(9.dp))
+                                .background(ExtColors.Surface)
+                                .clickable(onClick = onReset)
+                                .padding(horizontal = 8.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                text = "重置",
+                                fontSize = 9.sp,
+                                color = ExtColors.Primary,
+                            )
+                        }
+                    }
+                }
             }
             IconButton(
                 onClick = onDelete,
@@ -1052,28 +1097,6 @@ private fun TimerCell(
                     ),
             )
 
-            // 超时 / 暂停时给一个明确的「重置」按钮 —— 之前只能靠点一下卡片，
-            // 用户根本看不出这条路。按钮只在需要时出现，不占常规空间。
-            val overdue = (runtime?.overdueMillis ?: 0L) > 0L
-            if (overdue || (!running && runtime != null)) {
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(bottom = 4.dp)
-                        .height(22.dp)
-                        .clip(RoundedCornerShape(11.dp))
-                        .background(ExtColors.Surface)
-                        .clickable(onClick = onReset)
-                        .padding(horizontal = 10.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        text = "重置",
-                        fontSize = 10.sp,
-                        color = ExtColors.Primary,
-                    )
-                }
-            }
         }
     }
 }

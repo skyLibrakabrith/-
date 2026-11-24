@@ -23,6 +23,8 @@ data class TimerRuntime(
     val deadlineEpochMillis: Long?,
     /** 绑定的警报配置 id；到点时按它取振动波形。 */
     val alertProfileId: Long? = null,
+    /** 正计时模式：从 0 往上累加，不会到点。 */
+    val stopwatch: Boolean = false,
     /**
      * 到点之后已经超时多久（正计时）。
      * 倒计时走完不会停下，而是转入这个字段继续累加，
@@ -125,6 +127,27 @@ class PanelRunner(private val scope: CoroutineScope) {
             )
     }
 
+    /**
+     * 以正计时方式开始：从 0 往上累加。
+     *
+     * 实现上复用 remainingMillis 字段存「已过时长」，
+     * totalMillis 置 0 表示没有终点，tick 里走另一条累加分支。
+     */
+    fun startStopwatch(timer: TimerItem) {
+        _runtimes.value = _runtimes.value + (
+            timer.id to TimerRuntime(
+                timerId = timer.id,
+                label = timer.label,
+                totalMillis = 0L,
+                remainingMillis = 0L,
+                running = true,
+                deadlineEpochMillis = null,
+                alertProfileId = timer.alertProfileId,
+                stopwatch = true,
+            )
+            )
+    }
+
     /** 以 DDL 方式开始：剩余时长 = 截止时刻 − 现在。 */
     fun startUntil(timer: TimerItem, deadlineEpochMillis: Long, now: Long) {
         acknowledge(timer.id)
@@ -153,6 +176,13 @@ class PanelRunner(private val scope: CoroutineScope) {
                 next[k] = r
                 continue
             }
+            // 正计时：一直往上加，永不结束
+            if (r.stopwatch) {
+                changed = true
+                next[k] = r.copy(remainingMillis = r.remainingMillis + deltaMillis)
+                continue
+            }
+
             val remaining = if (r.deadlineEpochMillis != null) {
                 (r.deadlineEpochMillis - now).coerceAtLeast(0L)
             } else {

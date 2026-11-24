@@ -43,6 +43,9 @@ private enum class DurationMode(val label: String) {
     Wheel("轮盘"),
     Precise("精确"),
     Deadline("截止时刻"),
+
+    /** 正计时：不需要设定时长，从 0 往上数。 */
+    Stopwatch("正计时"),
 }
 
 /**
@@ -60,7 +63,7 @@ fun TimerEditDialog(
     initialDuration: Long = 60_000L,
     title: String = "新建计时器",
     onDismiss: () -> Unit,
-    onConfirm: (label: String, durationMillis: Long, deadlineEpochMillis: Long?, alertProfileId: Long?) -> Unit,
+    onConfirm: (label: String, durationMillis: Long, deadlineEpochMillis: Long?, alertProfileId: Long?, isStopwatch: Boolean) -> Unit,
 ) {
     var label by remember { mutableStateOf(initialLabel) }
     var duration by remember { mutableLongStateOf(initialDuration) }
@@ -160,6 +163,14 @@ fun TimerEditDialog(
                         )
                     }
 
+                    DurationMode.Stopwatch -> {
+                        Text(
+                            "从 0 开始往上计时，用于记录已经过了多久。不会到点，也没有提醒。",
+                            fontSize = 13.sp,
+                            color = ExtColors.TextSecondary,
+                        )
+                    }
+
                     DurationMode.Deadline -> {
                         DeadlineTimePicker(
                             dateOffsetDays = dateOffset,
@@ -189,6 +200,7 @@ fun TimerEditDialog(
                 // 底部汇总
                 Text(
                     text = when (mode) {
+                        DurationMode.Stopwatch -> "正计时"
                         DurationMode.Deadline ->
                             if (deadlineValid) "倒计时 " + DeadlineCalculator.formatRemaining(
                                 (deadlineResult as DeadlineCalculator.Result.Ok).remainingMillis,
@@ -209,9 +221,11 @@ fun TimerEditDialog(
                         DurationMode.Deadline -> {
                             val remain = (deadlineResult as DeadlineCalculator.Result.Ok)
                                 .remainingMillis
-                            onConfirm(label.trim(), remain, deadline, alertProfileId)
+                            onConfirm(label.trim(), remain, deadline, alertProfileId, false)
                         }
-                        else -> onConfirm(label.trim(), duration, null, alertProfileId)
+                        DurationMode.Stopwatch ->
+                            onConfirm(label.trim(), 0L, null, alertProfileId, true)
+                        else -> onConfirm(label.trim(), duration, null, alertProfileId, false)
                     }
                 },
             ) { Text("确定") }
