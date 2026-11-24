@@ -214,13 +214,16 @@ fun ExtTheme(
     content: @Composable () -> Unit,
 ) {
     val systemDark = isSystemInDarkTheme()
-    // 只在模式真正变化时改全局配色。
-    // 之前每次重组都调用 applyMode + schemeFor，切换页面时会触发
-    // 一轮不必要的整树重组，表现就是「打开新页面先闪一下」。
-    androidx.compose.runtime.LaunchedEffect(mode, systemDark) {
-        ExtColors.applyMode(mode, systemDark)
-    }
     val dark = mode != ThemeMode.Light && (mode != ThemeMode.System || systemDark)
-    val scheme = androidx.compose.runtime.remember(dark) { schemeFor(dark) }
+
+    // 配色必须在**绘制前同步就位**。
+    // 之前放进 LaunchedEffect，首帧拿到的还是上一套颜色，
+    // 下一帧才刷新 —— 这就是「打开页面先闪一下」的来源。
+    // 这里用 remember 保证只在模式变化时重算 scheme，
+    // applyMode 本身只是几个字段赋值，同步执行开销可忽略。
+    val scheme = androidx.compose.runtime.remember(dark) {
+        ExtColors.applyMode(mode, systemDark)
+        schemeFor(dark)
+    }
     MaterialTheme(colorScheme = scheme, content = content)
 }

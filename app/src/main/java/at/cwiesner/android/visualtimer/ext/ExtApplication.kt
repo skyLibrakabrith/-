@@ -113,6 +113,21 @@ class ExtApplication : Application() {
             }
         }
 
+        // 1.5) 通知持续刷新：把「已超时 MM:SS」实时显示在通知上
+        appScope.launch {
+            while (true) {
+                val ids = panelRunner.alerting.value
+                if (ids.isNotEmpty()) {
+                    ids.forEach { id ->
+                        panelRunner.get(id)?.let { rt ->
+                            runCatching { postNotification(rt) }
+                        }
+                    }
+                }
+                kotlinx.coroutines.delay(1000)
+            }
+        }
+
         // 2) 持续震动：只要还有未处理的到点计时器就一直震
         appScope.launch {
             panelRunner.alerting.collect { ids ->
@@ -189,11 +204,17 @@ class ExtApplication : Application() {
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
             )
         }
+        val overdue = rt.overdueMillis
+        val title = rt.label ?: "计时结束"
+        val text = if (overdue > 0L) {
+            "已超时 " + DeadlineCalculator.formatRemaining(overdue) + "（点击停止提醒）"
+        } else {
+            "时间到（点击停止提醒）"
+        }
         val n = NotificationCompat.Builder(this, CHANNEL_ALERTS)
-            .setContentTitle(rt.label ?: "计时结束")
-            .setContentText(
-                "时间到，" + DeadlineCalculator.formatRemaining(rt.totalMillis) + " 已走完",
-            )
+            .setContentTitle(title)
+            .setContentText(text)
+            .setOnlyAlertOnce(true)
             .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setAutoCancel(true)

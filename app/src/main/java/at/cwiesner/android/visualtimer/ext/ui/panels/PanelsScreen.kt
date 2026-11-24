@@ -17,11 +17,13 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -96,7 +98,11 @@ import kotlinx.coroutines.launch
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun PanelsScreen(modifier: Modifier = Modifier) {
+fun PanelsScreen(
+    modifier: Modifier = Modifier,
+    /** 每次自增表示底边栏「面板」被再次点击，要求切换卡片/列表视图。 */
+    toggleViewSignal: Int = 0,
+) {
     val context = LocalContext.current
     val app = context.applicationContext as ExtApplication
     val db = app.database
@@ -133,6 +139,13 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
     var showDeadline by remember { mutableStateOf(false) }
 
     var listMode by remember { mutableStateOf(false) }
+    // 底边栏点「面板」时切视图
+    LaunchedEffect(toggleViewSignal) {
+        if (toggleViewSignal > 0) {
+            listMode = !listMode
+            selectedIds = emptySet()
+        }
+    }
     var showPanelManager by remember { mutableStateOf(false) }
     var focusTimerId by remember { mutableStateOf<Long?>(null) }
     var selectedIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
@@ -170,6 +183,28 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
     val panelSequences by remember(currentPanel?.id) {
         currentPanel?.let { db.sequenceDao().observeByPanel(it.id) } ?: flowOf(emptyList())
     }.collectAsState(initial = emptyList<StepSequence>())
+
+    // 跨类型统一列表：序列 / 组 / 未成组计时器放在一起参与排序与渲染。
+    // 之前分三段渲染，导致无法在界面上跨类型拖动排序。
+    val gridEntries: List<PanelEntry> = remember(
+        panelSequences, groups, timers, groupedTimerIds,
+    ) {
+        val list = mutableListOf<PanelEntry>()
+        panelSequences.forEach {
+            list += PanelEntry(EntryKind.Sequence, it.id, it.name, it.sortOrder)
+        }
+        groups.forEach { g ->
+            list += PanelEntry(EntryKind.Group, g.id, g.name, g.order)
+        }
+        timers.filter { it.id !in groupedTimerIds }.forEach { t ->
+            list += PanelEntry(EntryKind.Timer, t.id, t.label ?: "未命名", t.position)
+        }
+        list.sortedBy { it.order }
+    }
+
+    // 拖动排序的本地镜像：拖动时只改这个，松手才落库
+    var orderOverride by remember { mutableStateOf<List<PanelEntry>?>(null) }
+    val displayEntries = orderOverride ?: gridEntries
 
     // 引擎状态：订阅以便序列卡片实时刷新
     val enginePhase by app.sequenceEngine.phase.collectAsState()
@@ -419,6 +454,7 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                     },
                     onEdit = { t -> editingTimerId = t.id },
                     onReorder = { showOrderDialog = true },
+                    alertProfiles = alertProfiles,
                     onSelectAll = { selectedIds = timers.map { it.id }.toSet() },
                     onClearSelection = { selectedIds = emptySet() },
                     onChangeAlert = { t -> alertPickerTimerId = t.id },
@@ -432,109 +468,112 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                 )
 
                 else -> Column(modifier = Modifier.fillMaxSize()) {
-                    LazyVerticalGrid(
-                    columns = GridCells.Fixed(
-                        if (at.cwiesner.android.visualtimer.ext.ui.isLandscape()) {
-                            (gridColumns + 1).coerceAtMost(4)
+                    DraggableGrid(
+                        items = displayEntries,
+                        key = { e -> e.kind.name + e.refId },
+                        columns = if (at.cwiesner.android.visualtimer.ext.ui.isLandscape()) {
+                            (gridColumns + 1).coerceAtMost(8)
                         } else {
                             gridColumns
                         },
-                    ),
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(12.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    // 序列：与计时器同尺寸的小卡片，点击进全屏看大圆盘
-                    items(panelSequences.sortedBy { it.sortOrder }, key = { sq -> "s" + sq.id }) { sq ->
-                        val stepList = stepsBySequence[sq.id].orEmpty()
-                        val active = engineActiveId == sq.id
-                        SequenceCell(
-                            sequence = sq,
-                            steps = stepList,
-                            phase = if (active) enginePhase else StepSequenceEngine.Phase.Idle,
-                            isActive = active,
-                            onClick = {
-                                // 点卡片进全屏：那里才是大圆盘
-                                focusSequenceId = sq.id
-                                if (!active && stepList.isNotEmpty()) {
-                                    app.sequenceEngine.start(sq, stepList)
-                                    toast("开始序列「" + sq.name + "」")
+                        gridState = rememberLazyGridState(),
+                        modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp),
+                        onMove = { from, to ->
+                            // 拖动时只更新本地镜像，松手才写库
+                            val list = displayEntries.toMutableList()
+                            if (from in list.indices && to in list.indices) {
+                                val item = list.removeAt(from)
+                                list.add(to, item)
+                                orderOverride = list
+                            }
+                        },
+                        onClick = { entry ->
+                            // 单击：暂停 / 继续
+                            val t = timers.firstOrNull { it.id == entry.refId }
+                            if (entry.kind == EntryKind.Timer && t != null) {
+                                scope.launch {
+                                    val cur = runner.snapshot().firstOrNull { it.timerId == t.id }
+                                    when {
+                                        cur == null -> runner.start(t)
+                                        cur.running -> runner.stop(t.id)
+                                        else -> runner.resume(t.id)
+                                    }
                                 }
-                            },
-                            onLongClick = { editingSequenceId = sq.id },
-                        )
-                    }
-                    // 先渲染组（每组一个格子，与单计时器同尺寸）
-                    items(groups, key = { g -> "g" + g.id }) { group ->
-                        val memberIdsOfGroup = groupMembersMap[group.id].orEmpty()
-                        val memberTimers = memberIdsOfGroup.mapNotNull { id ->
-                            timers.firstOrNull { it.id == id }
+                            }
+                        },
+                        onDoubleClick = { entry ->
+                            // 双击：进全屏
+                            when (entry.kind) {
+                                EntryKind.Timer -> focusTimerId = entry.refId
+                                EntryKind.Sequence -> focusSequenceId = entry.refId
+                                EntryKind.Group -> editingGroupId = entry.refId
+                            }
+                        },
+                        onLongClick = { /* 长按由拖拽接管，这里留空 */ },
+                    ) { entry, dragging ->
+                        when (entry.kind) {
+                            EntryKind.Sequence -> {
+                                val sq = panelSequences.firstOrNull { it.id == entry.refId }
+                                if (sq != null) {
+                                    SequenceCell(
+                                        sequence = sq,
+                                        steps = stepsBySequence[sq.id].orEmpty(),
+                                        phase = if (engineActiveId == sq.id) enginePhase
+                                        else StepSequenceEngine.Phase.Idle,
+                                        isActive = engineActiveId == sq.id,
+                                        onClick = { focusSequenceId = sq.id },
+                                        onLongClick = { editingSequenceId = sq.id },
+                                    )
+                                }
+                            }
+
+                            EntryKind.Group -> {
+                                val g = groups.firstOrNull { it.id == entry.refId }
+                                if (g != null) {
+                                    TimerGroupCell(
+                                        group = g,
+                                        members = groupMembersMap[g.id].orEmpty()
+                                            .mapNotNull { id -> timers.firstOrNull { it.id == id } },
+                                        runtimeById = runtimeById,
+                                        colorMode = colorMode,
+                                        intervalMinutes = intervalMinutes,
+                                        fractionDivisions = fractionDivisions,
+                                        thresholdMinutes = thresholdMinutes,
+                                        thresholdColors = thresholdColors,
+                                        onClick = { editingGroupId = g.id },
+                                        onLongClick = { editingGroupId = g.id },
+                                    )
+                                }
+                            }
+
+                            EntryKind.Timer -> {
+                                val t = timers.firstOrNull { it.id == entry.refId }
+                                if (t != null) {
+                                    TimerCell(
+                                        timer = t,
+                                        runtime = runtimeById[t.id],
+                                        thresholdMinutes = thresholdMinutes,
+                                        thresholdColors = thresholdColors,
+                                        colorMode = colorMode,
+                                        intervalMinutes = intervalMinutes,
+                                        fractionDivisions = fractionDivisions,
+                                        onClick = { focusTimerId = t.id },
+                                        onLongClick = { editingTimerId = t.id },
+                                        onReset = {
+                                            scope.launch { runner.reset(t.id) }
+                                        },
+                                        onDelete = {
+                                            scope.launch {
+                                                runner.clear(t.id)
+                                                currentPanel?.let {
+                                                    db.panelDao().removeRef(it.id, t.id)
+                                                }
+                                            }
+                                        },
+                                    )
+                                }
+                            }
                         }
-                        TimerGroupCell(
-                            group = group,
-                            members = memberTimers,
-                            runtimeById = runtimeById,
-                            colorMode = colorMode,
-                            intervalMinutes = intervalMinutes,
-                            fractionDivisions = fractionDivisions,
-                            thresholdMinutes = thresholdMinutes,
-                            thresholdColors = thresholdColors,
-                            onClick = {
-                                // 点组：整体启动/暂停组内所有计时器
-                                scope.launch {
-                                    val snap = runner.snapshot()
-                                    val anyRunning = memberTimers.any { mt ->
-                                        snap.firstOrNull { rt -> rt.timerId == mt.id }?.running == true
-                                    }
-                                    if (anyRunning) {
-                                        memberTimers.forEach { runner.stop(it.id) }
-                                        toast("已暂停组「" + group.name + "」")
-                                    } else {
-                                        memberTimers.forEach { t ->
-                                            runner.clear(t.id)
-                                            runner.start(t)
-                                        }
-                                        toast("已启动组「" + group.name + "」")
-                                    }
-                                }
-                            },
-                            onLongClick = { editingGroupId = group.id },
-                        )
-                    }
-                    // 再渲染没被编组的单计时器
-                    items(
-                        timers.filter { it.id !in groupedTimerIds }.sortedBy { it.position },
-                        key = { it.id },
-                    ) { timer ->
-                        TimerCell(
-                            timer = timer,
-                            runtime = runtimeById[timer.id],
-                            thresholdMinutes = thresholdMinutes,
-                            thresholdColors = thresholdColors,
-                            colorMode = colorMode,
-                            intervalMinutes = intervalMinutes,
-                            fractionDivisions = fractionDivisions,
-                            onClick = {
-                                // 单击进全屏：那里有启停按钮和时长编辑
-                                focusTimerId = timer.id
-                            },
-                            onLongClick = { showOrderDialog = true },
-                            onReset = {
-                                scope.launch {
-                                    runner.reset(timer.id)
-                                    toast("已重置：" + (timer.label ?: "未命名"))
-                                }
-                            },
-                            onDelete = {
-                                scope.launch {
-                                    runner.clear(timer.id)
-                                    currentPanel?.let { db.panelDao().removeRef(it.id, timer.id) }
-                                    toast("已删除")
-                                }
-                            },
-                        )
-                    }
                     }
                 }
             }
@@ -558,10 +597,7 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                         editingSequenceId = id
                     }
                 }
-                QuickAction(if (listMode) "卡片视图" else "列表视图", Modifier.weight(1f)) {
-                    listMode = !listMode
-                    selectedIds = emptySet()
-                }
+
                 QuickAction("面板管理", Modifier.weight(1f)) {
                     showPanelManager = true
                 }
@@ -921,6 +957,19 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
     }
 }
 
+/** 提醒配置名；未绑定时回退到列表第一个配置名。 */
+private fun alertNameOf(
+    profileId: Long?,
+    profiles: List<at.cwiesner.android.visualtimer.ext.data.AlertProfile>,
+): String {
+    val p = if (profileId != null) {
+        profiles.firstOrNull { it.id == profileId }
+    } else {
+        profiles.firstOrNull()
+    }
+    return p?.name ?: "默认"
+}
+
 /** 时刻显示 HH:mm。 */
 private fun clockOf(epochMillis: Long): String {
     val cal = java.util.Calendar.getInstance().apply { timeInMillis = epochMillis }
@@ -1023,8 +1072,10 @@ private fun TimerCell(
                     if (runtime != null && (!running || runtime.isOverdue)) {
                         Box(
                             modifier = Modifier
-                                .height(18.dp)
-                                .clip(RoundedCornerShape(9.dp))
+                                .height(20.dp)
+                                // 给固定最小宽度，避免「重置」两字被压成两行或偏左
+                                .widthIn(min = 34.dp)
+                                .clip(RoundedCornerShape(10.dp))
                                 .background(ExtColors.Surface)
                                 .clickable(onClick = onReset)
                                 .padding(horizontal = 8.dp),
@@ -1033,7 +1084,9 @@ private fun TimerCell(
                             Text(
                                 text = "重置",
                                 fontSize = 9.sp,
+                                lineHeight = 9.sp,
                                 color = ExtColors.Primary,
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                             )
                         }
                     }
@@ -1074,6 +1127,7 @@ private fun TimerList(
     onEdit: (TimerItem) -> Unit,
     /** 长按列表行：调出排序面板（替代原来的右上角菜单项）。 */
     onReorder: () -> Unit,
+    alertProfiles: List<at.cwiesner.android.visualtimer.ext.data.AlertProfile>,
     onSelectAll: () -> Unit,
     onChangeAlert: (TimerItem) -> Unit,
     onClearSelection: () -> Unit,
@@ -1162,18 +1216,18 @@ private fun TimerList(
                             color = ExtColors.TextDim,
                         )
                     }
-                    // 右侧按钮改为「提醒类型」：快速换这个计时器的提醒配置
-                    IconButton(
-                        onClick = { onChangeAlert(timer) },
-                        modifier = Modifier.size(32.dp),
-                    ) {
-                        Icon(
-                            Icons.Filled.Notifications,
-                            contentDescription = "提醒类型",
-                            tint = ExtColors.Amber,
-                            modifier = Modifier.size(16.dp),
-                        )
-                    }
+                    // 直接显示提醒名称，点一下换配置 —— 不用记住铃铛图标代表什么
+                    Text(
+                        text = alertNameOf(timer.alertProfileId, alertProfiles),
+                        fontSize = 10.sp,
+                        color = ExtColors.Amber,
+                        maxLines = 1,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(ExtColors.Surface)
+                            .clickable { onChangeAlert(timer) }
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                    )
                 }
             }
         }

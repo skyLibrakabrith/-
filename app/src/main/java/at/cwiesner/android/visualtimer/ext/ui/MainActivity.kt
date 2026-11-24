@@ -125,6 +125,8 @@ private enum class Dest(
 @Composable
 private fun MainScaffold() {
     var selected by remember { mutableIntStateOf(0) }
+    // 每次自增表示「用户点了面板按钮，要求切换视图」
+    var panelViewToggleTick by remember { mutableIntStateOf(0) }
     val dests = Dest.entries
 
     Scaffold(
@@ -136,7 +138,16 @@ private fun MainScaffold() {
                 dests.forEachIndexed { index, dest ->
                     NavigationBarItem(
                         selected = selected == index,
-                        onClick = { selected = index },
+                        onClick = {
+                            // 点「面板」时：如果已经在面板页，就切换卡片/列表视图；
+                            // 否则先跳到面板页。这样底边栏就能完成视图切换，
+                            // 不必再单独占一个快捷按钮。
+                            if (dest == Dest.Panels && selected == index) {
+                                panelViewToggleTick++
+                            } else {
+                                selected = index
+                            }
+                        },
                         icon = { Icon(dest.icon, contentDescription = dest.label) },
                         label = { Text(dest.label) },
                     )
@@ -151,7 +162,7 @@ private fun MainScaffold() {
         ) {
             when (dests[selected]) {
                 Dest.Home -> HomeScreen()
-                Dest.Panels -> PanelsScreen()
+                Dest.Panels -> PanelsScreen(toggleViewSignal = panelViewToggleTick)
                 Dest.Alerts -> AlertsScreen()
                 Dest.Settings -> SettingsScreen()
             }

@@ -384,24 +384,6 @@ fun AlertProfilePickerDialog(
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                // 默认项
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(
-                            if (selectedId == null) ExtColors.PrimaryDim else ExtColors.Surface,
-                        )
-                        .clickable { onSelect(null); onDismiss() }
-                        .padding(12.dp),
-                ) {
-                    Text(
-                        "默认（用第一个配置）",
-                        fontSize = 13.sp,
-                        color = ExtColors.TextPrimary,
-                    )
-                }
-
                 profiles.forEach { profile ->
                     val selected = profile.id == selectedId
                     Column(
