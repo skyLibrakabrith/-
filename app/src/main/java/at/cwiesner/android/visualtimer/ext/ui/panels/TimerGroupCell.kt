@@ -152,3 +152,5 @@ fun TimerGroupCell(
     }
 }
 
+/** 一个组里最多同时显示几个成员小盘。 */
+private const val MAX_IN_GROUP = 4
