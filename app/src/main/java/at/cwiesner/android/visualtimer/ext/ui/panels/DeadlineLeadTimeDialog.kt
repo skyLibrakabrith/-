@@ -27,6 +27,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import at.cwiesner.android.visualtimer.ext.data.LeadTimeOptions
 import at.cwiesner.android.visualtimer.ext.ui.ExtColors
+import at.cwiesner.android.visualtimer.ext.ui.common.describeMinutes
 
 /**
  * 创建 DDL 后的前置提醒选择。
@@ -123,11 +124,3 @@ fun DeadlineLeadTimeDialog(
     )
 }
 
-private fun describeMinutes(m: Long): String = when {
-    m >= 1440 -> "${m / 1440} 天"
-    m >= 60 -> "${m / 60} 小时" + if (m % 60 != 0L) " ${m % 60} 分" else ""
-    else -> "$m 分钟"
-}
-
-/** 供外部复用的格式化。 */
-internal fun leadLabel(m: Long): String = describeMinutes(m)

@@ -58,6 +58,7 @@ import at.cwiesner.android.visualtimer.ext.settings.SettingsRepo
 import at.cwiesner.android.visualtimer.ext.settings.ThemeMode
 import at.cwiesner.android.visualtimer.ext.ui.ExtColors
 import kotlinx.coroutines.launch
+import at.cwiesner.android.visualtimer.ext.ui.common.describeMinutes
 
 /**
  * 设置页。
@@ -527,11 +528,6 @@ private fun describeRingtone(context: android.content.Context, uri: String?): St
         val u = android.net.Uri.parse(uri)
         android.media.RingtoneManager.getRingtone(context, u)?.getTitle(context)
     }.getOrNull() ?: "已选择"
-}
-
-private fun describeMinutes(m: Long): String = when {
-    m >= 60 -> "${m / 60} 小时" + if (m % 60 != 0L) " ${m % 60} 分" else ""
-    else -> "$m 分钟"
 }
 
 @Composable
