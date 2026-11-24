@@ -69,6 +69,7 @@ import androidx.compose.ui.unit.sp
 import at.cwiesner.android.visualtimer.ext.ExtApplication
 import at.cwiesner.android.visualtimer.ext.data.Panel
 import at.cwiesner.android.visualtimer.ext.data.PanelTimerRef
+import at.cwiesner.android.visualtimer.ext.data.AlertProfile
 import at.cwiesner.android.visualtimer.ext.data.GroupMember
 import at.cwiesner.android.visualtimer.ext.data.TimerGroup
 import at.cwiesner.android.visualtimer.ext.data.Step
@@ -426,11 +427,6 @@ fun PanelsScreen(
                     timers = timers,
                     runtimeById = runtimeById,
                     selectedIds = selectedIds,
-                    colorMode = colorMode,
-                    intervalMinutes = intervalMinutes,
-                    fractionDivisions = fractionDivisions,
-                    thresholdMinutes = thresholdMinutes,
-                    thresholdColors = thresholdColors,
                     onToggle = { id ->
                         selectedIds = if (id in selectedIds) selectedIds - id else selectedIds + id
                     },
@@ -446,7 +442,6 @@ fun PanelsScreen(
                         }
                     },
                     onEdit = { t -> editingTimerId = t.id },
-                    onReorder = { showOrderDialog = true },
                     alertProfiles = alertProfiles,
                     onSelectAll = { selectedIds = timers.map { it.id }.toSet() },
                     onClearSelection = { selectedIds = emptySet() },
