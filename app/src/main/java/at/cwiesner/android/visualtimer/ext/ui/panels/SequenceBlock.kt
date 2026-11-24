@@ -1,38 +1,16 @@
 package at.cwiesner.android.visualtimer.ext.ui.panels
 
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Card
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import at.cwiesner.android.visualtimer.ext.data.Step
-import at.cwiesner.android.visualtimer.ext.data.StepSequence
-import at.cwiesner.android.visualtimer.ext.domain.DeadlineCalculator
-import at.cwiesner.android.visualtimer.ext.domain.StepSequenceEngine
 import at.cwiesner.android.visualtimer.ext.ui.ExtColors
 import kotlin.math.cos
 import kotlin.math.sin
@@ -50,140 +28,22 @@ import kotlin.math.sin
  * - 现在走到第几个（哪块亮着）
  * - 当前阶段还剩多少（中央时间 + 进度弧）
  */
-@Composable
-fun SequenceBlock(
-    sequence: StepSequence,
-    steps: List<Step>,
-    phase: StepSequenceEngine.Phase,
-    isActive: Boolean,
-    onStart: () -> Unit,
-    onNext: () -> Unit,
-    onStop: () -> Unit,
-    onLongClick: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val currentIndex = when (phase) {
-        is StepSequenceEngine.Phase.Running -> phase.stepIndex
-        is StepSequenceEngine.Phase.AwaitingConfirm -> phase.finishedStepIndex
-        else -> -1
-    }
-    val progress = when (phase) {
-        is StepSequenceEngine.Phase.Running -> phase.progress
-        else -> 0f
-    }
-    val awaiting = phase is StepSequenceEngine.Phase.AwaitingConfirm
-    val centerText = when (phase) {
-        is StepSequenceEngine.Phase.Running ->
-            DeadlineCalculator.formatRemaining(phase.remainingMillis)
-        is StepSequenceEngine.Phase.AwaitingConfirm ->
-            "+" + DeadlineCalculator.formatRemaining(phase.elapsedMillis)
-        is StepSequenceEngine.Phase.Finished -> "完成"
-        else -> DeadlineCalculator.formatRemaining(steps.sumOf { it.durationMillis })
-    }
-    val activeColor = if (awaiting) ExtColors.Red else ExtColors.Primary
-
-    Card(
-        modifier = modifier
-            .fillMaxWidth()
-            .clickable(onClick = onLongClick)
-            .clip(RoundedCornerShape(18.dp)),
-        shape = RoundedCornerShape(18.dp),
-    ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            // 标题行
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = sequence.name,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = ExtColors.TextPrimary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f),
-                )
-                Text(
-                    text = if (isActive && currentIndex >= 0) {
-                        "第 ${currentIndex + 1}/${steps.size} 阶段"
-                    } else {
-                        "${steps.size} 阶段"
-                    },
-                    fontSize = 11.sp,
-                    color = if (isActive) activeColor else ExtColors.TextDim,
-                )
-            }
-
-            // 大圆盘
-            val landscape = at.cwiesner.android.visualtimer.ext.ui.isLandscape()
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(
-                        min = if (landscape) 150.dp else 200.dp,
-                        max = if (landscape) 190.dp else 260.dp,
-                    )
-                    .padding(vertical = if (landscape) 4.dp else 8.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                SequenceDial(
-                    steps = steps,
-                    currentIndex = currentIndex,
-                    progress = progress,
-                    activeColor = activeColor,
-                    awaiting = awaiting,
-                )
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(
-                        text = centerText,
-                        fontSize = 34.sp,
-                        fontWeight = FontWeight.Light,
-                        color = ExtColors.TextPrimary,
-                    )
-                    steps.getOrNull(currentIndex)?.label?.let {
-                        Text(
-                            it,
-                            fontSize = 12.sp,
-                            color = ExtColors.TextSecondary,
-                            maxLines = 1,
-                        )
-                    }
-                }
-            }
-
-            // 操作行
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                if (!isActive) {
-                    BlockButton("开始", true, Modifier.weight(1f), onStart)
-                } else {
-                    BlockButton("下一阶段", true, Modifier.weight(1f), onNext)
-                    BlockButton("停止", false, Modifier.weight(1f), onStop)
-                }
-            }
-        }
-    }
-}
-
 /** 圆形表盘本体：按阶段时长切扇区。 */
 @Composable
-private fun SequenceDial(
+fun SequenceDial(
     steps: List<Step>,
     currentIndex: Int,
     progress: Float,
     activeColor: Color,
     awaiting: Boolean,
+    modifier: Modifier = Modifier,
 ) {
     val trackColor = ExtColors.Track
     val doneColor = ExtColors.TextDim.copy(alpha = 0.35f)
     val idleColor = ExtColors.PrimaryDim.copy(alpha = 0.55f)
     val dividerColor = ExtColors.OutlineStrong
 
-    Canvas(modifier = Modifier.fillMaxSize()) {
+    Canvas(modifier = modifier.fillMaxSize()) {
         val diameter = size.minDimension
         val center = Offset(size.width / 2f, size.height / 2f)
         val radius = diameter * 0.44f
@@ -267,26 +127,3 @@ private fun SequenceDial(
     }
 }
 
-@Composable
-private fun BlockButton(
-    text: String,
-    primary: Boolean,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit,
-) {
-    Box(
-        modifier = modifier
-            .height(40.dp)
-            .clip(RoundedCornerShape(10.dp))
-            .background(if (primary) ExtColors.Primary else ExtColors.Surface)
-            .clickable(onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            text = text,
-            fontSize = 13.sp,
-            fontWeight = FontWeight.Medium,
-            color = if (primary) Color(0xFF001639) else ExtColors.TextPrimary,
-        )
-    }
-}

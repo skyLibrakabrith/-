@@ -128,16 +128,25 @@ class AlertOverlayService : Service() {
         // 序列：关闭 → 下一阶段
         if (sequenceId > 0L) {
             buttons.addView(button("下一阶段", primary = true) {
-                (application as? ExtApplication)?.advanceSequence()
+                val app = application as? ExtApplication
+                // 先确认提醒，震动才会停
+                app?.panelRunner?.acknowledge(timerId)
+                app?.advanceSequence()
                 stopSelf()
             })
         }
 
         buttons.addView(button("回到应用", primary = sequenceId <= 0L) {
+            (application as? ExtApplication)?.panelRunner?.acknowledge(timerId)
             openApp()
             stopSelf()
         })
-        buttons.addView(button("留在当前", primary = false) { stopSelf() })
+        buttons.addView(button("留在当前", primary = false) {
+            // 「留在当前」就是关闭提醒 —— 只是不把用户拽回应用。
+            // 三个按钮都会 acknowledge，区别只在是否打开应用。
+            (application as? ExtApplication)?.panelRunner?.acknowledge(timerId)
+            stopSelf()
+        })
 
         card.addView(buttons)
 

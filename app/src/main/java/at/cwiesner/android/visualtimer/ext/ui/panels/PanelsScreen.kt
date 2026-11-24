@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -76,6 +77,7 @@ import at.cwiesner.android.visualtimer.ext.domain.TimerRuntime
 import at.cwiesner.android.visualtimer.ext.settings.SettingsRepo
 import at.cwiesner.android.visualtimer.ext.ui.ExtColors
 import at.cwiesner.android.visualtimer.ext.ui.sequences.SequenceEditorScreen
+import at.cwiesner.android.visualtimer.ext.ui.sequences.SequenceFocusScreen
 import at.cwiesner.android.visualtimer.ext.ui.wheel.PieTimerView
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.flowOf
@@ -120,6 +122,7 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
     var showPanelEditor by remember { mutableStateOf(false) }
     var editingGroupId by remember { mutableStateOf<Long?>(null) }
     var editingSequenceId by remember { mutableStateOf<Long?>(null) }
+    var focusSequenceId by remember { mutableStateOf<Long?>(null) }
     var showOrderDialog by remember { mutableStateOf(false) }
     var showNewTimer by remember { mutableStateOf(false) }
     var showDeadline by remember { mutableStateOf(false) }
@@ -379,6 +382,38 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                 .padding(inner),
         ) {
             run {
+            val focusedSeq = focusSequenceId?.let { sid ->
+                panelSequences.firstOrNull { it.id == sid }
+            }
+            if (focusedSeq != null) {
+                val seqSteps = stepsBySequence[focusedSeq.id].orEmpty()
+                val seqActive = engineActiveId == focusedSeq.id
+                SequenceFocusScreen(
+                    sequence = focusedSeq,
+                    steps = seqSteps,
+                    phase = if (seqActive) enginePhase else StepSequenceEngine.Phase.Idle,
+                    isActive = seqActive,
+                    onStart = {
+                        if (seqSteps.isEmpty()) {
+                            toast("这个序列还没有阶段，长按卡片去编辑")
+                        } else {
+                            app.sequenceEngine.start(focusedSeq, seqSteps)
+                            toast("开始序列「" + focusedSeq.name + "」")
+                        }
+                    },
+                    onNext = { app.sequenceEngine.confirm() },
+                    onStop = {
+                        app.sequenceEngine.stop()
+                        toast("已停止")
+                    },
+                    onReset = {
+                        app.sequenceEngine.stop()
+                        toast("序列已重置")
+                    },
+                    onClose = { focusSequenceId = null },
+                    modifier = Modifier.fillMaxSize(),
+                )
+            } else
             val focused = focusTimerId?.let { id -> timers.firstOrNull { it.id == id } }
             if (focused != null) {
                 TimerFocusScreen(
@@ -455,31 +490,22 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    // 序列：整块占满一行，盘面尺寸与首页时钟同级
-                    items(
-                        items = panelSequences,
-                        key = { sq -> "s" + sq.id },
-                        span = { GridItemSpan(maxLineSpan) },
-                    ) { sq ->
+                    // 序列：与计时器同尺寸的小卡片，点击进全屏看大圆盘
+                    items(panelSequences.sortedBy { it.sortOrder }, key = { sq -> "s" + sq.id }) { sq ->
                         val stepList = stepsBySequence[sq.id].orEmpty()
                         val active = engineActiveId == sq.id
-                        SequenceBlock(
+                        SequenceCell(
                             sequence = sq,
                             steps = stepList,
                             phase = if (active) enginePhase else StepSequenceEngine.Phase.Idle,
                             isActive = active,
-                            onStart = {
-                                if (stepList.isEmpty()) {
-                                    toast("这个序列还没有阶段，去序列页编辑")
-                                } else {
+                            onClick = {
+                                // 点卡片进全屏：那里才是大圆盘
+                                focusSequenceId = sq.id
+                                if (!active && stepList.isNotEmpty()) {
                                     app.sequenceEngine.start(sq, stepList)
                                     toast("开始序列「" + sq.name + "」")
                                 }
-                            },
-                            onNext = { app.sequenceEngine.confirm() },
-                            onStop = {
-                                app.sequenceEngine.stop()
-                                toast("已停止序列「" + sq.name + "」")
                             },
                             onLongClick = { editingSequenceId = sq.id },
                         )
@@ -564,6 +590,12 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                                 }
                             },
                             onLongClick = { focusTimerId = timer.id },
+                            onReset = {
+                                scope.launch {
+                                    runner.reset(timer.id)
+                                    toast("已重置：" + (timer.label ?: "未命名"))
+                                }
+                            },
                             onDelete = {
                                 scope.launch {
                                     runner.clear(timer.id)
@@ -895,6 +927,7 @@ private fun TimerCell(
     fractionDivisions: Int,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
+    onReset: () -> Unit,
     onDelete: () -> Unit,
 ) {
     val running = runtime?.running == true
@@ -989,6 +1022,29 @@ private fun TimerCell(
                         },
                     ),
             )
+
+            // 超时 / 暂停时给一个明确的「重置」按钮 —— 之前只能靠点一下卡片，
+            // 用户根本看不出这条路。按钮只在需要时出现，不占常规空间。
+            val overdue = (runtime?.overdueMillis ?: 0L) > 0L
+            if (overdue || (!running && runtime != null)) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 4.dp)
+                        .height(22.dp)
+                        .clip(RoundedCornerShape(11.dp))
+                        .background(ExtColors.Surface)
+                        .clickable(onClick = onReset)
+                        .padding(horizontal = 10.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = "重置",
+                        fontSize = 10.sp,
+                        color = ExtColors.Primary,
+                    )
+                }
+            }
         }
     }
 }

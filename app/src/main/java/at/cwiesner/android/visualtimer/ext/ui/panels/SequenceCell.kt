@@ -2,7 +2,8 @@ package at.cwiesner.android.visualtimer.ext.ui.panels
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.aspectRatio
@@ -37,6 +38,7 @@ import at.cwiesner.android.visualtimer.ext.ui.ExtColors
  * 与计时器/组**同尺寸**占一个格子。盘面用「分段环」表达：
  * 每个阶段按时长占比分一段，当前阶段高亮 —— 等比缩小版的序列轮盘。
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun SequenceCell(
     sequence: StepSequence,
@@ -77,7 +79,7 @@ fun SequenceCell(
             .fillMaxWidth()
             .aspectRatio(0.92f)
             .clip(RoundedCornerShape(16.dp))
-            .clickable(onClick = onClick),
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick),
         shape = RoundedCornerShape(16.dp),
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
