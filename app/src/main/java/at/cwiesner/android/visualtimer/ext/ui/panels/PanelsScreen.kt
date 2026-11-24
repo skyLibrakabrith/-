@@ -317,7 +317,12 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
             }
         },
         floatingActionButton = {
-            ExtendedFloatingActionButton(
+            // 任何编辑弹窗打开时隐藏 FAB，避免图标浮在对话框上
+            val anyDialogOpen = showPanelEditor || showPanelManager || showNewTimer ||
+                showDeadline || showOrderDialog || editingTimerId != null ||
+                editingGroupId != null || editingSequenceId != null ||
+                focusSequenceId != null || focusTimerId != null
+            if (!anyDialogOpen) ExtendedFloatingActionButton(
                 onClick = { if (panels.isEmpty()) showNewPanel = true else showNewTimer = true },
                 containerColor = ExtColors.Primary,
                 icon = { Icon(Icons.Filled.Add, contentDescription = null) },
@@ -438,27 +443,6 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                 )
 
                 else -> Column(modifier = Modifier.fillMaxSize()) {
-                    // 快捷键：把「新建序列」从菜单里提出来，避免藏在二级入口
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(start = 12.dp, end = 12.dp, top = 8.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        QuickAction("新建序列", Modifier.weight(1f)) {
-                            scope.launch {
-                                val pid = currentPanel?.id ?: return@launch
-                                val id = db.sequenceDao().upsert(
-                                    StepSequence(name = "新序列", panelId = pid),
-                                )
-                                editingSequenceId = id
-                            }
-                        }
-                        QuickAction("编辑面板", Modifier.weight(1f)) {
-                            showPanelEditor = true
-                        }
-                    }
-
                     LazyVerticalGrid(
                     columns = GridCells.Fixed(
                         if (at.cwiesner.android.visualtimer.ext.ui.isLandscape()) {
@@ -591,6 +575,27 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                             },
                         )
                     }
+                    }
+
+                    // 底部快捷栏：占据系统栏留白那条带，放面板级操作
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        QuickAction("新建序列", Modifier.weight(1f)) {
+                            scope.launch {
+                                val pid = currentPanel?.id ?: return@launch
+                                val id = db.sequenceDao().upsert(
+                                    StepSequence(name = "新序列", panelId = pid),
+                                )
+                                editingSequenceId = id
+                            }
+                        }
+                        QuickAction("面板管理", Modifier.weight(1f)) {
+                            showPanelManager = true
+                        }
                     }
                 }
             }

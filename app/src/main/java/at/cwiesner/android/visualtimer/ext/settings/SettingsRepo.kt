@@ -106,7 +106,7 @@ class SettingsRepo(private val context: Context) {
 
     /** 网格列数：1=单列大表盘，2=两列，3=三列小表盘。 */
     val gridColumns: Flow<Int> = store.data.map {
-        (it[KEY_GRID_COLUMNS]?.toIntOrNull() ?: 2).coerceIn(1, 3)
+        (it[KEY_GRID_COLUMNS]?.toIntOrNull() ?: 2).coerceIn(1, 8)
     }
 
     suspend fun setTheme(mode: ThemeMode) {
@@ -154,7 +154,7 @@ class SettingsRepo(private val context: Context) {
     }
 
     suspend fun setGridColumns(n: Int) {
-        store.edit { it[KEY_GRID_COLUMNS] = n.coerceIn(1, 3).toString() }
+        store.edit { it[KEY_GRID_COLUMNS] = n.coerceIn(1, 8).toString() }
     }
 
     companion object {

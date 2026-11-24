@@ -294,27 +294,27 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
         }
 
         // ---------- 悬浮窗 ----------
-        SettingsCard(title = "表盘布局") {
+                SettingsCard(title = "表盘布局") {
             Text(
-                "格数决定每个表盘的大小：1 列 = 单列大表盘，3 列 = 小表盘密度更高。",
+                "列数决定每个表盘的大小。大屏（平板/横屏）可以拉到 4-6 列，手机建议 2-3 列。",
                 fontSize = 12.sp,
                 color = ExtColors.TextDim,
             )
-            Row(
+            Text(
+                "当前 $gridColumns 列",
+                fontSize = 13.sp,
+                color = ExtColors.Primary,
+            )
+            NumberWheel(
+                values = (1..8).toList(),
+                selected = gridColumns.coerceIn(1, 8),
+                onSelect = { scope.launch { settings.setGridColumns(it) } },
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                listOf(1, 2, 3).forEach { n ->
-                    SelectChip(
-                        text = if (n == 1) "大（1 列）" else if (n == 2) "中（2 列）" else "小（3 列）",
-                        selected = gridColumns == n,
-                        modifier = Modifier.weight(1f),
-                    ) { scope.launch { settings.setGridColumns(n) } }
-                }
-            }
+                suffix = " 列",
+            )
         }
 
-        SettingsCard(title = "悬浮窗") {
+SettingsCard(title = "悬浮窗") {
             Text(
                 "在别的应用上层显示正在运行的计时器。需要系统「显示在其他应用上层」权限。",
                 fontSize = 12.sp,

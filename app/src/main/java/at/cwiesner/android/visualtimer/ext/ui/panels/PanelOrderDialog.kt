@@ -1,22 +1,23 @@
 package at.cwiesner.android.visualtimer.ext.ui.panels
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowDownward
-import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.ArrowForward
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -51,12 +52,11 @@ data class PanelEntry(
 )
 
 /**
- * 排序面板内容。
+ * 卡片式调序界面。
  *
- * 面板里混着三种东西：序列、组、单个计时器。它们存在三张不同的表里，
- * 各有自己的 order 字段。为了让它们能**互相穿插**排序，
- * 这里把它们拍平成一个统一列表，拖动时统一重排，
- * 保存时再按「先整体编号、再按类型回写」的方式落库。
+ * 之前是纵向列表 + 上下箭头，条目一多要点几十次，很慢。
+ * 现在改成**横向卡片流**：条目平铺成可左右滑动的卡片，
+ * 点卡片上的 ← → 直接换位，一屏能看更多、操作更直觉。
  */
 @Composable
 fun PanelOrderDialog(
@@ -65,6 +65,7 @@ fun PanelOrderDialog(
     onSave: (List<PanelEntry>) -> Unit,
 ) {
     var list by remember(entries) { mutableStateOf(entries.sortedBy { it.order }) }
+    val state = rememberLazyListState()
 
     fun move(index: Int, delta: Int) {
         val target = index + delta
@@ -83,93 +84,129 @@ fun PanelOrderDialog(
         title = { Text("调整顺序") },
         text = {
             Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 440.dp)
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
+                Text(
+                    "点卡片上的箭头左右移动，越靠前越先显示。",
+                    fontSize = 12.sp,
+                    color = ExtColors.TextDim,
+                )
+
                 if (list.isEmpty()) {
-                    Text(
-                        "这个面板还没有内容。",
-                        fontSize = 12.sp,
-                        color = ExtColors.TextDim,
-                    )
-                }
-                list.forEachIndexed { index, entry ->
-                    Row(
+                    Text("这个面板还没有内容。", fontSize = 12.sp, color = ExtColors.TextDim)
+                } else {
+                    LazyRow(
+                        state = state,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(ExtColors.Surface)
-                            .padding(horizontal = 10.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
+                            .height(150.dp),
+                        contentPadding = PaddingValues(vertical = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        // 类型色点
-                        Box(
-                            modifier = Modifier
-                                .size(8.dp)
-                                .clip(CircleShape)
-                                .background(kindColor(entry.kind)),
-                        )
-                        Column(
-                            modifier = Modifier
-                                .weight(1f)
-                                .padding(start = 8.dp),
-                        ) {
-                            Text(
-                                entry.name,
-                                fontSize = 13.sp,
-                                color = ExtColors.TextPrimary,
-                            )
-                            Text(
-                                entry.kind.label,
-                                fontSize = 10.sp,
-                                color = ExtColors.TextDim,
-                            )
-                        }
-                        IconButton(
-                            onClick = { move(index, -1) },
-                            enabled = index > 0,
-                            modifier = Modifier.size(32.dp),
-                        ) {
-                            Icon(
-                                Icons.Filled.ArrowUpward,
-                                contentDescription = "上移",
-                                tint = if (index > 0) ExtColors.Primary else ExtColors.TextDim,
-                                modifier = Modifier.size(16.dp),
-                            )
-                        }
-                        IconButton(
-                            onClick = { move(index, 1) },
-                            enabled = index < list.size - 1,
-                            modifier = Modifier.size(32.dp),
-                        ) {
-                            Icon(
-                                Icons.Filled.ArrowDownward,
-                                contentDescription = "下移",
-                                tint = if (index < list.size - 1) ExtColors.Primary
-                                else ExtColors.TextDim,
-                                modifier = Modifier.size(16.dp),
+                        itemsIndexed(list) { index, entry ->
+                            OrderCard(
+                                index = index,
+                                total = list.size,
+                                entry = entry,
+                                onMoveLeft = { move(index, -1) },
+                                onMoveRight = { move(index, 1) },
                             )
                         }
                     }
                 }
             }
         },
-        confirmButton = {
-            TextButton(onClick = { onSave(list) }) { Text("保存顺序") }
-        },
+        confirmButton = { TextButton(onClick = { onSave(list) }) { Text("保存顺序") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     )
 }
 
-private fun kindColor(kind: EntryKind): Color = when (kind) {
+@Composable
+private fun OrderCard(
+    index: Int,
+    total: Int,
+    entry: PanelEntry,
+    onMoveLeft: () -> Unit,
+    onMoveRight: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .size(width = 118.dp, height = 134.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(ExtColors.Surface)
+            .padding(10.dp),
+        verticalArrangement = Arrangement.SpaceBetween,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(
+                text = "#${index + 1}",
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Medium,
+                color = ExtColors.Primary,
+            )
+            Box(
+                modifier = Modifier
+                    .size(8.dp)
+                    .clip(CircleShape)
+                    .background(kindColorOf(entry.kind)),
+            )
+        }
+
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(
+                text = entry.name,
+                fontSize = 12.sp,
+                color = ExtColors.TextPrimary,
+                maxLines = 2,
+            )
+            Text(
+                text = entry.kind.label,
+                fontSize = 10.sp,
+                color = ExtColors.TextDim,
+            )
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(
+                onClick = onMoveLeft,
+                enabled = index > 0,
+                modifier = Modifier.size(30.dp),
+            ) {
+                Icon(
+                    Icons.Filled.ArrowBack,
+                    contentDescription = "前移",
+                    tint = if (index > 0) ExtColors.Primary else ExtColors.TextDim,
+                    modifier = Modifier.size(16.dp),
+                )
+            }
+            IconButton(
+                onClick = onMoveRight,
+                enabled = index < total - 1,
+                modifier = Modifier.size(30.dp),
+            ) {
+                Icon(
+                    Icons.Filled.ArrowForward,
+                    contentDescription = "后移",
+                    tint = if (index < total - 1) ExtColors.Primary else ExtColors.TextDim,
+                    modifier = Modifier.size(16.dp),
+                )
+            }
+        }
+    }
+}
+
+private fun kindColorOf(kind: EntryKind): Color = when (kind) {
     EntryKind.Sequence -> ExtColors.Palette[2]
     EntryKind.Group -> ExtColors.Amber
     EntryKind.Timer -> ExtColors.Primary
 }
-
-/** 让未使用的 import 保持安静（FontWeight 供后续扩展）。 */
-@Suppress("unused")
-private val UNUSED = FontWeight.Normal

@@ -47,6 +47,10 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        // 直接给系统栏上纯黑底：enableEdgeToEdge 会让它们透明，
+        // 与 Scaffold 之间露出一条底色黑带
+        window.statusBarColor = android.graphics.Color.BLACK
+        window.navigationBarColor = android.graphics.Color.BLACK
 
         ensureNotificationPermission()
 
@@ -125,7 +129,10 @@ private fun MainScaffold() {
 
     Scaffold(
         bottomBar = {
-            NavigationBar {
+            NavigationBar(
+                containerColor = ExtColors.PureBlack,
+                contentColor = ExtColors.Primary,
+            ) {
                 dests.forEachIndexed { index, dest ->
                     NavigationBarItem(
                         selected = selected == index,
