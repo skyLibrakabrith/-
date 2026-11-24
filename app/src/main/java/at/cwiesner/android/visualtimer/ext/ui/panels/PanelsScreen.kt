@@ -413,7 +413,7 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                     onClose = { focusSequenceId = null },
                     modifier = Modifier.fillMaxSize(),
                 )
-            } else
+            } else {
             val focused = focusTimerId?.let { id -> timers.firstOrNull { it.id == id } }
             if (focused != null) {
                 TimerFocusScreen(
@@ -608,6 +608,7 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                 }
             }
             }
+            }   // 关闭 else {
         }
     }
 
