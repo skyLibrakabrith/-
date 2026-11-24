@@ -1,5 +1,7 @@
 package at.cwiesner.android.visualtimer.ext.ui.alerts
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -334,7 +336,7 @@ private fun SoundView(
                         TextButton(
                             enabled = soundEnabled,
                             onClick = {
-                                runCatching { settings.setRingtoneUri(null) }
+                                scope.launch { settings.setRingtoneUri(null) }
                             },
                         ) { Text("恢复默认") }
                     }
