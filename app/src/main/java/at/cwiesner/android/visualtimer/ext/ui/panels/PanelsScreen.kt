@@ -134,6 +134,8 @@ fun PanelsScreen(
     var focusSequenceId by remember { mutableStateOf<Long?>(null) }
     var editingTimerId by remember { mutableStateOf<Long?>(null) }
     var alertPickerTimerId by remember { mutableStateOf<Long?>(null) }
+    // DDL 创建后弹出的「提前提醒」设置：timerId to 剩余毫秒
+    var leadTimeTarget by remember { mutableStateOf<Pair<Long, Long>?>(null) }
     var showOrderDialog by remember { mutableStateOf(false) }
     var showNewTimer by remember { mutableStateOf(false) }
     var showDeadline by remember { mutableStateOf(false) }
@@ -184,6 +186,11 @@ fun PanelsScreen(
         currentPanel?.let { db.sequenceDao().observeByPanel(it.id) } ?: flowOf(emptyList())
     }.collectAsState(initial = emptyList<StepSequence>())
 
+    // 已归属某个组的计时器：网格里不再单独显示
+    val groupedTimerIds = remember(allGroupMembers) {
+        allGroupMembers.map { it.timerId }.toSet()
+    }
+
     // 跨类型统一列表：序列 / 组 / 未成组计时器放在一起参与排序与渲染。
     // 之前分三段渲染，导致无法在界面上跨类型拖动排序。
     val gridEntries: List<PanelEntry> = remember(
@@ -220,10 +227,6 @@ fun PanelsScreen(
         stepsBySequence = map
     }
 
-    // 已归属某个组的计时器：网格里不再单独显示
-    val groupedTimerIds = remember(allGroupMembers) {
-        allGroupMembers.map { it.timerId }.toSet()
-    }
     val memberIds by remember(currentPanel?.id) {
         currentPanel?.let { p ->
             kotlinx.coroutines.flow.flow {
@@ -401,6 +404,7 @@ fun PanelsScreen(
                     fractionDivisions = fractionDivisions,
                     thresholdMinutes = thresholdMinutes,
                     thresholdColors = thresholdColors,
+                    locked = focused.locked,
                     onDurationCommit = { d ->
                         scope.launch { db.timerDao().upsert(focused.copy(durationMillis = d)) }
                     },
@@ -558,7 +562,10 @@ fun PanelsScreen(
                                         intervalMinutes = intervalMinutes,
                                         fractionDivisions = fractionDivisions,
                                         onClick = { focusTimerId = t.id },
-                                        onLongClick = { editingTimerId = t.id },
+                                        onLongClick = {
+                                            // DDL 已锁定时长，长按不打开编辑器
+                                            if (!t.locked) editingTimerId = t.id
+                                        },
                                         onReset = {
                                             scope.launch { runner.reset(t.id) }
                                         },
@@ -839,6 +846,37 @@ fun PanelsScreen(
         )
     }
 
+    // ---- DDL 提前提醒（创建后立即弹出）----
+    val leadTarget = leadTimeTarget
+    if (leadTarget != null) {
+        DeadlineLeadTimeDialog(
+            remainingMillis = leadTarget.second,
+            onDismiss = { leadTimeTarget = null },
+            onConfirm = { leads ->
+                leadTimeTarget = null
+                scope.launch {
+                    db.deadlineReminderDao().clearTimer(leadTarget.first)
+                    if (leads.isNotEmpty()) {
+                        db.deadlineReminderDao().upsertAll(
+                            leads.map { m ->
+                                at.cwiesner.android.visualtimer.ext.data.DeadlineReminder(
+                                    timerId = leadTarget.first,
+                                    leadMinutes = m,
+                                )
+                            },
+                        )
+                    }
+                    // 同步注册到运行时，tick 才能按时触发
+                    runner.setLeadMinutes(leadTarget.first, leads)
+                    toast(
+                        if (leads.isEmpty()) "已跳过提前提醒"
+                        else "已设置 ${leads.size} 个提前提醒"
+                    )
+                }
+            },
+        )
+    }
+
     // ---- 提醒类型（列表右侧按钮触发）----
     val alertPickerTimer = alertPickerTimerId?.let { id ->
         allTimers.firstOrNull { it.id == id }
@@ -937,6 +975,9 @@ fun PanelsScreen(
                             label = label.ifBlank { "到点倒计时" },
                             durationMillis = remaining,
                             deadlineEpochMillis = deadlineEpoch,
+                            kind = TimerKind.Deadline,
+                            // DDL 一旦创建就锁定：时间由截止时刻决定，不允许再改
+                            locked = true,
                         ),
                     )
                     val existing = db.panelDao().refsOf(currentPanel.id)
@@ -949,8 +990,11 @@ fun PanelsScreen(
                             ),
                         ),
                     )
+                    // 自动开始倒计时
                     db.timerDao().get(timerId)?.let { runner.startUntil(it, deadlineEpoch, now) }
-                    toast("已创建 DDL：" + (label.ifBlank { "到点倒计时" }))
+                    toast("DDL 已创建并开始倒计时")
+                    // 紧接着问一句要不要提前提醒
+                    leadTimeTarget = timerId to remaining
                 }
             },
         )

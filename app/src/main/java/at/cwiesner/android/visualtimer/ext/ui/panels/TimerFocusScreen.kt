@@ -71,6 +71,8 @@ fun TimerFocusScreen(
     fractionDivisions: Int,
     thresholdMinutes: List<Long>,
     thresholdColors: List<Color>,
+    /** DDL 锁定时长：不显示拖拽改时长的入口。 */
+    locked: Boolean = false,
     onDurationCommit: (Long) -> Unit,
     onStart: () -> Unit,
     onPause: () -> Unit,
@@ -132,8 +134,8 @@ fun TimerFocusScreen(
                 totalMillis = if (isStopwatch) 0L else total,
                 remainingMillis = remain,
                 running = running,
-                onDurationChange = if (running) null else { d -> draft = d },
-                onDurationCommit = if (running) null else { d ->
+                onDurationChange = if (running || locked) null else { d -> draft = d },
+                onDurationCommit = if (running || locked) null else { d ->
                     draft = d
                     onDurationCommit(d)
                 },

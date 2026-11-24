@@ -25,6 +25,8 @@ data class TimerRuntime(
     val alertProfileId: Long? = null,
     /** 正计时模式：从 0 往上累加，不会到点。 */
     val stopwatch: Boolean = false,
+    /** 该计时器已触发过的提前提醒（分钟），避免重复提醒。 */
+    val firedLeads: Set<Long> = emptySet(),
     /**
      * 到点之后已经超时多久（正计时）。
      * 倒计时走完不会停下，而是转入这个字段继续累加，
@@ -82,6 +84,21 @@ class PanelRunner(private val scope: CoroutineScope) {
      * 之前只震一下、闪 6 次就停，等于没有提醒作用。
      * 用户重置 / 停止 / 关闭悬浮窗时才会移出。
      */
+    /** 提前提醒事件：计时器 + 触发的提前分钟数。 */
+    private val _leadAlerts =
+        kotlinx.coroutines.flow.MutableSharedFlow<Pair<TimerRuntime, Long>>(
+            extraBufferCapacity = 16,
+        )
+    val leadAlerts: kotlinx.coroutines.flow.SharedFlow<Pair<TimerRuntime, Long>> =
+        _leadAlerts.asSharedFlow()
+
+    /** 计时器 id → 提前提醒分钟列表。由界面在创建/加载时写入。 */
+    private val leadMinutesOf = mutableMapOf<Long, List<Long>>()
+
+    fun setLeadMinutes(timerId: Long, minutes: List<Long>) {
+        leadMinutesOf[timerId] = minutes.sortedDescending()
+    }
+
     private val _alerting = MutableStateFlow<Set<Long>>(emptySet())
     val alerting: StateFlow<Set<Long>> = _alerting.asStateFlow()
 
@@ -215,7 +232,16 @@ class PanelRunner(private val scope: CoroutineScope) {
             }
 
             if (remaining > 0L) {
-                if (remaining != r.remainingMillis) {
+                // 提前提醒：跨过某个 leadMinutes 阈值时发一次
+                val remainMin = remaining / 60_000L
+                val leads = leadMinutesOf[k].orEmpty()
+                val due = leads.filter { it <= remainMin && it !in r.firedLeads }
+                if (due.isNotEmpty()) {
+                    val updated = r.copy(firedLeads = r.firedLeads + due)
+                    next[k] = updated.copy(remainingMillis = remaining, overdueMillis = 0L)
+                    changed = true
+                    due.forEach { lead -> _leadAlerts.tryEmit(updated to lead) }
+                } else if (remaining != r.remainingMillis) {
                     changed = true
                     next[k] = r.copy(remainingMillis = remaining, overdueMillis = 0L)
                 } else {

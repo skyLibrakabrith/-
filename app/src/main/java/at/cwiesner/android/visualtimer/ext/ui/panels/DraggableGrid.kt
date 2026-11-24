@@ -1,6 +1,7 @@
 package at.cwiesner.android.visualtimer.ext.ui.panels
 
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -157,7 +158,7 @@ private fun DraggableItemGesture(
 ) {
     androidx.compose.foundation.layout.Box(
         modifier = Modifier.pointerInput(Unit) {
-            androidx.compose.foundation.gestures.detectTapGestures(
+            detectTapGestures(
                 onTap = { onClick() },
                 onDoubleTap = { onDoubleClick() },
                 onLongPress = { onLongPress() },

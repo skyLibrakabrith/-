@@ -23,6 +23,13 @@ data class TimerItem(
     val kind: TimerKind = TimerKind.Countdown,
     /** Deadline 类型绑定的绝对截止时刻（epoch millis）；其他类型为 null。 */
     val deadlineEpochMillis: Long? = null,
+    /**
+     * 时长是否锁定。
+     *
+     * DDL 创建后置为 true：时间由截止时刻唯一决定，界面不再提供改时长的入口，
+     * 避免用户把倒计时改成与实际截止时间不符的值。
+     */
+    val locked: Boolean = false,
 )
 
 /**

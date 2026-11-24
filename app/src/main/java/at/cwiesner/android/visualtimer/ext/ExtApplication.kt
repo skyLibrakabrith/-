@@ -128,6 +128,15 @@ class ExtApplication : Application() {
             }
         }
 
+        // 1.8) 提前提醒：到点前的预警，走通知 + 震动 + 声音（不进入持续提醒态）
+        appScope.launch {
+            panelRunner.leadAlerts.collect { (rt, lead) ->
+                runCatching { postLeadNotification(rt, lead) }
+                runCatching { vibration.play(longArrayOf(0L, 300L, 150L, 300L), repeatIndex = -1) }
+                runCatching { headphoneSound.playIfHeadphone() }
+            }
+        }
+
         // 2) 持续震动：只要还有未处理的到点计时器就一直震
         appScope.launch {
             panelRunner.alerting.collect { ids ->
@@ -191,6 +200,19 @@ class ExtApplication : Application() {
 
         // 到点只震一轮；循环震动交给前台界面处理
         vibration.play(pattern, repeatIndex = -1)
+    }
+
+    /** 提前提醒通知：标注「还有多久到期」。 */
+    private fun postLeadNotification(rt: TimerRuntime, leadMinutes: Long) {
+        val mgr = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
+        val n = NotificationCompat.Builder(this, CHANNEL_ALERTS)
+            .setContentTitle(rt.label ?: "即将到期")
+            .setContentText("还有 " + DeadlineCalculator.formatRemaining(leadMinutes * 60_000L) + " 到期")
+            .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setAutoCancel(true)
+            .build()
+        runCatching { mgr.notify((rt.timerId + leadMinutes).toInt(), n) }
     }
 
     private fun postNotification(rt: TimerRuntime) {

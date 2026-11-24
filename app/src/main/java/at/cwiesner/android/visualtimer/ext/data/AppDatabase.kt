@@ -163,6 +163,24 @@ interface GroupDao {
     suspend fun memberTimers(groupId: Long): List<TimerItem>
 }
 
+@Dao
+interface DeadlineReminderDao {
+    @Query("SELECT * FROM deadline_reminders WHERE timerId = :timerId")
+    suspend fun forTimer(timerId: Long): List<DeadlineReminder>
+
+    @Query("SELECT * FROM deadline_reminders WHERE fired = 0")
+    suspend fun pending(): List<DeadlineReminder>
+
+    @Upsert
+    suspend fun upsertAll(items: List<DeadlineReminder>)
+
+    @Query("DELETE FROM deadline_reminders WHERE timerId = :timerId")
+    suspend fun clearTimer(timerId: Long)
+
+    @Query("UPDATE deadline_reminders SET fired = 1 WHERE id = :id")
+    suspend fun markFired(id: Long)
+}
+
 @androidx.room.TypeConverters(Converters::class, TimerKindConverter::class)
 @Database(
     entities = [
@@ -174,8 +192,9 @@ interface GroupDao {
         AlertProfile::class,
         TimerGroup::class,
         GroupMember::class,
+        DeadlineReminder::class,
     ],
-    version = 4,
+    version = 6,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -184,6 +203,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun sequenceDao(): SequenceDao
     abstract fun alertProfileDao(): AlertProfileDao
     abstract fun groupDao(): GroupDao
+    abstract fun deadlineReminderDao(): DeadlineReminderDao
 
     companion object {
         @Volatile
@@ -231,13 +251,33 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /** v5 → v6：计时器增加 locked 列（DDL 锁定时长）。 */
+        private val MIGRATION_5_6 = object : androidx.room.migration.Migration(5, 6) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE timers ADD COLUMN locked INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        /** v4 → v5：新增 DDL 提前提醒表。 */
+        private val MIGRATION_4_5 = object : androidx.room.migration.Migration(4, 5) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `deadline_reminders` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`timerId` INTEGER NOT NULL, " +
+                        "`leadMinutes` INTEGER NOT NULL, " +
+                        "`fired` INTEGER NOT NULL)",
+                )
+            }
+        }
+
         fun get(context: Context): AppDatabase =
             INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
                     context.applicationContext,
                     AppDatabase::class.java,
                     "visual-timer-ext.db",
-                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                     .fallbackToDestructiveMigration()
                     .build()
                     .also { INSTANCE = it }
