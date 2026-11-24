@@ -24,6 +24,7 @@ import android.widget.TextView
 import androidx.core.app.NotificationCompat
 import at.cwiesner.android.visualtimer.ext.ExtApplication
 import at.cwiesner.android.visualtimer.ext.domain.DeadlineCalculator
+import at.cwiesner.android.visualtimer.ext.settings.SettingsRepo
 
 /**
  * 到点闪烁悬浮窗。
@@ -49,7 +50,6 @@ class AlertOverlayService : Service() {
 
     private var titleView: TextView? = null
     private var timeView: TextView? = null
-    private var flashCount = 0
     private var flashOn = false
 
     private var timerId: Long = -1
@@ -208,18 +208,22 @@ class AlertOverlayService : Service() {
 
     // ---------------- 闪烁 ----------------
 
+    /**
+     * 悬浮窗卡片的闪烁。
+     *
+     * 两个要点：
+     * 1. **一直闪到用户处理**。之前只闪 8 次（8 × 160ms ≈ 1.3 秒）就停，
+     *    后台提醒等于没提醒 —— 用户看一眼手机时早就闪完了。
+     * 2. 节奏读设置里的「闪烁间隔」，和 Activity 内的 [ScreenFlashOverlay] 保持一致，
+     *    否则同一个提醒在应用内外两种观感。
+     */
     private fun startFlashing() {
-        flashCount = 0
+        val interval = (application as? ExtApplication)?.flashIntervalMillis ?: SettingsRepo.DEFAULT_FLASH_INTERVAL
         flashJob = object : Runnable {
             override fun run() {
-                if (flashCount >= FLASH_TIMES) {
-                    root?.background = roundedBg(COLOR_CARD_IDLE)
-                    return
-                }
                 flashOn = !flashOn
                 root?.background = roundedBg(if (flashOn) COLOR_CARD_FLASH else COLOR_CARD_IDLE)
-                flashCount++
-                handler.postDelayed(this, FLASH_INTERVAL)
+                handler.postDelayed(this, interval)
             }
         }.also { handler.post(it) }
     }
@@ -284,8 +288,6 @@ class AlertOverlayService : Service() {
     companion object {
         private const val CHANNEL_ID = "alert_flash"
         private const val NOTIFICATION_ID = 2003
-        private const val FLASH_TIMES = 8
-        private const val FLASH_INTERVAL = 160L
         private val COLOR_CARD_FLASH = Color.parseColor("#FFF2F2F2")
         private val COLOR_CARD_IDLE = Color.parseColor("#E6000000")
 

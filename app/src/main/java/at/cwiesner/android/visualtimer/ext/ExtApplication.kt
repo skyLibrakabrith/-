@@ -85,6 +85,16 @@ class ExtApplication : Application() {
         by lazy { at.cwiesner.android.visualtimer.ext.alarm.HeadphoneSoundAlerter(this) }
     private val settings: SettingsRepo by lazy { SettingsRepo(this) }
 
+    /**
+     * 屏幕闪烁的暗场间隔（毫秒）。
+     *
+     * 缓存一份是因为 [AlertOverlayService] 是纯 View 代码、没有协程作用域，
+     * 用不了 SettingsRepo 的 Flow；启动时订一次，之后服务端直接读这个值。
+     */
+    @Volatile
+    var flashIntervalMillis: Long = SettingsRepo.DEFAULT_FLASH_INTERVAL
+        private set
+
     override fun onCreate() {
         super.onCreate()
         seedDefaultsIfEmpty()
@@ -92,6 +102,13 @@ class ExtApplication : Application() {
         // 立刻开始走表，不依赖任何界面存在
         panelRunner.startTicking()
         observeAlerts()
+        observeFlashSetting()
+    }
+
+    private fun observeFlashSetting() {
+        appScope.launch {
+            settings.flashIntervalMillis.collect { flashIntervalMillis = it }
+        }
     }
 
     // ---------------- 到点提醒 ----------------

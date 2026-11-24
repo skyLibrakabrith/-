@@ -39,6 +39,8 @@ import at.cwiesner.android.visualtimer.ext.ui.alerts.AlertsScreen
 import at.cwiesner.android.visualtimer.ext.ui.home.HomeScreen
 import at.cwiesner.android.visualtimer.ext.ui.panels.PanelsScreen
 import at.cwiesner.android.visualtimer.ext.ui.settings.SettingsScreen
+import at.cwiesner.android.visualtimer.ext.settings.SettingsRepo
+import at.cwiesner.android.visualtimer.ext.settings.ThemeMode
 
 class MainActivity : ComponentActivity() {
 
@@ -55,7 +57,7 @@ class MainActivity : ComponentActivity() {
 
         ensureNotificationPermission()
 
-        val settings = at.cwiesner.android.visualtimer.ext.settings.SettingsRepo(this)
+        val settings = SettingsRepo(this)
 
         val app = application as ExtApplication
 
@@ -88,13 +90,21 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             val mode by settings.themeMode.collectAsState(
-                initial = at.cwiesner.android.visualtimer.ext.settings.ThemeMode.PureBlack,
+                initial = ThemeMode.PureBlack,
             )
+            // 闪烁节奏由警报页的滑杆决定，这里订阅后直接喂给覆盖层
+            val flashInterval by settings.flashIntervalMillis.collectAsState(
+                initial = SettingsRepo.DEFAULT_FLASH_INTERVAL,
+            )
+            var flashPreviewTick by remember { mutableIntStateOf(0) }
             ExtTheme(mode = mode) {
                 Box(modifier = Modifier.fillMaxSize()) {
-                    MainScaffold()
+                    MainScaffold(onPreviewFlash = { flashPreviewTick++ })
                     ScreenFlashOverlay(
                         alerting = app.panelRunner.alerting,
+                        pulseOnMillis = SettingsRepo.FLASH_ON_MILLIS.toInt(),
+                        pulseOffMillis = flashInterval.toInt(),
+                        previewTick = flashPreviewTick,
                         modifier = Modifier.fillMaxSize(),
                     )
                 }
@@ -124,7 +134,7 @@ private enum class Dest(
 }
 
 @Composable
-private fun MainScaffold() {
+private fun MainScaffold(onPreviewFlash: () -> Unit = {}) {
     var selected by remember { mutableIntStateOf(0) }
     // 每次自增表示「用户点了面板按钮，要求切换视图」
     var panelViewToggleTick by remember { mutableIntStateOf(0) }
@@ -178,7 +188,7 @@ private fun MainScaffold() {
                     toggleViewSignal = panelViewToggleTick,
                     onViewChanged = { isList -> panelShowsList = isList },
                 )
-                Dest.Alerts -> AlertsScreen()
+                Dest.Alerts -> AlertsScreen(onPreviewFlash = onPreviewFlash)
                 Dest.Settings -> SettingsScreen()
             }
         }

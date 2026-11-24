@@ -115,6 +115,18 @@ class SettingsRepo(private val context: Context) {
         (it[KEY_GRID_COLUMNS]?.toIntOrNull() ?: 2).coerceIn(1, 8)
     }
 
+    /**
+     * 屏幕闪烁的「暗场间隔」：亮一下之后停多久再亮下一次。
+     *
+     * 亮起时长固定为 [FLASH_ON_MILLIS]，只有这个间隔可调 ——
+     * 用户反馈「一直在高频闪动」，真正刺眼的是间隔太短，
+     * 所以只给一个旋钮，调大就是变慢。
+     */
+    val flashIntervalMillis: Flow<Long> = store.data.map {
+        (it[KEY_FLASH_INTERVAL]?.toLongOrNull() ?: DEFAULT_FLASH_INTERVAL)
+            .coerceIn(MIN_FLASH_INTERVAL, MAX_FLASH_INTERVAL)
+    }
+
     suspend fun setTheme(mode: ThemeMode) {
         store.edit { it[KEY_THEME] = mode.name }
     }
@@ -173,6 +185,13 @@ class SettingsRepo(private val context: Context) {
         store.edit { it[KEY_GRID_COLUMNS] = n.coerceIn(1, 8).toString() }
     }
 
+    suspend fun setFlashIntervalMillis(ms: Long) {
+        store.edit {
+            it[KEY_FLASH_INTERVAL] =
+                ms.coerceIn(MIN_FLASH_INTERVAL, MAX_FLASH_INTERVAL).toString()
+        }
+    }
+
     companion object {
         private val KEY_THEME = stringPreferencesKey("theme_mode")
         private val KEY_THRESHOLDS = stringPreferencesKey("color_thresholds")
@@ -187,6 +206,15 @@ class SettingsRepo(private val context: Context) {
         private val KEY_BACKGROUND = booleanPreferencesKey("background_enabled")
         private val KEY_KEEP_SCREEN_ON = booleanPreferencesKey("keep_screen_on")
         private val KEY_GRID_COLUMNS = stringPreferencesKey("grid_columns")
+        private val KEY_FLASH_INTERVAL = stringPreferencesKey("flash_interval_millis")
+
+        /** 亮起时长固定：再短就看不出来，再长就成了常亮。 */
+        const val FLASH_ON_MILLIS: Long = 220L
+
+        /** 暗场间隔的默认值与可调范围。 */
+        const val DEFAULT_FLASH_INTERVAL: Long = 420L
+        const val MIN_FLASH_INTERVAL: Long = 200L
+        const val MAX_FLASH_INTERVAL: Long = 2000L
 
         /** 默认：60 分钟起主色，10 分钟琥珀，3 分钟橙，1 分钟红。 */
         const val DEFAULT_THRESHOLDS = "60:0,10:1,3:2,1:3"

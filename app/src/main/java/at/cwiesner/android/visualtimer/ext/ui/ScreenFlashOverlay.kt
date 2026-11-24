@@ -31,14 +31,28 @@ fun ScreenFlashOverlay(
     modifier: Modifier = Modifier,
     /** 单次亮起的持续时间（毫秒）。越长越不刺眼。 */
     pulseOnMillis: Int = 220,
-    /** 两次闪烁之间的暗场时长（毫秒）。 */
+    /** 两次闪烁之间的暗场时长（毫秒）。由警报页的「闪烁间隔」控制。 */
     pulseOffMillis: Int = 420,
+    /** 自增即触发一次预览（警报页试听用），不依赖是否有到点计时器。 */
+    previewTick: Int = 0,
 ) {
     val alpha = remember { Animatable(0f) }
 
+    // 试听：单独跑三轮就收手。
+    // 之前警报页的「点击卡片试听」只震不闪 —— onPreviewFlash 在 MainActivity
+    // 里根本没接，用户没法确认自己调的闪烁节奏到底长什么样。
+    LaunchedEffect(previewTick, pulseOnMillis, pulseOffMillis) {
+        if (previewTick <= 0) return@LaunchedEffect
+        repeat(3) {
+            alpha.animateTo(0.55f, animationSpec = tween(durationMillis = pulseOnMillis))
+            alpha.animateTo(0f, animationSpec = tween(durationMillis = pulseOffMillis))
+        }
+    }
+
     // 只要还有未处理的到点计时器，就一直闪；
     // 用户重置 / 关闭提醒后集合清空，闪烁自然停止。
-    LaunchedEffect(alerting) {
+    // 节奏参数进 key：在警报页调完间隔，回到计时界面立刻按新节奏闪。
+    LaunchedEffect(alerting, pulseOnMillis, pulseOffMillis) {
         alerting.collect { ids ->
             if (ids.isEmpty()) {
                 alpha.animateTo(0f, animationSpec = tween(durationMillis = 120))
