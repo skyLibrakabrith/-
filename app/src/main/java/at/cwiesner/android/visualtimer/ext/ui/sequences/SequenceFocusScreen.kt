@@ -24,7 +24,6 @@ import at.cwiesner.android.visualtimer.ext.data.StepSequence
 import at.cwiesner.android.visualtimer.ext.domain.DeadlineCalculator
 import at.cwiesner.android.visualtimer.ext.domain.StepSequenceEngine
 import at.cwiesner.android.visualtimer.ext.ui.ExtColors
-import at.cwiesner.android.visualtimer.ext.ui.panels.SequenceDial
 
 /**
  * 序列的全屏视图 —— **大圆盘只出现在这里**。
