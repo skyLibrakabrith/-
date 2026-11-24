@@ -65,7 +65,9 @@ fun NumberWheel(
     }
     LaunchedEffect(selected) {
         if (!state.isScrollInProgress) {
-            // 目标下标同样要加回顶部占位
+            // value[i] 在列表里是下标 i+1（前面有顶部占位）
+            val target = (values.indexOf(selected) + 1).coerceAtLeast(0)
+            if (state.firstVisibleItemIndex != target) state.scrollToItem(target)
         }
     }
 

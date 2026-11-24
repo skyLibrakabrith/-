@@ -92,6 +92,12 @@ class SettingsRepo(private val context: Context) {
     /** 圆盘上是否显示中央文字。 */
     val showCenterText: Flow<Boolean> = store.data.map { it[KEY_CENTER_TEXT] ?: true }
 
+    /** 提醒铃声 URI；null 表示系统默认。 */
+    val ringtoneUri: Flow<String?> = store.data.map { it[KEY_RINGTONE] }
+
+    /** 是否启用耳机声音。 */
+    val soundEnabled: Flow<Boolean> = store.data.map { it[KEY_SOUND] ?: true }
+
     /** 是否启用振动（总开关）。 */
     val vibrationEnabled: Flow<Boolean> = store.data.map { it[KEY_VIBRATE] ?: true }
 
@@ -137,6 +143,16 @@ class SettingsRepo(private val context: Context) {
         store.edit { it[KEY_CENTER_TEXT] = enabled }
     }
 
+    suspend fun setRingtoneUri(uri: String?) {
+        store.edit { prefs ->
+            if (uri == null) prefs.remove(KEY_RINGTONE) else prefs[KEY_RINGTONE] = uri
+        }
+    }
+
+    suspend fun setSoundEnabled(enabled: Boolean) {
+        store.edit { it[KEY_SOUND] = enabled }
+    }
+
     suspend fun setVibrationEnabled(enabled: Boolean) {
         store.edit { it[KEY_VIBRATE] = enabled }
     }
@@ -165,6 +181,8 @@ class SettingsRepo(private val context: Context) {
         private val KEY_FRACTION_DIVISIONS = stringPreferencesKey("fraction_divisions")
         private val KEY_CENTER_TEXT = booleanPreferencesKey("show_center_text")
         private val KEY_VIBRATE = booleanPreferencesKey("vibration_enabled")
+        private val KEY_RINGTONE = stringPreferencesKey("ringtone_uri")
+        private val KEY_SOUND = booleanPreferencesKey("sound_enabled")
         private val KEY_OVERLAY = booleanPreferencesKey("overlay_enabled")
         private val KEY_BACKGROUND = booleanPreferencesKey("background_enabled")
         private val KEY_KEEP_SCREEN_ON = booleanPreferencesKey("keep_screen_on")

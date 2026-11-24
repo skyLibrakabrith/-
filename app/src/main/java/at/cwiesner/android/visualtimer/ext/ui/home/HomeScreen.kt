@@ -122,11 +122,6 @@ fun HomeScreen(modifier: Modifier = Modifier) {
                     color = ExtColors.TextSecondary,
                 )
             }
-            Text(
-                text = "还剩",
-                fontSize = 12.sp,
-                color = ExtColors.TextDim,
-            )
         }
 
         // 快捷创建

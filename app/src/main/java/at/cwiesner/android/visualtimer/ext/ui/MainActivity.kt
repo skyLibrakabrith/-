@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccessTime
+import androidx.compose.material.icons.filled.Checklist
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Settings
@@ -27,6 +28,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -127,6 +129,8 @@ private fun MainScaffold() {
     var selected by remember { mutableIntStateOf(0) }
     // 每次自增表示「用户点了面板按钮，要求切换视图」
     var panelViewToggleTick by remember { mutableIntStateOf(0) }
+    // 面板是否处于列表视图（由 PanelsScreen 回传，用于底边栏图标）
+    var panelShowsList by remember { mutableStateOf(false) }
     val dests = Dest.entries
 
     Scaffold(
@@ -148,7 +152,16 @@ private fun MainScaffold() {
                                 selected = index
                             }
                         },
-                        icon = { Icon(dest.icon, contentDescription = dest.label) },
+                        icon = {
+                            // 面板页的图标跟随当前视图：卡片用 GridView、列表用 Checklist。
+                            // 之前图标固定，切换视图后看起来像"图标自己变了"其实是重组问题。
+                            val icon = if (dest == Dest.Panels && panelShowsList) {
+                                Icons.Filled.Checklist
+                            } else {
+                                dest.icon
+                            }
+                            Icon(icon, contentDescription = dest.label)
+                        },
                         label = { Text(dest.label) },
                     )
                 }
@@ -162,7 +175,10 @@ private fun MainScaffold() {
         ) {
             when (dests[selected]) {
                 Dest.Home -> HomeScreen()
-                Dest.Panels -> PanelsScreen(toggleViewSignal = panelViewToggleTick)
+                Dest.Panels -> PanelsScreen(
+                    toggleViewSignal = panelViewToggleTick,
+                    onViewChanged = { isList -> panelShowsList = isList },
+                )
                 Dest.Alerts -> AlertsScreen()
                 Dest.Settings -> SettingsScreen()
             }

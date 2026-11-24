@@ -102,6 +102,8 @@ fun PanelsScreen(
     modifier: Modifier = Modifier,
     /** 每次自增表示底边栏「面板」被再次点击，要求切换卡片/列表视图。 */
     toggleViewSignal: Int = 0,
+    /** 视图变化时回传，供底边栏图标同步。 */
+    onViewChanged: (Boolean) -> Unit = {},
 ) {
     val context = LocalContext.current
     val app = context.applicationContext as ExtApplication
@@ -149,6 +151,8 @@ fun PanelsScreen(
             selectedIds = emptySet()
         }
     }
+    // 把当前视图回传给底边栏，让图标与视图一致
+    LaunchedEffect(listMode) { onViewChanged(listMode) }
     var showPanelManager by remember { mutableStateOf(false) }
     var focusTimerId by remember { mutableStateOf<Long?>(null) }
 
@@ -496,11 +500,18 @@ fun PanelsScreen(
                             val t = timers.firstOrNull { it.id == entry.refId }
                             if (entry.kind == EntryKind.Timer && t != null) {
                                 scope.launch {
-                                    val cur = runner.snapshot().firstOrNull { it.timerId == t.id }
-                                    when {
-                                        cur == null -> runner.start(t)
-                                        cur.running -> runner.stop(t.id)
-                                        else -> runner.resume(t.id)
+                                    // DDL 锁定后不允许暂停：它的时间由截止时刻决定，
+                                    // 暂停会让倒计时与实际剩余时间脱节
+                                    if (t.locked) {
+                                        toast("DDL 已锁定，不能暂停")
+                                    } else {
+                                        val cur = runner.snapshot()
+                                            .firstOrNull { it.timerId == t.id }
+                                        when {
+                                            cur == null -> runner.start(t)
+                                            cur.running -> runner.stop(t.id)
+                                            else -> runner.resume(t.id)
+                                        }
                                     }
                                 }
                             }
@@ -585,30 +596,30 @@ fun PanelsScreen(
                 }
             }
             }
+                    
+                    // 快捷栏只出现在卡片视图，放在网格下方（系统栏留白带内）
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        QuickAction("新建序列", Modifier.weight(1f)) {
+                            scope.launch {
+                                val pid = currentPanel?.id ?: return@launch
+                                val id = db.sequenceDao().upsert(
+                                    StepSequence(name = "新序列", panelId = pid),
+                                )
+                                editingSequenceId = id
+                            }
+                        }
+                        QuickAction("面板管理", Modifier.weight(1f)) {
+                            showPanelManager = true
+                        }
+                    }
             }   // 关闭 else {
 
-            // 底部快捷栏：放在 when 之外，卡片和列表两种视图都能用
-            Row(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                QuickAction("新建序列", Modifier.weight(1f)) {
-                    scope.launch {
-                        val pid = currentPanel?.id ?: return@launch
-                        val id = db.sequenceDao().upsert(
-                            StepSequence(name = "新序列", panelId = pid),
-                        )
-                        editingSequenceId = id
-                    }
-                }
-
-                QuickAction("面板管理", Modifier.weight(1f)) {
-                    showPanelManager = true
-                }
-            }
+            
         }
     }
 
@@ -868,6 +879,9 @@ fun PanelsScreen(
                     }
                     // 同步注册到运行时，tick 才能按时触发
                     runner.setLeadMinutes(leadTarget.first, leads)
+                    // 初始化时把「已经过去的档位」标记为已触发，
+                    // 否则刚设完第一个 tick 会把所有档位一次性全部触发
+                    runner.markLeadsBaseline(leadTarget.first, leadTarget.second)
                     toast(
                         if (leads.isEmpty()) "已跳过提前提醒"
                         else "已设置 ${leads.size} 个提前提醒"
@@ -994,7 +1008,8 @@ fun PanelsScreen(
                     db.timerDao().get(timerId)?.let { runner.startUntil(it, deadlineEpoch, now) }
                     toast("DDL 已创建并开始倒计时")
                     // 紧接着问一句要不要提前提醒
-                    leadTimeTarget = timerId to remaining
+                    // 传秒级精度，避免整毫秒取整后档位错位
+                    leadTimeTarget = timerId to (remaining / 60_000L * 60_000L)
                 }
             },
         )

@@ -99,6 +99,24 @@ class PanelRunner(private val scope: CoroutineScope) {
         leadMinutesOf[timerId] = minutes.sortedDescending()
     }
 
+    /**
+     * 设定提醒后立即把「已经过去的档位」标为已触发。
+     *
+     * 否则第一个 tick 会把所有 `lead <= 当前剩余分钟` 的档位一次性全部触发，
+     * 用户刚选完就收到一串重复提醒。
+     */
+    fun markLeadsBaseline(timerId: Long, remainingMillis: Long) {
+        val r = _runtimes.value[timerId] ?: return
+        val remainMin = remainingMillis / 60_000L
+        val leads = leadMinutesOf[timerId].orEmpty()
+        val alreadyPast = leads.filter { it <= remainMin }.toSet()
+        if (alreadyPast.isNotEmpty()) {
+            _runtimes.value = _runtimes.value + (
+                timerId to r.copy(firedLeads = r.firedLeads + alreadyPast)
+                )
+        }
+    }
+
     private val _alerting = MutableStateFlow<Set<Long>>(emptySet())
     val alerting: StateFlow<Set<Long>> = _alerting.asStateFlow()
 
