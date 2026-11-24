@@ -110,6 +110,7 @@ fun PanelsScreen(
     val context = LocalContext.current
     val app = context.applicationContext as ExtApplication
     val runner = app.panelRunner
+    val scope = rememberCoroutineScope()
 
     // 所有数据流与业务操作收敛到 ViewModel（旋转不丢状态、逻辑可测）
     val vm: PanelsViewModel = androidx.lifecycle.viewmodel.compose.viewModel(
@@ -210,7 +211,7 @@ fun PanelsScreen(
         SequenceEditorScreen(
             sequence = editingSeq,
             steps = stepsBySequence[editingSeq.id].orEmpty(),
-            onDismiss = { editingSequenceId = null },
+            onDismiss = { vm.setEditingSequence(null) },
             onSave = { name, timeout, stepPairs ->
                 scope.launch {
                     val seqId = db.sequenceDao().upsert(
@@ -231,7 +232,7 @@ fun PanelsScreen(
                             ),
                         )
                     }
-                    editingSequenceId = null
+                    vm.setEditingSequence(null)
                     toast("序列「" + name + "」已保存，" + stepPairs.size + " 个阶段")
                 }
             },
@@ -268,7 +269,7 @@ fun PanelsScreen(
                         panels.forEachIndexed { index, panel ->
                             Tab(
                                 selected = index == safeIndex,
-                                onClick = { selectedPanel = index; selectedIds = emptySet() },
+                                onClick = { vm.selectPanel(index); vm.clearSelection() },
                                 text = {
                                     val active = runningCountByPanel[panel.id] ?: 0
                                     Text(
@@ -288,7 +289,7 @@ fun PanelsScreen(
                 editingGroupId != null || editingSequenceId != null ||
                 focusSequenceId != null || focusTimerId != null
             if (!anyDialogOpen) ExtendedFloatingActionButton(
-                onClick = { if (panels.isEmpty()) showNewPanel = true else showNewTimer = true },
+                onClick = { if (panels.isEmpty()) showNewPanel = true else vm.setShowNewTimer(true) },
                 containerColor = ExtColors.Primary,
                 icon = { Icon(Icons.Filled.Add, contentDescription = null) },
                 text = { Text(if (panels.isEmpty()) "新建面板" else "加计时器") },
@@ -329,7 +330,7 @@ fun PanelsScreen(
                         app.sequenceEngine.stop()
                         toast("序列已重置")
                     },
-                    onClose = { focusSequenceId = null },
+                    onClose = { vm.setFocusSequence(null) },
                     modifier = Modifier.fillMaxSize(),
                 )
             } else {
@@ -366,7 +367,7 @@ fun PanelsScreen(
                         toast("已暂停")
                     },
                     onReset = { runner.reset(focused.id) },
-                    onClose = { focusTimerId = null },
+                    onClose = { vm.setFocusTimer(null) },
                 )
             } else when {
                 panels.isEmpty() -> EmptyHint("还没有面板，点右下角新建一个")
@@ -391,16 +392,16 @@ fun PanelsScreen(
                                 runner.clear(id)
                                 currentPanel?.let { db.panelDao().removeRef(it.id, id) }
                             }
-                            selectedIds = emptySet()
+                            vm.clearSelection()
                             toast("已删除 $n 个计时器")
                         }
                     },
-                    onEdit = { t -> editingTimerId = t.id },
-                    onReorder = { showOrderDialog = true },
+                    onEdit = { t -> vm.setEditingTimer(t.id) },
+                    onReorder = { vm.setShowOrderDialog(true) },
                     alertProfiles = alertProfiles,
-                    onSelectAll = { selectedIds = timers.map { it.id }.toSet() },
-                    onClearSelection = { selectedIds = emptySet() },
-                    onChangeAlert = { t -> alertPickerTimerId = t.id },
+                    onSelectAll = { vm.selectAll() },
+                    onClearSelection = { vm.clearSelection() },
+                    onChangeAlert = { t -> vm.setAlertPicker(t.id) },
                     onBatchStart = {
                         scope.launch {
                             val chosen = timers.filter { it.id in selectedIds }
@@ -427,7 +428,7 @@ fun PanelsScreen(
                             if (from in list.indices && to in list.indices) {
                                 val item = list.removeAt(from)
                                 list.add(to, item)
-                                orderOverride = list
+                                vm.setOrderOverride(list)
                             }
                         },
                         onClick = { entry ->
@@ -454,9 +455,9 @@ fun PanelsScreen(
                         onDoubleClick = { entry ->
                             // 双击：进全屏
                             when (entry.kind) {
-                                EntryKind.Timer -> focusTimerId = entry.refId
-                                EntryKind.Sequence -> focusSequenceId = entry.refId
-                                EntryKind.Group -> editingGroupId = entry.refId
+                                EntryKind.Timer -> vm.setFocusTimer(entry.refId)
+                                EntryKind.Sequence -> vm.setFocusSequence(entry.refId)
+                                EntryKind.Group -> vm.setEditingGroup(entry.refId)
                             }
                         },
                         onLongClick = { /* 长按由拖拽接管，这里留空 */ },
@@ -471,7 +472,7 @@ fun PanelsScreen(
                                         phase = if (engineActiveId == sq.id) enginePhase
                                         else StepSequenceEngine.Phase.Idle,
                                         isActive = engineActiveId == sq.id,
-                                        onClick = { focusSequenceId = sq.id },
+                                        onClick = { vm.setFocusSequence(sq.id) },
                                         onLongClick = { editingSequenceId = sq.id },
                                     )
                                 }
@@ -490,8 +491,8 @@ fun PanelsScreen(
                                         fractionDivisions = fractionDivisions,
                                         thresholdMinutes = thresholdMinutes,
                                         thresholdColors = thresholdColors,
-                                        onClick = { editingGroupId = g.id },
-                                        onLongClick = { editingGroupId = g.id },
+                                        onClick = { vm.setEditingGroup(g.id) },
+                                        onLongClick = { vm.setEditingGroup(g.id) },
                                     )
                                 }
                             }
@@ -507,10 +508,10 @@ fun PanelsScreen(
                                         colorMode = colorMode,
                                         intervalMinutes = intervalMinutes,
                                         fractionDivisions = fractionDivisions,
-                                        onClick = { focusTimerId = t.id },
+                                        onClick = { vm.setFocusTimer(t.id) },
                                         onLongClick = {
                                             // DDL 已锁定时长，长按不打开编辑器
-                                            if (!t.locked) editingTimerId = t.id
+                                            if (!t.locked) vm.setEditingTimer(t.id)
                                         },
                                         onReset = {
                                             scope.launch { runner.reset(t.id) }
@@ -545,11 +546,11 @@ fun PanelsScreen(
                                 val id = db.sequenceDao().upsert(
                                     StepSequence(name = "新序列", panelId = pid),
                                 )
-                                editingSequenceId = id
+                                vm.setEditingSequence(id)
                             }
                         }
                         QuickAction("面板管理", Modifier.weight(1f)) {
-                            showPanelManager = true
+                            vm.setShowPanelManager(true)
                         }
                     }
             }   // 关闭 else {
@@ -577,9 +578,9 @@ fun PanelsScreen(
         DragReorderDialog(
             entries = entries,
             columns = gridColumns,
-            onDismiss = { showOrderDialog = false },
+            onDismiss = { vm.setShowOrderDialog(false) },
             onSave = { ordered ->
-                showOrderDialog = false
+                vm.setShowOrderDialog(false)
                 scope.launch {
                     // 统一重新编号，再按类型写回各自的 order 字段
                     ordered.forEachIndexed { idx, entry ->
@@ -625,16 +626,16 @@ fun PanelsScreen(
             candidateTimers = timers,
             memberIds = groupMembersMap[editingGroup.id].orEmpty().toSet(),
             occupiedBy = occupied,
-            onDismiss = { editingGroupId = null },
+            onDismiss = { vm.setEditingGroup(null) },
             onSave = { gname, ids ->
-                editingGroupId = null
+                vm.setEditingGroup(null)
                 scope.launch {
                     vm.saveGroup(editingGroup, gname, ids)
                     toast("组「" + gname + "」已保存，" + ids.size + " 个成员")
                 }
             },
             onDelete = {
-                editingGroupId = null
+                vm.setEditingGroup(null)
                 scope.launch {
                     vm.deleteGroup(editingGroup)
                     toast("已删除组「" + editingGroup.name + "」")
@@ -653,24 +654,24 @@ fun PanelsScreen(
         PanelManagerDialog(
             panels = panels,
             counts = counts,
-            onDismiss = { showPanelManager = false },
+            onDismiss = { vm.setShowPanelManager(false) },
             onOpen = { opened ->
                 val idx = panels.indexOfFirst { it.id == opened.id }
-                if (idx >= 0) selectedPanel = idx
-                showPanelManager = false
+                if (idx >= 0) vm.selectPanel(idx)
+                vm.setShowPanelManager(false)
             },
             onEdit = { target ->
                 // 从管理列表直接进该面板的编辑器
                 val idx = panels.indexOfFirst { it.id == target.id }
-                if (idx >= 0) selectedPanel = idx
-                showPanelManager = false
-                showPanelEditor = true
+                if (idx >= 0) vm.selectPanel(idx)
+                vm.setShowPanelManager(false)
+                vm.setShowPanelEditor(true)
             },
             onCreate = { name ->
                 scope.launch {
                     vm.createPanel(name)
-                    selectedPanel = panels.size
-                    showPanelManager = false
+                    vm.selectPanel(panels.size)
+                    vm.setShowPanelManager(false)
                     toast("面板「" + name + "」已创建")
                 }
             },
@@ -683,7 +684,7 @@ fun PanelsScreen(
             onDelete = { target ->
                 scope.launch {
                     vm.deletePanel(target)
-                    selectedPanel = 0
+                    vm.selectPanel(0)
                     toast("面板「" + target.name + "」已删除")
                 }
             },
@@ -703,7 +704,7 @@ fun PanelsScreen(
                     db.panelDao().upsertRefs(
                         listOf(PanelTimerRef(panelId = panelId, timerId = timerId, order = 0)),
                     )
-                    selectedPanel = panels.size
+                    vm.selectPanel(panels.size)
                     toast("面板「$name」已创建")
                 }
             },
@@ -720,19 +721,19 @@ fun PanelsScreen(
             groupMembers = groupMembersMap,
             allSequences = allSequences,
             sequencePanelMap = sequencePanelMap,
-            onDismiss = { showPanelEditor = false },
+            onDismiss = { vm.setShowPanelEditor(false) },
             onSave = { name, ids ->
-                showPanelEditor = false
+                vm.setShowPanelEditor(false)
                 scope.launch {
                     vm.savePanelMembers(currentPanel, name, ids)
                     toast("已保存：${ids.size} 个计时器")
                 }
             },
             onDelete = {
-                showPanelEditor = false
+                vm.setShowPanelEditor(false)
                 scope.launch {
                     vm.deletePanel(currentPanel)
-                    selectedPanel = 0
+                    vm.selectPanel(0)
                     toast("面板已删除")
                 }
             },
@@ -782,9 +783,9 @@ fun PanelsScreen(
     if (leadTarget != null) {
         DeadlineLeadTimeDialog(
             remainingMillis = leadTarget.second,
-            onDismiss = { leadTimeTarget = null },
+            onDismiss = { vm.setLeadTimeTarget(null) },
             onConfirm = { leads ->
-                leadTimeTarget = null
+                vm.setLeadTimeTarget(null)
                 scope.launch {
                     db.deadlineReminderDao().clearTimer(leadTarget.first)
                     if (leads.isNotEmpty()) {
@@ -819,7 +820,7 @@ fun PanelsScreen(
         AlertProfilePickerDialog(
             profiles = alertProfiles,
             selectedId = alertPickerTimer.alertProfileId,
-            onDismiss = { alertPickerTimerId = null },
+            onDismiss = { vm.setAlertPicker(null) },
             onSelect = { pid ->
                 scope.launch {
                     db.timerDao().upsert(alertPickerTimer.copy(alertProfileId = pid))
@@ -838,9 +839,9 @@ fun PanelsScreen(
             initialLabel = editingTimer.label ?: "",
             initialDuration = editingTimer.durationMillis,
             title = "编辑计时器",
-            onDismiss = { editingTimerId = null },
+            onDismiss = { vm.setEditingTimer(null) },
             onConfirm = { label, duration, deadlineEpoch, alertProfileId ->
-                editingTimerId = null
+                vm.setEditingTimer(null)
                 scope.launch {
                     db.timerDao().upsert(
                         editingTimer.copy(
@@ -861,9 +862,9 @@ fun PanelsScreen(
     if (showNewTimer && currentPanel != null) {
         TimerEditDialog(
             alertProfiles = alertProfiles,
-            onDismiss = { showNewTimer = false },
+            onDismiss = { vm.setShowNewTimer(false) },
             onConfirm = { label, duration, deadlineEpoch, alertProfileId ->
-                showNewTimer = false
+                vm.setShowNewTimer(false)
                 scope.launch {
                     val now = System.currentTimeMillis()
                     val timerId = db.timerDao().upsert(
@@ -898,9 +899,9 @@ fun PanelsScreen(
 
     if (showDeadline && currentPanel != null) {
         DeadlineDialog(
-            onDismiss = { showDeadline = false },
+            onDismiss = { vm.setShowDeadline(false) },
             onConfirm = { label, deadlineEpoch ->
-                showDeadline = false
+                vm.setShowDeadline(false)
                 scope.launch {
                     val now = System.currentTimeMillis()
                     val remaining = (deadlineEpoch - now).coerceAtLeast(1000L)
