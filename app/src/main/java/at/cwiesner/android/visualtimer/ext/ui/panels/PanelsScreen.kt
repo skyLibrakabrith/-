@@ -141,7 +141,8 @@ fun PanelsScreen(
     var showDeadline by remember { mutableStateOf(false) }
 
     var listMode by remember { mutableStateOf(false) }
-    // 底边栏点「面板」时切视图
+    var selectedIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
+    // 底边栏点「面板」时切视图（必须放在 selectedIds 声明之后）
     LaunchedEffect(toggleViewSignal) {
         if (toggleViewSignal > 0) {
             listMode = !listMode
@@ -150,7 +151,6 @@ fun PanelsScreen(
     }
     var showPanelManager by remember { mutableStateOf(false) }
     var focusTimerId by remember { mutableStateOf<Long?>(null) }
-    var selectedIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
 
     // 编辑器需要「全部计时器」作为候选池
     val allTimers by remember { db.timerDao().observeAll() }
