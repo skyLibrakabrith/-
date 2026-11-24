@@ -1,5 +1,6 @@
 package at.cwiesner.android.visualtimer.ext.ui.panels
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.Arrangement
@@ -54,6 +55,7 @@ import androidx.compose.ui.zIndex
  * 长按既能让卡片触发 `onLongClick`，也能让网格层开始拖拽 —— 拖动期间
  * 卡片不会收到点击回调（位置已经变了，用户本来也不在点同一个东西）。
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun <T> DraggableGrid(
     items: List<T>,
