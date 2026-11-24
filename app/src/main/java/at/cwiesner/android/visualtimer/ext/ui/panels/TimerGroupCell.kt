@@ -148,19 +148,7 @@ fun TimerGroupCell(
                     maxLines = 1,
                 )
             }
-
-            // 组标记点：左上角，用来一眼区分「组」和「单计时器」
-            Box(
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(10.dp)
-                    .size(7.dp)
-                    .clip(RoundedCornerShape(4.dp))
-                    .background(ExtColors.Amber),
-            )
         }
     }
 }
 
-/** 一个组最多显示几个成员小盘。 */
-private const val MAX_IN_GROUP = 4

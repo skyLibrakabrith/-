@@ -300,35 +300,6 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                                     onDismissRequest = { menuOpen = false },
                                 ) {
                                     DropdownMenuItem(
-                                        text = { Text("编辑当前面板") },
-                                        onClick = { menuOpen = false; showPanelEditor = true },
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("新建序列") },
-                                        onClick = {
-                                            menuOpen = false
-                                            // 新序列直接挂到当前面板，去编辑器里加阶段
-                                            scope.launch {
-                                                val pid = currentPanel?.id ?: return@launch
-                                                val id = db.sequenceDao().upsert(
-                                                    StepSequence(
-                                                        name = "新序列",
-                                                        panelId = pid,
-                                                    ),
-                                                )
-                                                editingSequenceId = id
-                                            }
-                                        },
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("调整顺序") },
-                                        onClick = { menuOpen = false; showOrderDialog = true },
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("面板管理") },
-                                        onClick = { menuOpen = false; showPanelManager = true },
-                                    )
-                                    DropdownMenuItem(
                                         text = { Text("开始全部") },
                                         onClick = {
                                             menuOpen = false
@@ -341,7 +312,10 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                                             }
                                         },
                                     )
-                                }
+                                    DropdownMenuItem(
+                                        text = { Text("面板管理") },
+                                        onClick = { menuOpen = false; showPanelManager = true },
+                                    )                                }
                             }
                         }
                     },
@@ -470,6 +444,7 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                         }
                     },
                     onEdit = { t -> editingTimerId = t.id },
+                    onReorder = { showOrderDialog = true },
                     onBatchStart = {
                         scope.launch {
                             val chosen = timers.filter { it.id in selectedIds }
@@ -479,7 +454,29 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                     },
                 )
 
-                else -> LazyVerticalGrid(
+                else -> Column(modifier = Modifier.fillMaxSize()) {
+                    // 快捷键：把「新建序列」从菜单里提出来，避免藏在二级入口
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 12.dp, end = 12.dp, top = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        QuickAction("新建序列", Modifier.weight(1f)) {
+                            scope.launch {
+                                val pid = currentPanel?.id ?: return@launch
+                                val id = db.sequenceDao().upsert(
+                                    StepSequence(name = "新序列", panelId = pid),
+                                )
+                                editingSequenceId = id
+                            }
+                        }
+                        QuickAction("面板管理", Modifier.weight(1f)) {
+                            showPanelManager = true
+                        }
+                    }
+
+                    LazyVerticalGrid(
                     columns = GridCells.Fixed(
                         if (at.cwiesner.android.visualtimer.ext.ui.isLandscape()) {
                             (gridColumns + 1).coerceAtMost(4)
@@ -615,6 +612,7 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                             },
                         )
                     }
+                    }
                 }
             }
             }
@@ -728,6 +726,13 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                 val idx = panels.indexOfFirst { it.id == opened.id }
                 if (idx >= 0) selectedPanel = idx
                 showPanelManager = false
+            },
+            onEdit = { target ->
+                // 从管理列表直接进该面板的编辑器
+                val idx = panels.indexOfFirst { it.id == target.id }
+                if (idx >= 0) selectedPanel = idx
+                showPanelManager = false
+                showPanelEditor = true
             },
             onCreate = { name ->
                 scope.launch {
@@ -1081,27 +1086,12 @@ private fun TimerCell(
                     modifier = Modifier.size(16.dp),
                 )
             }
-            Box(
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(10.dp)
-                    .size(7.dp)
-                    .clip(RoundedCornerShape(4.dp))
-                    .background(
-                        when {
-                            !running -> ExtColors.TextDim
-                            frac > 0.5f -> ExtColors.Primary
-                            frac > 0.2f -> ExtColors.Amber
-                            else -> ExtColors.Red
-                        },
-                    ),
-            )
-
         }
     }
 }
 
 /** 列表模式：多选 + 批量操作。 */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun TimerList(
     timers: List<TimerItem>,
@@ -1116,6 +1106,8 @@ private fun TimerList(
     onBatchDelete: () -> Unit,
     onBatchStart: () -> Unit,
     onEdit: (TimerItem) -> Unit,
+    /** 长按列表行：调出排序面板（替代原来的右上角菜单项）。 */
+    onReorder: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
         if (selectedIds.isNotEmpty()) {
@@ -1149,7 +1141,10 @@ private fun TimerList(
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(12.dp))
                         .background(ExtColors.Surface)
-                        .clickable { onToggle(timer.id) }
+                        .combinedClickable(
+                            onClick = { onToggle(timer.id) },
+                            onLongClick = onReorder,
+                        )
                         .padding(horizontal = 10.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -1215,5 +1210,24 @@ private fun EmptyHint(text: String) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(24.dp),
         )
+    }
+}
+
+/** 网格上方的快捷操作按钮。 */
+@Composable
+private fun QuickAction(
+    text: String,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier = modifier
+            .height(36.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(ExtColors.Surface)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(text, fontSize = 12.sp, color = ExtColors.Primary)
     }
 }

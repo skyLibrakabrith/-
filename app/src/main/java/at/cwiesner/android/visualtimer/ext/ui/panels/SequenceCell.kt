@@ -187,16 +187,6 @@ fun SequenceCell(
                     maxLines = 1,
                 )
             }
-
-            // 序列标记点：右下角，用青色区分于组的琥珀色
-            Box(
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(10.dp)
-                    .size(7.dp)
-                    .clip(RoundedCornerShape(4.dp))
-                    .background(ExtColors.Palette[2]),
-            )
         }
     }
 }

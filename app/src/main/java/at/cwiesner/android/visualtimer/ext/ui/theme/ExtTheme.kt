@@ -66,6 +66,63 @@ object ExtColors {
         Color(0xFFF44336), // 7 红    — 紧张
     )
 
+    /**
+     * 红绿灯基准色：绿（充裕）→ 黄 → 橙 → 红（紧张）。
+     *
+     * 三档语义最直观，不需要用户理解刻度；中间用插值补出连续过渡，
+     * 这样颜色是「慢慢变红」而不是「啪一下跳过去」。
+     */
+    private val GreenLight = Color(0xFF35D07F)
+    private val YellowLight = Color(0xFFF2C14E)
+    private val OrangeLight = Color(0xFFF28F3B)
+    private val RedLight = Color(0xFFE5484D)
+
+    /**
+     * 按剩余比例取「红绿灯」色。
+     *
+     * @param fraction 剩余比例 0..1（1 = 刚满，0 = 到点）
+     * @param steps 中间档位数：0 = 纯三档跳变，1 = 多一档过渡，2 = 更平滑…
+     *   实际取色位置是 `fraction` 在该档位上的量化值，档位越多过渡越细腻。
+     */
+    fun trafficColor(fraction: Float, steps: Int = 2): Color {
+        val f = fraction.coerceIn(0f, 1f)
+        // 把 1..0 映射到 0..1 的「紧张度」
+        val tension = 1f - f
+        // 四段：绿→黄→橙→红
+        val seg = (tension * 3f)
+        val i = seg.toInt().coerceIn(0, 2)
+        val t = (seg - i).let {
+            if (steps <= 0) {
+                // 无过渡：直接跳到该段的起始色
+                0f
+            } else {
+                // 有过渡：保留小数部分做插值
+                it
+            }
+        }
+        val from = when (i) {
+            0 -> GreenLight
+            1 -> YellowLight
+            else -> OrangeLight
+        }
+        val to = when (i) {
+            0 -> YellowLight
+            1 -> OrangeLight
+            else -> RedLight
+        }
+        return lerp(from, to, t)
+    }
+
+    private fun lerp(a: Color, b: Color, t: Float): Color {
+        val k = t.coerceIn(0f, 1f)
+        return Color(
+            red = a.red + (b.red - a.red) * k,
+            green = a.green + (b.green - a.green) * k,
+            blue = a.blue + (b.blue - a.blue) * k,
+            alpha = 1f,
+        )
+    }
+
     /** 调色板档位名称，用于设置页说明。 */
     val PaletteNames: List<String> = listOf(
         "蓝紫", "天蓝", "青绿", "草绿", "琥珀", "橙", "橙红", "红",

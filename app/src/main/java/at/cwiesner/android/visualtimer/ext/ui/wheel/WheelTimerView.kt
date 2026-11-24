@@ -358,7 +358,14 @@ internal fun pickColor(
 
     return when (mode) {
         at.cwiesner.android.visualtimer.ext.settings.ColorMode.Threshold ->
-            colorForRemaining(remainingMillis, running, thresholdMinutes, thresholdColors)
+            if (thresholdMinutes.isEmpty() || thresholdColors.isEmpty()) {
+                // 没配阈值时用红绿灯连续色带
+                val frac = if (totalMillis <= 0L) 0f
+                else (remainingMillis.toFloat() / totalMillis).coerceIn(0f, 1f)
+                ExtColors.trafficColor(frac)
+            } else {
+                colorForRemaining(remainingMillis, running, thresholdMinutes, thresholdColors)
+            }
 
         at.cwiesner.android.visualtimer.ext.settings.ColorMode.Interval -> {
             val step = intervalMinutes.coerceAtLeast(1L) * 60_000L
@@ -371,9 +378,10 @@ internal fun pickColor(
             val divisions = fractionDivisions.coerceIn(2, 12)
             val frac = if (totalMillis <= 0L) 0f
             else (remainingMillis.toFloat() / totalMillis).coerceIn(0f, 1f)
-            // 剩余 100% → 第 0 份；剩余 0% → 最后一份
-            val seg = ((1f - frac) * divisions).toInt().coerceIn(0, divisions - 1)
-            palette[seg % palette.size]
+            // 表盘比例模式：在红绿灯色带上按档数取离散色块，
+            // 档数越多过渡越细。这样「分几份」和「颜色渐变」是同一件事。
+            val quantized = (kotlin.math.floor(frac * divisions) / divisions).toFloat()
+            ExtColors.trafficColor(quantized, steps = 1)
         }
     }
 }

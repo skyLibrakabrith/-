@@ -52,6 +52,8 @@ fun PanelManagerDialog(
     counts: Map<Long, Pair<Int, Int>>,
     onDismiss: () -> Unit,
     onOpen: (Panel) -> Unit,
+    /** 点「编辑」进面板编辑器（成员/序列/组管理）。 */
+    onEdit: (Panel) -> Unit,
     onCreate: (String) -> Unit,
     onRename: (Panel, String) -> Unit,
     onDelete: (Panel) -> Unit,
@@ -108,13 +110,13 @@ fun PanelManagerDialog(
                             )
                         }
                         IconButton(
-                            onClick = { renaming = panel },
+                            onClick = { onEdit(panel) },
                             modifier = Modifier.size(32.dp),
                         ) {
                             Icon(
                                 Icons.Filled.Edit,
-                                contentDescription = "改名",
-                                tint = ExtColors.TextSecondary,
+                                contentDescription = "编辑面板",
+                                tint = ExtColors.Primary,
                                 modifier = Modifier.size(16.dp),
                             )
                         }
