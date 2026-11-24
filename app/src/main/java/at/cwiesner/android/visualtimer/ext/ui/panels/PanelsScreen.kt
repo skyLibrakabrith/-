@@ -1,8 +1,6 @@
 package at.cwiesner.android.visualtimer.ext.ui.panels
 
 import android.widget.Toast
-import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -68,7 +66,7 @@ import kotlinx.coroutines.launch
  * - **网格**：每个计时器一个大圆盘，全部同时可见、同时运行。点圆盘开始/暂停。
  * - **列表**：紧凑列表 + 多选，批量开始 / 批量删除。
  */
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PanelsScreen(
     modifier: Modifier = Modifier,
@@ -81,6 +79,8 @@ fun PanelsScreen(
      * 组件内部就跟着一起丢，表现为「从别处进来变成列表视图」。
      */
     listModeState: MutableState<Boolean> = remember { mutableStateOf(false) },
+    /** 每次自增表示长按了底边栏「面板」，要求展开面板操作抽屉。 */
+    actionsSignal: Int = 0,
 ) {
     val context = LocalContext.current
     val app = context.applicationContext as ExtApplication
@@ -125,6 +125,13 @@ fun PanelsScreen(
     // 长按卡片后弹出「面板操作」抽屉
     var longPressEntry by remember { mutableStateOf<PanelEntry?>(null) }
     var showPanelActions by remember { mutableStateOf(false) }
+    // 底边栏「面板」按钮被长按 → 展开抽屉
+    LaunchedEffect(actionsSignal) {
+        if (actionsSignal > 0) {
+            longPressEntry = null
+            showPanelActions = true
+        }
+    }
 
     // 视图模式由 MainScaffold 持有（受控组件）。
     //
@@ -316,13 +323,7 @@ fun PanelsScreen(
             Column {
                 TopAppBar(
                     title = {
-                        Column(
-                            // 长按面板名 → 面板操作抽屉
-                            modifier = Modifier.combinedClickable(
-                                onClick = {},
-                                onLongClick = { showPanelActions = true },
-                            ),
-                        ) {
+                        Column {
                             Text(currentPanel?.name ?: "多面板")
                             val runningCount = runtimes.count { it.running }
                             if (runningCount > 0) {
@@ -946,8 +947,10 @@ fun PanelsScreen(
                             locked = keepDeadline && editingTimer.locked,
                         ),
                     )
-                    // 时长变了，运行状态重置，避免旧的倒计时残留
-                    runner.reset(editingTimer.id)
+                    // 时长变了：直接清掉运行时状态。
+                    // 用 reset 不行 —— 它把 remaining 设成**旧的** totalMillis，
+                    // 卡片会继续显示改之前时长。
+                    runner.clear(editingTimer.id)
                     toast("已保存：" + label.ifBlank { "未命名" })
                 }
             },

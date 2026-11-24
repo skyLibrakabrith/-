@@ -70,8 +70,11 @@ internal fun TimerCell(
     onDelete: () -> Unit,
 ) {
     val running = runtime?.running == true
-    val remain = if (running) (runtime?.remainingMillis ?: timer.durationMillis) else timer.durationMillis
-    val total = if (running) (runtime?.totalMillis ?: timer.durationMillis) else timer.durationMillis
+    // 只要存在运行时状态（运行中**或暂停**），就用它的剩余量。
+    // 之前写的是 if (running) runtime else timer.durationMillis ——
+    // 一暂停就回落到原始时长，盘面立刻显示满格，看着就像被重置了。
+    val remain = runtime?.remainingMillis ?: timer.durationMillis
+    val total = runtime?.totalMillis ?: timer.durationMillis
     val frac = if (total <= 0L) 0f else (remain.toFloat() / total).coerceIn(0f, 1f)
 
     // 卡片本身**不再**挂 combinedClickable。

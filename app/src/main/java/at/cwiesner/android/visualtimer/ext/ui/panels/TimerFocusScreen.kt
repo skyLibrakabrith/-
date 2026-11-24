@@ -86,8 +86,18 @@ fun TimerFocusScreen(
     var draft by remember(timer.id) { mutableLongStateOf(timer.durationMillis) }
     var dragging by remember { mutableStateOf(false) }
 
-    val remain = if (running) (runtime?.remainingMillis ?: draft) else draft
-    val total = if (running) (runtime?.totalMillis ?: draft) else draft
+    // 暂停时同样要停在暂停位置（之前一暂停就回落到 draft = 原始时长，
+    // 视觉上和重置没区别）。只有「从未开始」或「正在拖动改时长」才用 draft。
+    val remain = when {
+        dragging -> draft
+        runtime != null -> runtime.remainingMillis
+        else -> draft
+    }
+    val total = when {
+        dragging -> draft
+        runtime != null -> runtime.totalMillis
+        else -> draft
+    }
     val landscape = at.cwiesner.android.visualtimer.ext.ui.isLandscape()
 
     // 中央控件只在「运行中 / 超时」时出现；静止状态由外圈拖动设定时长

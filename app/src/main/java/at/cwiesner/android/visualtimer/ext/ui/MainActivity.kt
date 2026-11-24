@@ -8,9 +8,15 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.lifecycle.lifecycleScope
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccessTime
@@ -21,7 +27,6 @@ import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -32,17 +37,21 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
-import kotlinx.coroutines.launch
+import androidx.lifecycle.lifecycleScope
 import at.cwiesner.android.visualtimer.ext.ExtApplication
+import at.cwiesner.android.visualtimer.ext.settings.SettingsRepo
+import at.cwiesner.android.visualtimer.ext.settings.ThemeMode
 import at.cwiesner.android.visualtimer.ext.ui.alerts.AlertsScreen
 import at.cwiesner.android.visualtimer.ext.ui.home.HomeScreen
 import at.cwiesner.android.visualtimer.ext.ui.panels.PanelsScreen
 import at.cwiesner.android.visualtimer.ext.ui.settings.SettingsScreen
-import at.cwiesner.android.visualtimer.ext.settings.SettingsRepo
-import at.cwiesner.android.visualtimer.ext.settings.ThemeMode
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
 
@@ -144,6 +153,8 @@ private fun MainScaffold(onPreviewFlash: () -> Unit = {}) {
     // 不额外占页面里的按钮。
     var panelViewToggleTick by remember { mutableIntStateOf(0) }
     var alertsModeToggleTick by remember { mutableIntStateOf(0) }
+    // 长按底边栏「面板」→ 打开面板操作抽屉
+    var panelActionsTick by remember { mutableIntStateOf(0) }
 
     // 各页当前视图。**由导航层持有**：页面组件切标签时会被销毁重建，
     // 视图状态放在页面内部就会丢，表现为「从别处进来变成列表视图」。
@@ -165,12 +176,24 @@ private fun MainScaffold(onPreviewFlash: () -> Unit = {}) {
                 contentColor = ExtColors.Primary,
             ) {
                 dests.forEachIndexed { index, dest ->
-                    NavigationBarItem(
+                    // 自己画导航项，而不是用 NavigationBarItem。
+                    // 原因：NavigationBarItem 内部自带 selectable(clickable)，
+                    // 再在外面挂一层 combinedClickable 就会变成两层点击、互相抢事件
+                    // —— 这个坑在面板卡片上已经踩过一次。
+                    // 现在每个项只有**一个**点击层，长按/单击都能稳定区分。
+                    val icon = when {
+                        dest == Dest.Panels && panelShowsList -> Icons.Filled.Checklist
+                        dest == Dest.Alerts && alertsShowsSound -> Icons.Filled.MusicNote
+                        else -> dest.icon
+                    }
+                    NavItem(
+                        modifier = Modifier.weight(1f),
                         selected = selected == index,
+                        icon = icon,
+                        label = dest.label,
                         onClick = {
                             // 已经在当前页 → 切换该页的视图；否则先跳过去。
-                            // 注意：跳转**不会**重置任何页的视图，
-                            // 从别处点到面板默认仍是卡片视图。
+                            // 跳转**不会**重置任何页的视图。
                             when {
                                 dest == Dest.Panels && selected == index ->
                                     panelViewToggleTick++
@@ -179,19 +202,13 @@ private fun MainScaffold(onPreviewFlash: () -> Unit = {}) {
                                 else -> selected = index
                             }
                         },
-                        icon = {
-                            // 图标跟随当前视图：卡片用 GridView / 列表用 Checklist；
-                            // 警报用 Notifications（振动）/ MusicNote（铃声）
-                            val icon = when {
-                                dest == Dest.Panels && panelShowsList ->
-                                    Icons.Filled.Checklist
-                                dest == Dest.Alerts && alertsShowsSound ->
-                                    Icons.Filled.MusicNote
-                                else -> dest.icon
+                        onLongClick = if (dest == Dest.Panels) {
+                            // 长按「面板」→ 面板操作抽屉（新建序列 / 面板管理）
+                            {
+                                if (selected != index) selected = index
+                                panelActionsTick++
                             }
-                            Icon(icon, contentDescription = dest.label)
-                        },
-                        label = { Text(dest.label) },
+                        } else null,
                     )
                 }
             }
@@ -207,6 +224,7 @@ private fun MainScaffold(onPreviewFlash: () -> Unit = {}) {
                 Dest.Panels -> PanelsScreen(
                     toggleViewSignal = panelViewToggleTick,
                     listModeState = panelListModeState,
+                    actionsSignal = panelActionsTick,
                 )
                 Dest.Alerts -> AlertsScreen(
                     onPreviewFlash = onPreviewFlash,
@@ -216,5 +234,47 @@ private fun MainScaffold(onPreviewFlash: () -> Unit = {}) {
                 Dest.Settings -> SettingsScreen()
             }
         }
+    }
+}
+
+/**
+ * 底边栏的一项。
+ *
+ * 只挂**一个** [androidx.compose.foundation.combinedClickable]：
+ * 单击切页/切视图，长按给需要额外入口的页面用（目前只有「面板」）。
+ * 不用 NavigationBarItem 是因为它内部已经有一层 selectable，
+ * 再叠一层点击会互相抢事件。
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun NavItem(
+    selected: Boolean,
+    icon: ImageVector,
+    label: String,
+    onClick: () -> Unit,
+    onLongClick: (() -> Unit)?,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier
+            .fillMaxHeight()
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick,
+            ),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = label,
+            tint = if (selected) ExtColors.Primary else ExtColors.TextSecondary,
+        )
+        Spacer(Modifier.height(2.dp))
+        Text(
+            text = label,
+            fontSize = 11.sp,
+            color = if (selected) ExtColors.Primary else ExtColors.TextSecondary,
+        )
     }
 }
