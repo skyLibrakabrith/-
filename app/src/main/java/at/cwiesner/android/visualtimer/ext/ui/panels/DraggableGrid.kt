@@ -28,14 +28,6 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 
-/**
- * 双击判定窗口。
- *
- * 系统默认约 300ms，正常手速连点在 200~350ms 之间，
- * 窗口太短会让「想双击」变成「两次单击」，用起来就是判定太灵敏。
- * 放宽到 400ms 后双击能稳定命中，单击也只多等 0.4 秒。
- */
-private const val DOUBLE_TAP_TIMEOUT_MS = 400L
 
 /**
  * 可在主界面直接拖拽排序的网格。
@@ -180,23 +172,17 @@ fun <T> DraggableGrid(
                 modifier = Modifier
                     // ---- 点按层：单击 / 双击 / 长按 ----
                     //
-                    // 用**显式**的参数，不依赖组件库的默认值：
-                    // - hasDoubleClick = true 明确声明「有双击」，
-                    //   单击必须等双击窗口过去才派发
-                    // - doubleClickTimeoutMillis 从默认偏短的时长放宽到 400ms，
-                    //   正常人类连点是 200~350ms，默认窗口下经常「点一下就被
-                    //   判成第一下、第二下才进全屏」，用起来就是「太灵敏」
+                    // 单击直接进全屏的真正原因，是卡片内部还套了一层
+                    // combinedClickable（TimerCell/SequenceCell/TimerGroupCell 自己
+                    // 各挂了一个）：内层先消费掉第一下，外层看到的事件序列残缺，
+                    // 双击计数直接错乱。那一层已经删掉，现在全区域只有这一个。
                     //
-                    // 注意：双击是**第二下抬起**时触发的，不是第一下。
-                    // 之前单击直接进全屏，真正的原因是卡片内部还套了一层
-                    // combinedClickable，内层先把第一下消费掉导致外层时序错乱 ——
-                    // 那一层已经删掉了，现在只有这一个点击层。
+                    // 注意本版本 Compose 的 combinedClickable **没有**
+                    // hasDoubleClick / doubleClickTimeoutMillis 参数
+                    // （只有 enabled/onClickLabel/role/onLongClickLabel/
+                    //  onLongClick/onDoubleClick/onClick），
+                    // 双击窗口用框架默认值 ~300ms，不能在这里调。
                     .combinedClickable(
-                        enabled = true,
-                        onClickLabel = null,
-                        role = null,
-                        hasDoubleClick = curOnDouble != null,
-                        doubleClickTimeoutMillis = DOUBLE_TAP_TIMEOUT_MS,
                         onClick = { curOnClick(item) },
                         onDoubleClick = curOnDouble?.let { d -> { d(item) } },
                         onLongClick = curOnLong?.let { l -> { l(item) } },
