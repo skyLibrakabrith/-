@@ -31,6 +31,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
@@ -126,6 +127,7 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
     var editingSequenceId by remember { mutableStateOf<Long?>(null) }
     var focusSequenceId by remember { mutableStateOf<Long?>(null) }
     var editingTimerId by remember { mutableStateOf<Long?>(null) }
+    var alertPickerTimerId by remember { mutableStateOf<Long?>(null) }
     var showOrderDialog by remember { mutableStateOf(false) }
     var showNewTimer by remember { mutableStateOf(false) }
     var showDeadline by remember { mutableStateOf(false) }
@@ -279,20 +281,7 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                             }
                         }
                     },
-                    actions = {
-                        if (currentPanel != null) {
-                            IconButton(onClick = {
-                                listMode = !listMode
-                                selectedIds = emptySet()
-                            }) {
-                                Icon(
-                                    if (listMode) Icons.Filled.GridView else Icons.Filled.Checklist,
-                                    contentDescription = if (listMode) "网格" else "批量管理",
-                                )
-                            }
-
-                        }
-                    },
+,
                 )
                 if (panels.isNotEmpty()) {
                     TabRow(
@@ -433,6 +422,7 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                     onReorder = { showOrderDialog = true },
                     onSelectAll = { selectedIds = timers.map { it.id }.toSet() },
                     onClearSelection = { selectedIds = emptySet() },
+                    onChangeAlert = { t -> alertPickerTimerId = t.id },
                     onBatchStart = {
                         scope.launch {
                             val chosen = timers.filter { it.id in selectedIds }
@@ -527,39 +517,16 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                             intervalMinutes = intervalMinutes,
                             fractionDivisions = fractionDivisions,
                             onClick = {
+                                // 单击进全屏：那里有启停按钮和时长编辑
+                                focusTimerId = timer.id
+                            },
+                            onLongClick = { showOrderDialog = true },
+                            onReset = {
                                 scope.launch {
-                                    val cur = runner.snapshot().firstOrNull { it.timerId == timer.id }
-                                    val name = timer.label ?: "未命名"
-                                    when {
-                                        // 未启动
-                                        cur == null -> {
-                                            if (timer.kind == TimerKind.Stopwatch) {
-                                                runner.startStopwatch(timer)
-                                                toast("正计时开始：$name")
-                                            } else {
-                                                runner.start(timer)
-                                                toast("开始：$name")
-                                            }
-                                        }
-                                        // 正在超时（未暂停）→ 重置
-                                        cur.isOverdue -> {
-                                            runner.reset(timer.id)
-                                            toast("已重置：$name")
-                                        }
-                                        // 运行中（含超时已暂停后继续）→ 暂停
-                                        cur.running -> {
-                                            runner.stop(timer.id)
-                                            toast("暂停：$name")
-                                        }
-                                        // 已暂停 → 继续（只翻转 running，保留剩余时长）
-                                        else -> {
-                                            runner.resume(timer.id)
-                                            toast("继续：$name")
-                                        }
-                                    }
+                                    runner.reset(timer.id)
+                                    toast("已重置：" + (timer.label ?: "未命名"))
                                 }
                             },
-                            onLongClick = { focusTimerId = timer.id },
                             onReset = {
                                 scope.launch {
                                     runner.reset(timer.id)
@@ -592,6 +559,10 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                                 )
                                 editingSequenceId = id
                             }
+                        }
+                        QuickAction(if (listMode) "卡片视图" else "列表视图", Modifier.weight(1f)) {
+                            listMode = !listMode
+                            selectedIds = emptySet()
                         }
                         QuickAction("面板管理", Modifier.weight(1f)) {
                             showPanelManager = true
@@ -832,6 +803,25 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                         target.copy(panelId = if (on) currentPanel.id else null),
                     )
                     toast(if (on) "已加入面板" else "已移出面板")
+                }
+            },
+        )
+    }
+
+    // ---- 提醒类型（列表右侧按钮触发）----
+    val alertPickerTimer = alertPickerTimerId?.let { id ->
+        allTimers.firstOrNull { it.id == id }
+    }
+    if (alertPickerTimer != null) {
+        AlertProfilePickerDialog(
+            profiles = alertProfiles,
+            selectedId = alertPickerTimer.alertProfileId,
+            onDismiss = { alertPickerTimerId = null },
+            onSelect = { pid ->
+                scope.launch {
+                    db.timerDao().upsert(alertPickerTimer.copy(alertProfileId = pid))
+                    val name = alertProfiles.firstOrNull { it.id == pid }?.name ?: "默认"
+                    toast("提醒已设为：" + name)
                 }
             },
         )
@@ -1090,6 +1080,7 @@ private fun TimerList(
     /** 长按列表行：调出排序面板（替代原来的右上角菜单项）。 */
     onReorder: () -> Unit,
     onSelectAll: () -> Unit,
+    onChangeAlert: (TimerItem) -> Unit,
     onClearSelection: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
@@ -1135,7 +1126,7 @@ private fun TimerList(
                         .background(ExtColors.Surface)
                         .combinedClickable(
                             onClick = { onToggle(timer.id) },
-                            onLongClick = onReorder,
+                            onLongClick = { onEdit(timer) },
                         )
                         .padding(horizontal = 10.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -1176,14 +1167,15 @@ private fun TimerList(
                             color = ExtColors.TextDim,
                         )
                     }
+                    // 右侧按钮改为「提醒类型」：快速换这个计时器的提醒配置
                     IconButton(
-                        onClick = { onEdit(timer) },
+                        onClick = { onChangeAlert(timer) },
                         modifier = Modifier.size(32.dp),
                     ) {
                         Icon(
-                            Icons.Filled.Edit,
-                            contentDescription = "编辑",
-                            tint = ExtColors.Primary,
+                            Icons.Filled.Notifications,
+                            contentDescription = "提醒类型",
+                            tint = ExtColors.Amber,
                             modifier = Modifier.size(16.dp),
                         )
                     }

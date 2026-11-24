@@ -73,7 +73,16 @@ class ExtApplication : Application() {
         sequenceEngine.confirm()
     }
 
+    /** 用户处理了提醒：停掉可能还在播的声音。 */
+    fun stopAlertSound() {
+        runCatching { headphoneSound.stop() }
+    }
+
     private val vibration: VibrationAlerter by lazy { VibrationAlerter(this) }
+
+    /** 耳机限定声音：没有耳机时完全不响，避免外放打扰。 */
+    private val headphoneSound: at.cwiesner.android.visualtimer.ext.alarm.HeadphoneSoundAlerter
+        by lazy { at.cwiesner.android.visualtimer.ext.alarm.HeadphoneSoundAlerter(this) }
     private val settings: SettingsRepo by lazy { SettingsRepo(this) }
 
     override fun onCreate() {
@@ -92,6 +101,8 @@ class ExtApplication : Application() {
         appScope.launch {
             panelRunner.alerts.collect { rt ->
                 runCatching { postNotification(rt) }
+                // 只在耳机下出声；没耳机时这个方法自身会直接返回
+                runCatching { headphoneSound.playIfHeadphone() }
                 runCatching {
                     AlertOverlayService.start(
                         this@ExtApplication,
