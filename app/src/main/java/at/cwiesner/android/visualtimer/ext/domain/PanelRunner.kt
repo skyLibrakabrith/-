@@ -158,6 +158,21 @@ class PanelRunner(private val scope: CoroutineScope) {
             )
     }
 
+    /**
+     * 从暂停处继续。
+     *
+     * **这是之前「暂停后点击却变成重置」的真正原因**：
+     * 点击恢复走的是 [start]，而 `start` 会用一个全新的 TimerRuntime
+     * 覆盖掉旧状态 —— remainingMillis 回到 totalMillis、overdueMillis 归零，
+     * 等价于重置。继续必须只翻转 running，保留剩余时长与超时计数。
+     */
+    fun resume(timerId: Long) {
+        val r = _runtimes.value[timerId] ?: return
+        // 继续时把提醒静音，避免震动一直响
+        acknowledge(timerId)
+        _runtimes.value = _runtimes.value + (timerId to r.copy(running = true))
+    }
+
     /** 以 DDL 方式开始：剩余时长 = 截止时刻 − 现在。 */
     fun startUntil(timer: TimerItem, deadlineEpochMillis: Long, now: Long) {
         acknowledge(timer.id)

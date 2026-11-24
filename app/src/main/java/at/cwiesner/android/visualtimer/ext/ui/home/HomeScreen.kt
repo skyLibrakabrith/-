@@ -184,7 +184,36 @@ fun HomeScreen(modifier: Modifier = Modifier) {
                 30 * 60_000L to "半小时",
                 60 * 60_000L to "1 小时",
             ).forEach { (ms, label) ->
-                SmallChip(label, Modifier.weight(1f)) { picked = now + ms }
+                SmallChip(label, Modifier.weight(1f)) {
+                    // 点一下立刻创建并开始计时，不用再回面板点一遍
+                    scope.launch {
+                        val t = createTimer(
+                            db = db,
+                            panels = panels,
+                            kind = TimerKind.Countdown,
+                            durationMillis = ms,
+                            deadline = null,
+                            label = label,
+                        )
+                        app.panelRunner.start(t)
+                        toast("已开始：$label")
+                    }
+                }
+            }
+            // 正计时：同样一键开始
+            SmallChip("正计时", Modifier.weight(1f)) {
+                scope.launch {
+                    val t = createTimer(
+                        db = db,
+                        panels = panels,
+                        kind = TimerKind.Stopwatch,
+                        durationMillis = 0L,
+                        deadline = null,
+                        label = "正计时",
+                    )
+                    app.panelRunner.startStopwatch(t)
+                    toast("正计时已开始")
+                }
             }
         }
 
@@ -208,7 +237,7 @@ private suspend fun createTimer(
     durationMillis: Long,
     deadline: Long?,
     label: String,
-) {
+): at.cwiesner.android.visualtimer.ext.data.TimerItem {
     val panelId = panels.firstOrNull()?.id ?: run {
         val pid = db.panelDao().upsert(
             Panel(name = "默认面板", sortOrder = 0),
@@ -227,6 +256,8 @@ private suspend fun createTimer(
     db.panelDao().upsertRefs(
         listOf(PanelTimerRef(panelId = panelId, timerId = timerId, order = existing.size)),
     )
+    return db.timerDao().get(timerId)
+        ?: TimerItem(id = timerId, label = label, durationMillis = durationMillis, kind = kind)
 }
 
 private fun describeTarget(target: Long, now: Long): String {

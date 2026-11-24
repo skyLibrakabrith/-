@@ -129,7 +129,6 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
     var showOrderDialog by remember { mutableStateOf(false) }
     var showNewTimer by remember { mutableStateOf(false) }
     var showDeadline by remember { mutableStateOf(false) }
-    var menuOpen by remember { mutableStateOf(false) }
 
     var listMode by remember { mutableStateOf(false) }
     var showPanelManager by remember { mutableStateOf(false) }
@@ -291,32 +290,7 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                                     contentDescription = if (listMode) "网格" else "批量管理",
                                 )
                             }
-                            Box {
-                                IconButton(onClick = { menuOpen = true }) {
-                                    Icon(Icons.Filled.MoreVert, contentDescription = "更多")
-                                }
-                                DropdownMenu(
-                                    expanded = menuOpen,
-                                    onDismissRequest = { menuOpen = false },
-                                ) {
-                                    DropdownMenuItem(
-                                        text = { Text("开始全部") },
-                                        onClick = {
-                                            menuOpen = false
-                                            scope.launch {
-                                                timers.forEach { t ->
-                                                    runner.clear(t.id)
-                                                    runner.start(t)
-                                                }
-                                                toast("已启动 ${timers.size} 个计时器")
-                                            }
-                                        },
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("面板管理") },
-                                        onClick = { menuOpen = false; showPanelManager = true },
-                                    )                                }
-                            }
+
                         }
                     },
                 )
@@ -404,9 +378,16 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                     },
                     onStart = {
                         scope.launch {
-                            runner.clear(focused.id)
-                            runner.start(focused)
-                            toast("开始计时")
+                            val cur = runner.snapshot().firstOrNull { it.timerId == focused.id }
+                            if (cur != null && !cur.running && !cur.expired) {
+                                // 有暂停状态 → 从暂停处继续
+                                runner.resume(focused.id)
+                                toast("继续计时")
+                            } else {
+                                runner.clear(focused.id)
+                                runner.start(focused)
+                                toast("开始计时")
+                            }
                         }
                     },
                     onPause = {
@@ -445,6 +426,8 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                     },
                     onEdit = { t -> editingTimerId = t.id },
                     onReorder = { showOrderDialog = true },
+                    onSelectAll = { selectedIds = timers.map { it.id }.toSet() },
+                    onClearSelection = { selectedIds = emptySet() },
                     onBatchStart = {
                         scope.launch {
                             val chosen = timers.filter { it.id in selectedIds }
@@ -471,8 +454,8 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                                 editingSequenceId = id
                             }
                         }
-                        QuickAction("面板管理", Modifier.weight(1f)) {
-                            showPanelManager = true
+                        QuickAction("编辑面板", Modifier.weight(1f)) {
+                            showPanelEditor = true
                         }
                     }
 
@@ -584,13 +567,9 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                                             runner.stop(timer.id)
                                             toast("暂停：$name")
                                         }
-                                        // 已暂停 → 继续
+                                        // 已暂停 → 继续（只翻转 running，保留剩余时长）
                                         else -> {
-                                            if (timer.kind == TimerKind.Stopwatch) {
-                                                runner.startStopwatch(timer)
-                                            } else {
-                                                runner.start(timer)
-                                            }
+                                            runner.resume(timer.id)
                                             toast("继续：$name")
                                         }
                                     }
@@ -862,7 +841,7 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
             initialDuration = editingTimer.durationMillis,
             title = "编辑计时器",
             onDismiss = { editingTimerId = null },
-            onConfirm = { label, duration, deadlineEpoch, alertProfileId, isStopwatch ->
+            onConfirm = { label, duration, deadlineEpoch, alertProfileId ->
                 editingTimerId = null
                 scope.launch {
                     db.timerDao().upsert(
@@ -870,8 +849,7 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                             label = label.ifBlank { null },
                             durationMillis = duration,
                             alertProfileId = alertProfileId,
-                            kind = if (isStopwatch) TimerKind.Stopwatch
-                            else TimerKind.Countdown,
+                            kind = TimerKind.Countdown,
                         ),
                     )
                     // 时长变了，运行状态重置，避免旧的倒计时残留
@@ -886,7 +864,7 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
         TimerEditDialog(
             alertProfiles = alertProfiles,
             onDismiss = { showNewTimer = false },
-            onConfirm = { label, duration, deadlineEpoch, alertProfileId, isStopwatch ->
+            onConfirm = { label, duration, deadlineEpoch, alertProfileId ->
                 showNewTimer = false
                 scope.launch {
                     val now = System.currentTimeMillis()
@@ -895,7 +873,7 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                             label = label.ifBlank { null },
                             durationMillis = duration,
                             alertProfileId = alertProfileId,
-                            kind = if (isStopwatch) TimerKind.Stopwatch else TimerKind.Countdown,
+                            kind = TimerKind.Countdown,
                         ),
                     )
                     val existing = db.panelDao().refsOf(currentPanel.id)
@@ -909,10 +887,8 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                         ),
                     )
                     db.timerDao().get(timerId)?.let { created ->
-                        when {
-                            isStopwatch -> runner.startStopwatch(created)
-                            deadlineEpoch != null ->
-                                runner.startUntil(created, deadlineEpoch, now)
+                        if (deadlineEpoch != null) {
+                            runner.startUntil(created, deadlineEpoch, now)
                         }
                     }
                     toast("已添加：" + (label.ifBlank { "未命名" }) + " · " +
@@ -1108,22 +1084,33 @@ private fun TimerList(
     onEdit: (TimerItem) -> Unit,
     /** 长按列表行：调出排序面板（替代原来的右上角菜单项）。 */
     onReorder: () -> Unit,
+    onSelectAll: () -> Unit,
+    onClearSelection: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
-        if (selectedIds.isNotEmpty()) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    "已选 ${selectedIds.size}",
-                    fontSize = 13.sp,
-                    color = ExtColors.TextSecondary,
-                    modifier = Modifier.weight(1f),
-                )
+        // 操作条常驻：全选 / 取消全选 + 选中后的批量动作
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            val allSelected = timers.isNotEmpty() && selectedIds.size == timers.size
+            Text(
+                if (selectedIds.isEmpty()) {
+                    "共 ${timers.size} 个"
+                } else {
+                    "已选 ${selectedIds.size}/${timers.size}"
+                },
+                fontSize = 13.sp,
+                color = ExtColors.TextSecondary,
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(
+                onClick = { if (allSelected) onClearSelection() else onSelectAll() },
+            ) { Text(if (allSelected) "取消全选" else "全选") }
+            if (selectedIds.isNotEmpty()) {
                 TextButton(onClick = onBatchStart) { Text("开始") }
                 TextButton(onClick = onBatchDelete) { Text("删除") }
             }
