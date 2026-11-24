@@ -145,9 +145,17 @@ private fun MainScaffold(onPreviewFlash: () -> Unit = {}) {
     var panelViewToggleTick by remember { mutableIntStateOf(0) }
     var alertsModeToggleTick by remember { mutableIntStateOf(0) }
 
-    // 各页当前视图，由页面回传，用于底边栏图标
-    var panelShowsList by remember { mutableStateOf(false) }
-    var alertsShowsSound by remember { mutableStateOf(false) }
+    // 各页当前视图。**由导航层持有**：页面组件切标签时会被销毁重建，
+    // 视图状态放在页面内部就会丢，表现为「从别处进来变成列表视图」。
+    var panelShowsList by rememberSaveable { mutableStateOf(false) }
+    // PanelsScreen 的视图开关：交给它一个 MutableState，由这里持有
+    val panelListModeState = rememberSaveable(
+        saver = androidx.compose.runtime.saveable.Saver(
+            save = { it.value },
+            restore = { mutableStateOf(it) },
+        ),
+    ) { mutableStateOf(false) }
+    var alertsShowsSound by rememberSaveable { mutableStateOf(false) }
     val dests = Dest.entries
 
     Scaffold(
@@ -198,7 +206,7 @@ private fun MainScaffold(onPreviewFlash: () -> Unit = {}) {
                 Dest.Home -> HomeScreen()
                 Dest.Panels -> PanelsScreen(
                     toggleViewSignal = panelViewToggleTick,
-                    onViewChanged = { isList -> panelShowsList = isList },
+                    listModeState = panelListModeState,
                 )
                 Dest.Alerts -> AlertsScreen(
                     onPreviewFlash = onPreviewFlash,

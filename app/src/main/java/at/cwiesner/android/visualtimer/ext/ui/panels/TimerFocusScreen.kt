@@ -97,6 +97,14 @@ fun TimerFocusScreen(
     Column(
         modifier = modifier
             .fillMaxSize()
+            // 点空白处关闭全屏（返回卡片视图）。
+            // 放在 Column 最外层，内部按钮/轮盘会先行消费点击，
+            // 只有真正落在空白区域的点击才会传到这里。
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onClose,
+            )
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -155,8 +163,9 @@ fun TimerFocusScreen(
                 fillParent = true,
             )
 
-            // 内圈：与 PieTimerView 的内盘同尺寸（半径 = 饼半径 × 0.46）
-            if (showInner && !dragging) {
+            // 内圈：与 PieTimerView 的内盘同尺寸（半径 = 饼半径 × 0.46）。
+            // DDL 不显示 —— 它不能暂停也不能重置，中央不该有可点的东西。
+            if (showInner && !dragging && !locked) {
                 InnerDialControl(
                     overdue = overdue,
                     remainText = if (overdue) {
@@ -189,22 +198,25 @@ fun TimerFocusScreen(
             color = if (overdue) ExtColors.Red else ExtColors.TextDim,
         )
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            PillButton(
-                text = "重置",
-                primary = false,
-                modifier = Modifier.weight(1f),
-                onClick = onReset,
-            )
-            PillButton(
-                text = if (running) "暂停" else "开始",
-                primary = true,
-                modifier = Modifier.weight(1f),
-                onClick = { if (running) onPause() else onStart() },
-            )
+        // DDL 没有重置/暂停，整排按钮都不出现
+        if (!locked) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                PillButton(
+                    text = "重置",
+                    primary = false,
+                    modifier = Modifier.weight(1f),
+                    onClick = onReset,
+                )
+                PillButton(
+                    text = if (running) "暂停" else "开始",
+                    primary = true,
+                    modifier = Modifier.weight(1f),
+                    onClick = { if (running) onPause() else onStart() },
+                )
+            }
         }
     }
 }

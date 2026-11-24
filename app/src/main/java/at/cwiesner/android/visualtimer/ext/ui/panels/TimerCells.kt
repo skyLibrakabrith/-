@@ -63,6 +63,8 @@ internal fun TimerCell(
     colorMode: ColorMode,
     intervalMinutes: Long,
     fractionDivisions: Int,
+    /** DDL：时间由截止时刻决定，不提供重置入口。 */
+    locked: Boolean = false,
     // 点按（单击/双击/长按）由 DraggableGrid 统一处理，卡片不再需要这两个回调
     onReset: () -> Unit,
     onDelete: () -> Unit,
@@ -144,8 +146,9 @@ internal fun TimerCell(
                         maxLines = 1,
                         modifier = Modifier.weight(1f),
                     )
-                    // 仅「暂停 / 超时」时出现；运行时占位保持宽度稳定
-                    if (runtime != null && (!running || runtime.isOverdue)) {
+                    // 仅「暂停 / 超时」时出现；运行时占位保持宽度稳定。
+                    // DDL 不显示：它不能暂停，也就永远不会有「暂停后需重置」的状态。
+                    if (!locked && runtime != null && (!running || runtime.isOverdue)) {
                         Box(
                             modifier = Modifier
                                 .height(20.dp)

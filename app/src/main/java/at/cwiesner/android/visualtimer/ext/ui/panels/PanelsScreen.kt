@@ -1,10 +1,11 @@
 package at.cwiesner.android.visualtimer.ext.ui.panels
 
 import android.widget.Toast
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -14,6 +15,7 @@ import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
@@ -24,6 +26,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -37,13 +40,13 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import at.cwiesner.android.visualtimer.ext.ExtApplication
-import at.cwiesner.android.visualtimer.ext.data.Panel
-import at.cwiesner.android.visualtimer.ext.data.PanelTimerRef
 import at.cwiesner.android.visualtimer.ext.data.AlertProfile
 import at.cwiesner.android.visualtimer.ext.data.GroupMember
-import at.cwiesner.android.visualtimer.ext.data.TimerGroup
+import at.cwiesner.android.visualtimer.ext.data.Panel
+import at.cwiesner.android.visualtimer.ext.data.PanelTimerRef
 import at.cwiesner.android.visualtimer.ext.data.Step
 import at.cwiesner.android.visualtimer.ext.data.StepSequence
+import at.cwiesner.android.visualtimer.ext.data.TimerGroup
 import at.cwiesner.android.visualtimer.ext.data.TimerItem
 import at.cwiesner.android.visualtimer.ext.data.TimerKind
 import at.cwiesner.android.visualtimer.ext.domain.DeadlineCalculator
@@ -65,13 +68,19 @@ import kotlinx.coroutines.launch
  * - **列表**：紧凑列表 + 多选，批量开始 / 批量删除。
  */
 @OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun PanelsScreen(
     modifier: Modifier = Modifier,
     /** 每次自增表示底边栏「面板」被再次点击，要求切换卡片/列表视图。 */
     toggleViewSignal: Int = 0,
-    /** 视图变化时回传，供底边栏图标同步。 */
-    onViewChanged: (Boolean) -> Unit = {},
+    /**
+     * 卡片/列表视图开关，由导航层持有。
+     *
+     * 放在外面是刻意的：PanelsScreen 切标签时会被销毁重建，视图状态若留在
+     * 组件内部就跟着一起丢，表现为「从别处进来变成列表视图」。
+     */
+    listModeState: MutableState<Boolean> = remember { mutableStateOf(false) },
 ) {
     val context = LocalContext.current
     val app = context.applicationContext as ExtApplication
@@ -113,11 +122,17 @@ fun PanelsScreen(
     var showPanelManager by remember { mutableStateOf(false) }
     var focusTimerId by remember { mutableStateOf<Long?>(null) }
 
-    // 视图模式默认是**卡片**（false）。
-    // 用 rememberSaveable 而不是 remember：从别的标签切回来时 Composable 会重建，
-    // 之前 remember 一起被清掉 —— 表现为「从别处点到面板，视图被重置」。
-    // 现在只有用户主动点底边栏才切换，跨标签往返保持原样。
-    var listMode by rememberSaveable { mutableStateOf(false) }
+    // 长按卡片后弹出「面板操作」抽屉
+    var longPressEntry by remember { mutableStateOf<PanelEntry?>(null) }
+    var showPanelActions by remember { mutableStateOf(false) }
+
+    // 视图模式由 MainScaffold 持有（受控组件）。
+    //
+    // 之前是本地 rememberSaveable：切标签时 PanelsScreen 整个被销毁重建，
+    // 恢复出来的「上次值」不一定等于用户期望的默认值，
+    // 于是从其他界面点回面板时会莫名落到列表视图。
+    // 现在状态在导航层，默认卡片视图，只有用户主动再点一次底边栏才切换。
+    var listMode by listModeState
     var selectedIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
     LaunchedEffect(toggleViewSignal) {
         // toggleViewSignal 只在用户**再次点击**「面板」标签时自增，
@@ -127,7 +142,6 @@ fun PanelsScreen(
             selectedIds = emptySet()
         }
     }
-    LaunchedEffect(listMode) { onViewChanged(listMode) }
 
     val allTimers by remember { db.timerDao().observeAll() }
         .collectAsState(initial = emptyList<TimerItem>())
@@ -302,7 +316,13 @@ fun PanelsScreen(
             Column {
                 TopAppBar(
                     title = {
-                        Column {
+                        Column(
+                            // 长按面板名 → 面板操作抽屉
+                            modifier = Modifier.combinedClickable(
+                                onClick = {},
+                                onLongClick = { showPanelActions = true },
+                            ),
+                        ) {
                             Text(currentPanel?.name ?: "多面板")
                             val runningCount = runtimes.count { it.running }
                             if (runningCount > 0) {
@@ -446,12 +466,8 @@ fun PanelsScreen(
                             toast("已删除 $n 个计时器")
                         }
                     },
-                    // DDL 锁定了时长，编辑入口要和长按卡片保持一致地拦住，
-                    // 否则列表里能绕过去改时间，倒计时就和真实截止时刻脱节了
-                    onEdit = { t ->
-                        if (t.locked) toast("DDL 已锁定，不能改时长")
-                        else editingTimerId = t.id
-                    },
+                    // DDL 没有编辑入口（不是「被拦住」，而是这类计时器本来就没有可编辑项）
+                    onEdit = { t -> if (!t.locked) editingTimerId = t.id },
                     alertProfiles = alertProfiles,
                     onSelectAll = { selectedIds = timers.map { it.id }.toSet() },
                     onClearSelection = { selectedIds = emptySet() },
@@ -494,23 +510,18 @@ fun PanelsScreen(
                             }
                         },
                         onClick = { entry ->
-                            // 单击：暂停 / 继续
+                            // 单击：暂停 / 继续。
+                            // DDL 完全跳过 —— 它没有暂停/继续的语义，点了不该有反应。
+                            if (entry.kind != EntryKind.Timer) return@DraggableGrid
                             val t = timers.firstOrNull { it.id == entry.refId }
-                            if (entry.kind == EntryKind.Timer && t != null) {
-                                scope.launch {
-                                    // DDL 锁定后不允许暂停：它的时间由截止时刻决定，
-                                    // 暂停会让倒计时与实际剩余时间脱节
-                                    if (t.locked) {
-                                        toast("DDL 已锁定，不能暂停")
-                                    } else {
-                                        val cur = runner.snapshot()
-                                            .firstOrNull { it.timerId == t.id }
-                                        when {
-                                            cur == null -> runner.start(t)
-                                            cur.running -> runner.stop(t.id)
-                                            else -> runner.resume(t.id)
-                                        }
-                                    }
+                                ?: return@DraggableGrid
+                            if (t.locked) return@DraggableGrid
+                            scope.launch {
+                                val cur = runner.snapshot().firstOrNull { it.timerId == t.id }
+                                when {
+                                    cur == null -> runner.start(t)
+                                    cur.running -> runner.stop(t.id)
+                                    else -> runner.resume(t.id)
                                 }
                             }
                         },
@@ -523,20 +534,9 @@ fun PanelsScreen(
                             }
                         },
                         onLongClick = { entry ->
-                            // 长按 = 编辑（与双击进全屏区分开）。
-                            // 拖拽排序在长按后继续移动时才发生，所以两者不冲突。
-                            when (entry.kind) {
-                                EntryKind.Timer -> {
-                                    val t = timers.firstOrNull { it.id == entry.refId }
-                                    if (t != null && t.locked) {
-                                        toast("DDL 已锁定，不能改时长")
-                                    } else {
-                                        editingTimerId = entry.refId
-                                    }
-                                }
-                                EntryKind.Sequence -> editingSequenceId = entry.refId
-                                EntryKind.Group -> editingGroupId = entry.refId
-                            }
+                            // 长按只弹出面板操作抽屉，不再直接进编辑。
+                            // 格子上长按已经被拖拽排序占用，编辑入口收进抽屉里。
+                            longPressEntry = entry
                         },
                     ) { entry, dragging ->
                         when (entry.kind) {
@@ -581,6 +581,7 @@ fun PanelsScreen(
                                         colorMode = colorMode,
                                         intervalMinutes = intervalMinutes,
                                         fractionDivisions = fractionDivisions,
+                                        locked = t.locked,
                                         onReset = {
                                             scope.launch { runner.reset(t.id) }
                                         },
@@ -601,30 +602,78 @@ fun PanelsScreen(
             }
             }
 
-            // 快捷栏只出现在卡片视图，放在网格下方（系统栏留白带内）
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                QuickAction("新建序列", Modifier.weight(1f)) {
-                    scope.launch {
-                        val pid = currentPanel?.id ?: return@launch
-                        val id = db.sequenceDao().upsert(
-                            StepSequence(name = "新序列", panelId = pid),
-                        )
-                        editingSequenceId = id
-                    }
-                }
-                QuickAction("面板管理", Modifier.weight(1f)) {
-                    showPanelManager = true
-                }
-            }
+            // 原先这里有一条常驻快捷栏（新建序列 / 面板管理）。
+            // 它占掉一整行高度，且与「长按面板名」的入口重复，已整体移入抽屉。
             }
 
 
         }
+    }
+
+    // ---- 面板操作抽屉（长按顶部面板名，或长按任意格子唤出）----
+    //
+    // 原先是网格下方一条常驻快捷栏，占一行高度、也和长按重复；
+    // 现在收进抽屉，长按面板名或长按格子都能打开。
+    if (showPanelActions || longPressEntry != null) {
+        val entry = longPressEntry
+        val pressedTimer = entry
+            ?.takeIf { it.kind == EntryKind.Timer }
+            ?.let { e -> timers.firstOrNull { it.id == e.refId } }
+        AlertDialog(
+            onDismissRequest = {
+                showPanelActions = false
+                longPressEntry = null
+            },
+            containerColor = ExtColors.PureBlack,
+            titleContentColor = ExtColors.TextPrimary,
+            textContentColor = ExtColors.TextSecondary,
+            title = { Text(entry?.name ?: (currentPanel?.name ?: "面板")) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(
+                        onClick = {
+                            showPanelActions = false
+                            longPressEntry = null
+                            scope.launch {
+                                val pid = currentPanel?.id ?: return@launch
+                                val id = db.sequenceDao().upsert(
+                                    StepSequence(name = "新序列", panelId = pid),
+                                )
+                                editingSequenceId = id
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("新建序列") }
+
+                    TextButton(
+                        onClick = {
+                            showPanelActions = false
+                            longPressEntry = null
+                            showPanelManager = true
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("面板管理") }
+
+                    // DDL 一律没有编辑入口：它的时间由截止时刻决定
+                    if (pressedTimer != null && !pressedTimer.locked) {
+                        TextButton(
+                            onClick = {
+                                showPanelActions = false
+                                longPressEntry = null
+                                editingTimerId = pressedTimer.id
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) { Text("编辑计时器") }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showPanelActions = false
+                    longPressEntry = null
+                }) { Text("关闭") }
+            },
+        )
     }
 
     // ---- 组编辑（长按组卡片进入）----

@@ -359,12 +359,16 @@ internal fun pickColor(
     intervalMinutes: Long,
     fractionDivisions: Int,
 ): Color {
-    // 未运行时统一用「绿」—— 静止的盘面表示「满格、充裕」，
-    // 之前用主色蓝紫：蓝紫既不是充裕也不是危险，看着像停用状态。
-    if (!running) return ExtColors.TrafficStart
-
     val frac = if (totalMillis <= 0L) 0f
     else (remainingMillis.toFloat() / totalMillis).coerceIn(0f, 1f)
+
+    // 暂停时**保持**暂停那一刻的颜色，不要跳变。
+    //
+    // 之前这里写的是「未运行就返回绿色」，结果一个跑到一半的橙色盘
+    // 一按暂停直接跳成绿色，看起来像被重置了 ——
+    // 用户明确要求「暂停的时候轮盘不要变化」。
+    // 所以只有「完全没有进度」时才用起始绿，否则继续按剩余比例取色。
+    if (!running && frac >= 0.999f) return ExtColors.TrafficStart
 
     return when (mode) {
         at.cwiesner.android.visualtimer.ext.settings.ColorMode.Threshold ->
