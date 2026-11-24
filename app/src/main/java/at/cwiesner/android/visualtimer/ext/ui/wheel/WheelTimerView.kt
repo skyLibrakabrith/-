@@ -22,7 +22,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import at.cwiesner.android.visualtimer.ext.ui.ExtColors
@@ -127,7 +129,7 @@ fun PieTimerView(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .wrapContentSizeCompat(),
+            .asSquareInside(),
         contentAlignment = Alignment.Center,
     ) {
         Canvas(
@@ -448,24 +450,16 @@ internal fun fractionToDuration(fraction: Float, maxMillis: Long, stepMillis: Lo
 }
 
 /**
- * 让容器在父约束内取「最大内接正方形」并居中。
+ * 把一个容器收成「父约束内的最大内接正方形」并居中。
  *
- * 计分卡是竖长的（宽:高 ≈ 0.92），盘面上下的标签各占一行，
- * 中间这块区域往往是横宽竖窄的。只有把它显式收成正方形，
+ * 卡片是竖长形（宽:高 ≈ 0.92），盘面上下的标签各占一行，
+ * 中间这块区域往往横宽竖窄。只有显式收成正方形，
  * Canvas 画的圆、中央文字、内盘控件才会共用同一个几何中心。
  */
-private fun Modifier.wrapContentSizeCompat(): Modifier = this.then(
-    androidx.compose.ui.layout.layout { measurable, constraints ->
-        val side = minOf(constraints.maxWidth, constraints.maxHeight)
-            .coerceAtLeast(1)
-        val placeable = measurable.measure(
-            androidx.compose.ui.unit.Constraints.fixed(side, side),
-        )
-        layout(side, side) {
-            placeable.place(
-                (side - placeable.width) / 2,
-                (side - placeable.height) / 2,
-            )
-        }
-    },
-);
+private fun Modifier.asSquareInside(): Modifier = this.layout { measurable, constraints ->
+    val side = minOf(constraints.maxWidth, constraints.maxHeight).coerceAtLeast(1)
+    val placeable = measurable.measure(Constraints.fixed(side, side))
+    layout(side, side) {
+        placeable.place((side - placeable.width) / 2, (side - placeable.height) / 2)
+    }
+}

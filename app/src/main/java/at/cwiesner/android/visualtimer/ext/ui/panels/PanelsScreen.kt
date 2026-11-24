@@ -188,6 +188,10 @@ fun PanelsScreen(
         list.sortedBy { it.order }
     }
 
+    fun toast(msg: String) {
+        Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+    }
+
     var orderOverride by remember { mutableStateOf<List<PanelEntry>?>(null) }
     val displayEntries = orderOverride ?: gridEntries
 
@@ -252,9 +256,6 @@ fun PanelsScreen(
             if (n > 0) map[p.id] = n
         }
         runningCountByPanel = map
-    }
-    fun toast(msg: String) {
-        Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
     }
 
     // ---- 序列编辑（长按序列块进入）：就地渲染全屏编辑器 ----

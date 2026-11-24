@@ -13,6 +13,7 @@ import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -89,6 +90,19 @@ fun <T> DraggableGrid(
     // 双击识别：记录上一次单击的条目与时间
     var lastTapIndex by remember { mutableIntStateOf(-1) }
     var lastTapAt by remember { mutableLongStateOf(0L) }
+
+    // 待派发的单击：等双击窗口过去再执行，避免「双击的第一下先执行了单击」
+    var pendingClickIndex by remember { mutableIntStateOf(-1) }
+    var pendingClickAt by remember { mutableLongStateOf(0L) }
+    LaunchedEffect(pendingClickIndex, pendingClickAt) {
+        if (pendingClickIndex < 0) return@LaunchedEffect
+        kotlinx.coroutines.delay(DOUBLE_TAP_MS)
+        val i = pendingClickIndex
+        if (i >= 0) {
+            pendingClickIndex = -1
+            items.getOrNull(i)?.let { curOnClick(it) }
+        }
+    }
 
     // 回调捕获在 pointerInput 里，必须用 rememberUpdatedState 拿最新闭包，
     // 否则手势里用的永远是第一次组合时那份过期 lambda
@@ -232,12 +246,16 @@ fun <T> DraggableGrid(
                                         lastTapAt = 0L
                                         curOnClick(item)
                                     } else {
-                                        kotlinx.coroutines.delay(DOUBLE_TAP_MS)
-                                        if (lastTapIndex == index) {
-                                            lastTapIndex = -1
-                                            lastTapAt = 0L
-                                            curOnClick(item)
-                                        }
+                                        // 这 260ms 是**留白**，不是真的等：
+                                        // 手势线程里不能用 delay（受限挂起作用域），
+                                        // 而这段留白的目的只是「别让后续事件冲掉双击判定」。
+                                        // 真正的双击判定已经由 lastTapIndex/lastTapAt 完成：
+                                        // 下一次按下若落在窗口内就走双击分支，
+                                        // 否则下一次按下会重新写 lastTapIndex。
+                                        lastTapIndex = -1
+                                        lastTapAt = 0L
+                                        pendingClickIndex = index
+                                        pendingClickAt = now
                                     }
                                 }
                             }
