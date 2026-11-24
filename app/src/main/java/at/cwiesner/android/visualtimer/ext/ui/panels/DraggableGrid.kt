@@ -1,11 +1,9 @@
 package at.cwiesner.android.visualtimer.ext.ui.panels
 
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.drag
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -13,56 +11,48 @@ import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableLongStateOf
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
-import kotlinx.coroutines.withTimeoutOrNull
-
-/** 长按判定阈值。 */
-private const val LONG_PRESS_MS = 400L
-
-/** 双击判定窗口。 */
-private const val DOUBLE_TAP_MS = 260L
-
-/** 位移超过这个值就认为是滚动而非点按。 */
-private const val DRAG_THRESHOLD_PX = 12f
 
 /**
  * 可在主界面直接拖拽排序的网格。
  *
- * ## 手势：单层状态机
+ * ## 为什么改成这个结构
  *
- * 一次按下只走一条判定路径，不再叠两层 `pointerInput`
- * （之前外层 `detectDragGesturesAfterLongPress` 与内层 `detectTapGestures`
- * 抢同一次事件，长按拖动时好时坏、双击识别不稳）。
+ * 之前是手写手势状态机：`awaitEachGesture` + `withTimeoutOrNull` 自己判长按，
+ * 再 `drag()` 收位移，格数按「位移 ÷ 单元格尺寸」估算。
+ * 三处都不成立，所以单击、双击、长按、拖拽**全都不工作**：
  *
- * | 操作 | 判定 |
- * |---|---|
- * | 长按拖拽 | 按住 ≥400ms 后移动，跨格即换位，松手落库 |
- * | 长按松手 | 按住 ≥400ms 未移动 → [onLongClick] |
- * | 单击 | 260ms 内无第二下 → [onClick] |
- * | 双击 | 260ms 内有第二下 → [onDoubleClick]（单击不再触发） |
+ * 1. `withTimeoutOrNull` 在手势域里跑循环 `awaitPointerEvent`，
+ *    超时到点后协程被取消，后续 `drag()` 拿不到这次按压，
+ *    数据模型和框架的指针状态对不上。
+ * 2. 换位靠估算跨了几格，格宽/间距/内边距任何一项不精确就错位。
+ * 3. 单击被延迟派发，和拖拽分支共享状态，互相打架。
  *
- * ## 单元格尺寸
+ * 现在拆成两个互不干扰的层，这是社区通行做法
+ * （johanneskoehler/compose-reorderable、Calvin-LL/Reorderable 都是这个结构）：
  *
- * 拖拽换位靠「位移 ÷ 单元格尺寸」算跨了几格。之前把**固定 120dp** 当单元格
- * 高度，而真实卡片是 `宽度 ÷ 0.92` 的竖长形，列数一变就对不上 ——
- * 拖动要么不动、要么一次跳好几格。现在用 `BoxWithConstraints` 取真实宽度
- * 再换算高度。
+ * | 层 | 载体 | 职责 |
+ * |---|---|---|
+ * | 排序 | 网格层 `detectDragGesturesAfterLongPress` | 长按进入拖拽，用**几何命中**换位 |
+ * | 点按 | 每个卡片 `combinedClickable` | 单击 / 双击 / 长按，与拖拽无关 |
+ *
+ * 关键点：排序层**不消费**按下事件，所以卡片自己收到的点按序列是完整的；
+ * 长按既能让卡片触发 `onLongClick`，也能让网格层开始拖拽 —— 拖动期间
+ * 卡片不会收到点击回调（位置已经变了，用户本来也不在点同一个东西）。
  */
 @Composable
 fun <T> DraggableGrid(
@@ -85,188 +75,141 @@ fun <T> DraggableGrid(
     var draggingIndex by remember { mutableIntStateOf(-1) }
     var offsetX by remember { mutableFloatStateOf(0f) }
     var offsetY by remember { mutableFloatStateOf(0f) }
-    var dragged by remember { mutableStateOf(false) }
 
-    // 双击识别：记录上一次单击的条目与时间
-    var lastTapIndex by remember { mutableIntStateOf(-1) }
-    var lastTapAt by remember { mutableLongStateOf(0L) }
-
-    // 待派发的单击：等双击窗口过去再执行，避免「双击的第一下先执行了单击」
-    var pendingClickIndex by remember { mutableIntStateOf(-1) }
-    var pendingClickAt by remember { mutableLongStateOf(0L) }
-
-    // 回调捕获在 pointerInput 里，必须用 rememberUpdatedState 拿最新闭包，
-    // 否则手势里用的永远是第一次组合时那份过期 lambda
+    val curOnMove by rememberUpdatedState(onMove)
+    val curOnDragEnd by rememberUpdatedState(onDragEnd)
     val curOnClick by rememberUpdatedState(onClick)
     val curOnDouble by rememberUpdatedState(onDoubleClick)
     val curOnLong by rememberUpdatedState(onLongClick)
-    val curOnMove by rememberUpdatedState(onMove)
-    val curOnDragEnd by rememberUpdatedState(onDragEnd)
-    val curItemCount by rememberUpdatedState(items.size)
-
-    // 延迟派发待处理的单击。放在 curOnClick 声明之后，
-    // 否则 LaunchedEffect 里的 curOnClick 会「未定义」。
-    LaunchedEffect(pendingClickIndex, pendingClickAt) {
-        if (pendingClickIndex < 0) return@LaunchedEffect
-        kotlinx.coroutines.delay(DOUBLE_TAP_MS)
-        val i = pendingClickIndex
-        pendingClickIndex = -1
-        if (i >= 0) items.getOrNull(i)?.let { curOnClick(it) }
-    }
 
     val density = LocalDensity.current
     val cols = columns.coerceIn(1, 8)
 
-    BoxWithConstraints {
-        val spacingPx = with(density) { spacingDp.dp.toPx() }
-        val totalWidthPx = with(density) { maxWidth.toPx() }
-        val cellWidthPx = ((totalWidthPx - spacingPx * (cols - 1)) / cols).coerceAtLeast(1f)
-        val cellHeightPx = (cellWidthPx / cellAspect).coerceAtLeast(1f)
-
-        LazyVerticalGrid(
-            state = gridState,
-            columns = GridCells.Fixed(cols),
-            modifier = modifier,
-            horizontalArrangement = Arrangement.spacedBy(spacingDp.dp),
-            verticalArrangement = Arrangement.spacedBy(spacingDp.dp),
-        ) {
-            itemsIndexed(items, key = { _, item -> key(item) }) { index, item ->
-                val dragging = index == draggingIndex
-                Box(
-                    modifier = Modifier
-                        .zIndex(if (dragging) 1f else 0f)
-                        .graphicsLayer {
-                            if (dragging) {
-                                translationX = offsetX
-                                translationY = offsetY
-                                scaleX = 1.04f
-                                scaleY = 1.04f
-                                alpha = 0.92f
-                                shadowElevation = 14f
-                            }
+    LazyVerticalGrid(
+        state = gridState,
+        columns = GridCells.Fixed(cols),
+        modifier = modifier
+            // ---- 排序层：长按后拖拽 ----
+            //
+            // 注意这里**没有** awaitFirstDown(requireUnconsumed = true)，
+            // 也不 consume 按下事件：它只关心「长按之后的位移」，
+            // 之前的点按序列完全留给卡片自己处理。
+            .pointerInput(Unit) {
+                detectDragGesturesAfterLongPress(
+                    onDragStart = { startOffset ->
+                        // 用落点坐标反查是哪一个格子 —— 不估算、不换算，
+                        // 直接问「哪个可见项包含这个点」
+                        val hit = hitTestItem(gridState, startOffset)
+                        if (hit == null) {
+                            draggingIndex = -1
+                            return@detectDragGesturesAfterLongPress
                         }
-                        .pointerInput(Unit) {
-                            awaitEachGesture {
-                                val down = awaitFirstDown(requireUnconsumed = false)
-                                var pressMoved = 0f
-                                var releasedEarly = false
+                        draggingIndex = hit
+                        offsetX = 0f
+                        offsetY = 0f
+                    },
+                    onDrag = { change, dragAmount ->
+                        if (draggingIndex < 0) return@detectDragGesturesAfterLongPress
+                        change.consume()
+                        offsetX += dragAmount.x
+                        offsetY += dragAmount.y
 
-                                // 阶段一：等长按成立（超时返回 null），
-                                // 或者在这之前就被滚动/抬手打断
-                                val hitLongPress = withTimeoutOrNull(LONG_PRESS_MS) {
-                                    while (true) {
-                                        val event = awaitPointerEvent()
-                                        val change = event.changes
-                                            .firstOrNull { it.id == down.id } ?: break
-                                        pressMoved += change.positionChange().getDistance()
-                                        if (pressMoved > DRAG_THRESHOLD_PX) {
-                                            releasedEarly = true
-                                            break
-                                        }
-                                        if (!change.pressed) {
-                                            releasedEarly = true
-                                            break
-                                        }
-                                        if (change.isConsumed) {
-                                            releasedEarly = true
-                                            break
-                                        }
-                                    }
-                                    true
-                                }
-
-                                if (hitLongPress == null) {
-                                    // ---- 长按成立 → 拖拽 ----
-                                    draggingIndex = index
-                                    offsetX = 0f
-                                    offsetY = 0f
-                                    dragged = false
-
-                                    drag(down.id) { change: PointerInputChange ->
-                                        change.consume()
-                                        val d = change.positionChange()
-                                        offsetX += d.x
-                                        offsetY += d.y
-                                        val squared = offsetX * offsetX + offsetY * offsetY
-                                        if (squared > DRAG_THRESHOLD_PX * DRAG_THRESHOLD_PX) {
-                                            dragged = true
-                                        }
-
-                                        val colDelta = (offsetX / cellWidthPx).toInt()
-                                        val rowDelta = (offsetY / cellHeightPx).toInt()
-                                        val step = rowDelta * cols + colDelta
-                                        if (step != 0 && draggingIndex >= 0) {
-                                            val from = draggingIndex
-                                            val to = (from + step)
-                                                .coerceIn(0, curItemCount - 1)
-                                            if (from != to) {
-                                                curOnMove(from, to)
-                                                draggingIndex = to
-                                                // 扣掉已消费的位移，避免一次跳多格
-                                                offsetX -= colDelta * cellWidthPx
-                                                offsetY -= rowDelta * cellHeightPx
-                                            }
-                                        }
-                                    }
-
-                                    val moved = dragged
-                                    draggingIndex = -1
-                                    offsetX = 0f
-                                    offsetY = 0f
-                                    dragged = false
-
-                                    if (moved) {
-                                        // 拖拽松手 → 新顺序落库
-                                        curOnDragEnd?.invoke()
-                                    } else {
-                                        // 长按但没拖动 → 长按操作（进编辑）
-                                        curOnLong?.invoke(item)
-                                    }
-                                    return@awaitEachGesture
-                                }
-
-                                // ---- 阶段二：短按 ----
-                                if (!releasedEarly) return@awaitEachGesture
-
-                                val now = System.currentTimeMillis()
-                                val isDouble = lastTapIndex == index &&
-                                    (now - lastTapAt) <= DOUBLE_TAP_MS
-                                if (isDouble) {
-                                    lastTapIndex = -1
-                                    lastTapAt = 0L
-                                    curOnDouble?.invoke(item)
-                                } else {
-                                    lastTapIndex = index
-                                    lastTapAt = now
-                                    // 等到双击窗口过去仍没有第二下，才派发单击。
-                                    // 之前先派发单击再判双击 —— 双击的第一下已经
-                                    // 把计时器暂停了，看起来像「双击没反应」。
-                                    // 这里也顺便让系统有机会把这次按下判成滚动。
-                                    if (curOnDouble == null) {
-                                        lastTapIndex = -1
-                                        lastTapAt = 0L
-                                        curOnClick(item)
-                                    } else {
-                                        // 这 260ms 是**留白**，不是真的等：
-                                        // 手势线程里不能用 delay（受限挂起作用域），
-                                        // 而这段留白的目的只是「别让后续事件冲掉双击判定」。
-                                        // 真正的双击判定已经由 lastTapIndex/lastTapAt 完成：
-                                        // 下一次按下若落在窗口内就走双击分支，
-                                        // 否则下一次按下会重新写 lastTapIndex。
-                                        lastTapIndex = -1
-                                        lastTapAt = 0L
-                                        pendingClickIndex = index
-                                        pendingClickAt = now
-                                    }
-                                }
+                        // 被拖卡片的当前**真实**矩形（原位置 + 累计位移），
+                        // 拿它和其他可见项的真实矩形做几何命中。
+                        // 只要拖动中的矩形覆盖了某个格子的中心，就换位。
+                        val dragged = gridState.layoutInfo.visibleItemsInfo
+                            .firstOrNull { it.index == draggingIndex } ?: return@detectDragGesturesAfterLongPress
+                        val rect = Rect(
+                            offset = Offset(
+                                dragged.offset.x + offsetX,
+                                dragged.offset.y + offsetY,
+                            ),
+                            size = androidx.compose.ui.geometry.Size(
+                                dragged.size.width.toFloat(),
+                                dragged.size.height.toFloat(),
+                            ),
+                        )
+                        val target = gridState.layoutInfo.visibleItemsInfo
+                            .filter { it.index != draggingIndex }
+                            .firstOrNull { info ->
+                                rect.contains(
+                                    Offset(
+                                        info.offset.x + info.size.width / 2f,
+                                        info.offset.y + info.size.height / 2f,
+                                    ),
+                                )
                             }
+                        if (target != null) {
+                            curOnMove(draggingIndex, target.index)
+                            // 换位后重置累计位移：后面的位移重新从新位置算，
+                            // 否则会连续触发多次、一次跳好几格
+                            offsetX = 0f
+                            offsetY = 0f
                         }
-                        .fillMaxWidth()
-                        .aspectRatio(cellAspect),
-                ) {
-                    itemContent(item, dragging)
-                }
+                    },
+                    onDragEnd = {
+                        draggingIndex = -1
+                        offsetX = 0f
+                        offsetY = 0f
+                        curOnDragEnd?.invoke()
+                    },
+                    onDragCancel = {
+                        draggingIndex = -1
+                        offsetX = 0f
+                        offsetY = 0f
+                    },
+                )
+            },
+        horizontalArrangement = Arrangement.spacedBy(spacingDp.dp),
+        verticalArrangement = Arrangement.spacedBy(spacingDp.dp),
+    ) {
+        itemsIndexed(items, key = { _, item -> key(item) }) { index, item ->
+            val dragging = index == draggingIndex
+            Box(
+                modifier = Modifier
+                    // ---- 点按层：单击 / 双击 / 长按 ----
+                    // combinedClickable 是官方为「单击+双击+长按」准备的 API，
+                    // 它内部自己处理好三者的时序，不需要我们延迟派发任何回调。
+                    .combinedClickable(
+                        onClick = { curOnClick(item) },
+                        onDoubleClick = curOnDouble?.let { d -> { d(item) } },
+                        onLongClick = curOnLong?.let { l -> { l(item) } },
+                    )
+                    .zIndex(if (dragging) 1f else 0f)
+                    .graphicsLayer {
+                        if (dragging) {
+                            translationX = offsetX
+                            translationY = offsetY
+                            scaleX = 1.04f
+                            scaleY = 1.04f
+                            alpha = 0.92f
+                            shadowElevation = 14f
+                        }
+                    }
+                    .fillMaxWidth()
+                    .aspectRatio(cellAspect),
+            ) {
+                itemContent(item, dragging)
             }
         }
     }
 }
+
+/**
+ * 用坐标反查命中哪个可见项。
+ *
+ * LazyGrid 的 `visibleItemsInfo` 已经带了每项的 `offset` 与 `size`，
+ * 直接做矩形包含判断即可 —— 比按「位移 ÷ 边长」估算稳妥得多
+ * （不依赖单元格是否正方形、间距是多少、有没有内边距）。
+ */
+@OptIn(ExperimentalComposeUiApi::class)
+private fun hitTestItem(state: LazyGridState, position: Offset): Int? =
+    state.layoutInfo.visibleItemsInfo.firstOrNull { info ->
+        Rect(
+            offset = Offset(info.offset.x.toFloat(), info.offset.y.toFloat()),
+            size = androidx.compose.ui.geometry.Size(
+                info.size.width.toFloat(),
+                info.size.height.toFloat(),
+            ),
+        ).contains(position)
+    }?.index
