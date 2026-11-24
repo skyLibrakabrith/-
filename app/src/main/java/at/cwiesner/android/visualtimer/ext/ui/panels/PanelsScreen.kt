@@ -526,12 +526,6 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                                     toast("已重置：" + (timer.label ?: "未命名"))
                                 }
                             },
-                            onReset = {
-                                scope.launch {
-                                    runner.reset(timer.id)
-                                    toast("已重置：" + (timer.label ?: "未命名"))
-                                }
-                            },
                             onDelete = {
                                 scope.launch {
                                     runner.clear(timer.id)
