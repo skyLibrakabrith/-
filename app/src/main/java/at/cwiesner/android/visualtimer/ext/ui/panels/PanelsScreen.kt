@@ -30,6 +30,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -112,9 +113,15 @@ fun PanelsScreen(
     var showPanelManager by remember { mutableStateOf(false) }
     var focusTimerId by remember { mutableStateOf<Long?>(null) }
 
-    var listMode by remember { mutableStateOf(false) }
+    // 视图模式默认是**卡片**（false）。
+    // 用 rememberSaveable 而不是 remember：从别的标签切回来时 Composable 会重建，
+    // 之前 remember 一起被清掉 —— 表现为「从别处点到面板，视图被重置」。
+    // 现在只有用户主动点底边栏才切换，跨标签往返保持原样。
+    var listMode by rememberSaveable { mutableStateOf(false) }
     var selectedIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
     LaunchedEffect(toggleViewSignal) {
+        // toggleViewSignal 只在用户**再次点击**「面板」标签时自增，
+        // 首次进入不会触发，所以不会把默认视图切走
         if (toggleViewSignal > 0) {
             listMode = !listMode
             selectedIds = emptySet()
@@ -183,6 +190,34 @@ fun PanelsScreen(
 
     var orderOverride by remember { mutableStateOf<List<PanelEntry>?>(null) }
     val displayEntries = orderOverride ?: gridEntries
+
+    /**
+     * 把拖拽后的新顺序落库。
+     *
+     * 三张表各有自己的 order 字段，统一按拍平后的下标重编号，
+     * 这样序列 / 组 / 计时器可以互相穿插排序。
+     */
+    fun persistOrder(ordered: List<PanelEntry>) {
+        scope.launch {
+            ordered.forEachIndexed { idx, entry ->
+                when (entry.kind) {
+                    EntryKind.Sequence ->
+                        allSequences.firstOrNull { it.id == entry.refId }?.let { sq ->
+                            db.sequenceDao().upsert(sq.copy(sortOrder = idx))
+                        }
+                    EntryKind.Group ->
+                        groups.firstOrNull { it.id == entry.refId }?.let { g ->
+                            db.groupDao().upsertGroup(g.copy(order = idx))
+                        }
+                    EntryKind.Timer ->
+                        timers.firstOrNull { it.id == entry.refId }?.let { t ->
+                            db.timerDao().upsert(t.copy(position = idx))
+                        }
+                }
+            }
+            toast("顺序已保存")
+        }
+    }
 
     val enginePhase by app.sequenceEngine.phase.collectAsState()
     val engineActiveId = app.sequenceEngine.activeSequenceId
@@ -440,13 +475,21 @@ fun PanelsScreen(
                         },
                         gridState = rememberLazyGridState(),
                         modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp),
+                        cellAspect = 0.92f,
                         onMove = { from, to ->
-                            // 拖动时只更新本地镜像，松手才写库
+                            // 拖动过程中只更新本地镜像，避免每帧写库
                             val list = displayEntries.toMutableList()
                             if (from in list.indices && to in list.indices) {
                                 val item = list.removeAt(from)
                                 list.add(to, item)
                                 orderOverride = list
+                            }
+                        },
+                        onDragEnd = {
+                            // 松手才落库：把新顺序按类型写回各自 order 字段
+                            orderOverride?.let { ordered ->
+                                persistOrder(ordered)
+                                orderOverride = null
                             }
                         },
                         onClick = { entry ->
@@ -478,7 +521,22 @@ fun PanelsScreen(
                                 EntryKind.Group -> editingGroupId = entry.refId
                             }
                         },
-                        onLongClick = { /* 长按由拖拽接管，这里留空 */ },
+                        onLongClick = { entry ->
+                            // 长按 = 编辑（与双击进全屏区分开）。
+                            // 拖拽排序在长按后继续移动时才发生，所以两者不冲突。
+                            when (entry.kind) {
+                                EntryKind.Timer -> {
+                                    val t = timers.firstOrNull { it.id == entry.refId }
+                                    if (t != null && t.locked) {
+                                        toast("DDL 已锁定，不能改时长")
+                                    } else {
+                                        editingTimerId = entry.refId
+                                    }
+                                }
+                                EntryKind.Sequence -> editingSequenceId = entry.refId
+                                EntryKind.Group -> editingGroupId = entry.refId
+                            }
+                        },
                     ) { entry, dragging ->
                         when (entry.kind) {
                             EntryKind.Sequence -> {

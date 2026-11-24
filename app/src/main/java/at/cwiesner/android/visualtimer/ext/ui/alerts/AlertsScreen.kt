@@ -16,12 +16,16 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -29,6 +33,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import at.cwiesner.android.visualtimer.ext.ExtApplication
 import at.cwiesner.android.visualtimer.ext.alarm.AlertDispatcher
+import at.cwiesner.android.visualtimer.ext.alarm.HeadphoneSoundAlerter
 import at.cwiesner.android.visualtimer.ext.data.AlertProfile
 import at.cwiesner.android.visualtimer.ext.settings.SettingsRepo
 import kotlinx.coroutines.launch
@@ -39,11 +44,34 @@ import kotlinx.coroutines.launch
  * 每种振动模式用 [VibrationWaveform] 画成波形条 —— 不用文字名字也能分辨节奏。
  * 点击卡片试听（震动 + 屏幕闪烁），开关直接改库。
  */
+/**
+ * 警报页的两种呈现，由底边栏「警报」按钮再次点击切换。
+ *
+ * - [Vibration] 振动：每种配置一条波形卡，点卡片试听震动 + 闪烁
+ * - [Sound]     铃声：贴合「声音只在耳机里响」——列出铃声选择与
+ *               当前连接状态，点一行即试听
+ */
+enum class AlertsView { Vibration, Sound }
+
 @Composable
 fun AlertsScreen(
     modifier: Modifier = Modifier,
     onPreviewFlash: () -> Unit = {},
+    /** 每次自增表示底边栏「警报」被再次点击，要求切换振动/铃声。 */
+    toggleModeSignal: Int = 0,
+    /** 视图变化时回传，供底边栏图标同步。 */
+    onModeChanged: (Boolean) -> Unit = {},
 ) {
+    // 同 PanelsScreen：rememberSaveable，跨标签往返保持视图。
+    // 默认是**振动**——它是主提醒方式，铃声只在插耳机时才有。
+    var view by rememberSaveable { mutableStateOf(AlertsView.Vibration) }
+    LaunchedEffect(toggleModeSignal) {
+        if (toggleModeSignal > 0) {
+            view = if (view == AlertsView.Vibration) AlertsView.Sound else AlertsView.Vibration
+        }
+    }
+    val showsSound = view == AlertsView.Sound
+    LaunchedEffect(showsSound) { onModeChanged(showsSound) }
     val context = LocalContext.current
     val app = context.applicationContext as ExtApplication
     val db = app.database
@@ -57,6 +85,16 @@ fun AlertsScreen(
         activity?.let { AlertDispatcher(it, scope) }
     }
     val settings = remember { SettingsRepo(context) }
+
+    if (view == AlertsView.Sound) {
+        SoundView(
+            profiles = profiles,
+            settings = settings,
+            onPreviewFlash = onPreviewFlash,
+            modifier = modifier,
+        )
+        return
+    }
 
     LazyColumn(
         modifier = modifier.fillMaxSize().padding(12.dp),
@@ -169,4 +207,125 @@ private fun FlashTimingCard(settings: SettingsRepo) {
             )
         }
     }
+}
+
+/**
+ * 铃声视图。
+ *
+ * 这里体现「声音只在连着耳机时播放，绝不经扬声器外放」这条约束：
+ * 顶部直接显示当前耳机状态，没耳机时试听按钮是禁用的，
+ * 而不是让人点了没反应、以为坏了。
+ */
+@Composable
+private fun SoundView(
+    profiles: List<AlertProfile>,
+    settings: SettingsRepo,
+    onPreviewFlash: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val soundEnabled by settings.soundEnabled.collectAsState(initial = true)
+    val ringtoneUri by settings.ringtoneUri.collectAsState(initial = null)
+
+    // 每次进入这个视图重新探测一次耳机，插拔后切回来即可看到变化
+    var headphoneOn by remember { mutableStateOf(false) }
+    val alerter = remember { HeadphoneSoundAlerter(context) }
+    LaunchedEffect(Unit) { headphoneOn = alerter.isHeadphoneConnected() }
+
+    LazyColumn(
+        modifier = modifier.fillMaxSize().padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        item {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text("声音只在耳机里响", style = MaterialTheme.typography.titleSmall)
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        if (headphoneOn) {
+                            "已检测到耳机，到点时会在这里出声。"
+                        } else {
+                            "当前没有耳机，到点**不会**外放 —— " +
+                                "扬声器和音响都不会响。插上耳机后自动生效。"
+                        },
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("声音总开关", style = MaterialTheme.typography.labelMedium)
+                        Switch(
+                            checked = soundEnabled,
+                            onCheckedChange = { on ->
+                                scope.launch { settings.setSoundEnabled(on) }
+                            },
+                        )
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    TextButton(
+                        enabled = headphoneOn && soundEnabled,
+                        onClick = {
+                            alerter.ringtoneUri = ringtoneUri?.let { android.net.Uri.parse(it) }
+                            alerter.playIfHeadphone()
+                            onPreviewFlash()
+                        },
+                    ) {
+                        Text(if (headphoneOn) "试听铃声" else "插上耳机才能试听")
+                    }
+                }
+            }
+        }
+
+        item {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text("当前铃声", style = MaterialTheme.typography.titleSmall)
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        describeRingtoneName(context, ringtoneUri),
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "铃声在设置页选择。这里只负责在耳机里把它放出来。",
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                }
+            }
+        }
+
+        if (profiles.isNotEmpty()) {
+            item {
+                Text(
+                    "各提醒配置的波形节奏（振动视图里可试听）",
+                    style = MaterialTheme.typography.labelSmall,
+                )
+            }
+            items(profiles, key = { it.id }) { profile ->
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        Text(profile.name, style = MaterialTheme.typography.labelLarge)
+                        VibrationWaveform(
+                            pattern = profile.vibrationPattern,
+                            modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                            showLabels = false,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** 铃声 URI → 可读名称。 */
+private fun describeRingtoneName(context: android.content.Context, uri: String?): String {
+    if (uri == null) return "系统默认"
+    return runCatching {
+        val u = android.net.Uri.parse(uri)
+        android.media.RingtoneManager.getRingtone(context, u)?.getTitle(context)
+    }.getOrNull() ?: "已选择"
 }

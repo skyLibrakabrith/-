@@ -16,6 +16,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccessTime
 import androidx.compose.material.icons.filled.Checklist
 import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
@@ -29,6 +30,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -135,11 +137,17 @@ private enum class Dest(
 
 @Composable
 private fun MainScaffold(onPreviewFlash: () -> Unit = {}) {
-    var selected by remember { mutableIntStateOf(0) }
-    // 每次自增表示「用户点了面板按钮，要求切换视图」
+    var selected by rememberSaveable { mutableIntStateOf(0) }
+
+    // 两个「已在当前页时再点一次」的切换信号。
+    // 面板页切 卡片/列表，警报页切 振动/铃声 —— 底边栏本身就是切换器，
+    // 不额外占页面里的按钮。
     var panelViewToggleTick by remember { mutableIntStateOf(0) }
-    // 面板是否处于列表视图（由 PanelsScreen 回传，用于底边栏图标）
+    var alertsModeToggleTick by remember { mutableIntStateOf(0) }
+
+    // 各页当前视图，由页面回传，用于底边栏图标
     var panelShowsList by remember { mutableStateOf(false) }
+    var alertsShowsSound by remember { mutableStateOf(false) }
     val dests = Dest.entries
 
     Scaffold(
@@ -152,22 +160,26 @@ private fun MainScaffold(onPreviewFlash: () -> Unit = {}) {
                     NavigationBarItem(
                         selected = selected == index,
                         onClick = {
-                            // 点「面板」时：如果已经在面板页，就切换卡片/列表视图；
-                            // 否则先跳到面板页。这样底边栏就能完成视图切换，
-                            // 不必再单独占一个快捷按钮。
-                            if (dest == Dest.Panels && selected == index) {
-                                panelViewToggleTick++
-                            } else {
-                                selected = index
+                            // 已经在当前页 → 切换该页的视图；否则先跳过去。
+                            // 注意：跳转**不会**重置任何页的视图，
+                            // 从别处点到面板默认仍是卡片视图。
+                            when {
+                                dest == Dest.Panels && selected == index ->
+                                    panelViewToggleTick++
+                                dest == Dest.Alerts && selected == index ->
+                                    alertsModeToggleTick++
+                                else -> selected = index
                             }
                         },
                         icon = {
-                            // 面板页的图标跟随当前视图：卡片用 GridView、列表用 Checklist。
-                            // 之前图标固定，切换视图后看起来像"图标自己变了"其实是重组问题。
-                            val icon = if (dest == Dest.Panels && panelShowsList) {
-                                Icons.Filled.Checklist
-                            } else {
-                                dest.icon
+                            // 图标跟随当前视图：卡片用 GridView / 列表用 Checklist；
+                            // 警报用 Notifications（振动）/ MusicNote（铃声）
+                            val icon = when {
+                                dest == Dest.Panels && panelShowsList ->
+                                    Icons.Filled.Checklist
+                                dest == Dest.Alerts && alertsShowsSound ->
+                                    Icons.Filled.MusicNote
+                                else -> dest.icon
                             }
                             Icon(icon, contentDescription = dest.label)
                         },
@@ -188,7 +200,11 @@ private fun MainScaffold(onPreviewFlash: () -> Unit = {}) {
                     toggleViewSignal = panelViewToggleTick,
                     onViewChanged = { isList -> panelShowsList = isList },
                 )
-                Dest.Alerts -> AlertsScreen(onPreviewFlash = onPreviewFlash)
+                Dest.Alerts -> AlertsScreen(
+                    onPreviewFlash = onPreviewFlash,
+                    toggleModeSignal = alertsModeToggleTick,
+                    onModeChanged = { showsSound -> alertsShowsSound = showsSound },
+                )
                 Dest.Settings -> SettingsScreen()
             }
         }

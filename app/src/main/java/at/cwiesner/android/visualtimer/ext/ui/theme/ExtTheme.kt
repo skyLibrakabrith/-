@@ -56,58 +56,78 @@ object ExtColors {
      * 用户不需要手动指定具体颜色，只需要决定"分几档"。
      */
     val Palette: List<Color> = listOf(
-        Color(0xFF7C9EFF), // 0 蓝紫  — 充裕
-        Color(0xFF56CCF2), // 1 天蓝
-        Color(0xFF3FD0B0), // 2 青绿
-        Color(0xFF9BD64B), // 3 草绿
-        Color(0xFFFFC107), // 4 琥珀
-        Color(0xFFFF9F1C), // 5 橙
-        Color(0xFFFF6B35), // 6 橙红
-        Color(0xFFF44336), // 7 红    — 紧张
+        Color(0xFF35D07F), // 0 绿    — 充裕（与红绿灯色带起点一致）
+        Color(0xFF8FD14F), // 1 黄绿
+        Color(0xFFF2C14E), // 2 黄
+        Color(0xFFF28F3B), // 3 橙
+        Color(0xFFE5484D), // 4 红    — 紧张
+        Color(0xFF7C9EFF), // 5 蓝紫  — 中性/自定义
+        Color(0xFF56CCF2), // 6 天蓝
+        Color(0xFF9A6BFF), // 7 紫
     )
 
     /**
-     * 红绿灯基准色：绿（充裕）→ 黄 → 橙 → 红（紧张）。
+     * 红绿灯基准色：绿（充裕）→ 黄 → 红（紧张）。
      *
      * 三档语义最直观，不需要用户理解刻度；中间用插值补出连续过渡，
      * 这样颜色是「慢慢变红」而不是「啪一下跳过去」。
+     *
+     * 说明：早期版本这里是绿/黄绿/黄/橙/红五个锚点，绿区占比过大且
+     * 后半段推进太慢。现在收成三个锚点、等距插值，「绿 → 黄 → 红」
+     * 的推进在整个时间轴上均匀分布。
      */
     private val GreenLight = Color(0xFF35D07F)
-    private val LimeLight = Color(0xFF8FD14F)
     private val YellowLight = Color(0xFFF2C14E)
-    private val OrangeLight = Color(0xFFF28F3B)
     private val RedLight = Color(0xFFE5484D)
 
     /**
-     * 按剩余比例取「红绿灯」色。
+     * 红绿灯色带的锚点：绿 → 黄 → 红。**起点必须是绿**。
      *
-     * @param fraction 剩余比例 0..1（1 = 刚满，0 = 到点）
-     * @param steps 中间档位数：0 = 纯三档跳变，1 = 多一档过渡，2 = 更平滑…
-     *   实际取色位置是 `fraction` 在该档位上的量化值，档位越多过渡越细腻。
+     * 之前用的是一张 8 色调色板（蓝紫→天蓝→青绿→草绿→琥珀→橙→橙红→红），
+     * 剩余时间充裕时盘面是**蓝紫色** —— 用户明确要的是「从绿开始」，
+     * 蓝紫在语义上既不是「充裕」也不是「危险」，看着更像停用状态。
+     *
+     * 现在三种模式（阈值 / 等间隔 / 表盘比例）都从这条色带上取色，
+     * 中间靠插值填满，不会出现「跳色」。
      */
-    fun trafficColor(fraction: Float, steps: Int = 2): Color {
-        val f = fraction.coerceIn(0f, 1f)
-        // 把 1..0 映射到 0..1 的「紧张度」
-        val tension = 1f - f
-        // 四段等距：绿 → 黄绿 → 黄 → 橙 → 红
-        // 之前只有绿/黄/橙/红三段插值，绿区占比过大，
-        // 现在插入一个黄绿中间色，让四段均分 1/3，颜色推进更均匀
-        val seg = tension * 4f
-        val i = seg.toInt().coerceIn(0, 3)
-        val t = (seg - i).coerceIn(0f, 1f)
-        val from = when (i) {
-            0 -> GreenLight
-            1 -> LimeLight
-            2 -> YellowLight
-            else -> OrangeLight
-        }
-        val to = when (i) {
-            0 -> LimeLight
-            1 -> YellowLight
-            2 -> OrangeLight
-            else -> RedLight
-        }
-        return lerp(from, to, t)
+    private val TrafficAnchors: List<Color> = listOf(
+        GreenLight, //  绿 — 充裕
+        YellowLight, // 黄 — 过半
+        RedLight, //    红 — 紧张
+    )
+
+    /** 色带首色（充裕端）。需要「从绿开始」的地方直接用它。 */
+    val TrafficStart: Color get() = TrafficAnchors.first()
+
+    /**
+     * 按「充裕度」取红绿黄色。
+     *
+     * @param fraction 充裕度 1..0（1 = 满格 / 刚重置，0 = 到点）
+     * @return 连续插值后的颜色，fraction=1 一定是绿，fraction=0 一定是红
+     */
+    fun trafficColor(fraction: Float): Color =
+        gradientAt(TrafficAnchors, 1f - fraction.coerceIn(0f, 1f))
+
+    /**
+     * 把 [divisions] 份容器铺到红绿黄色带上，返回第 [index] 份的颜色。
+     *
+     * 用于「表盘比例」——表盘分成 N 份，每份一个颜色，
+     * 第 0 份（剩余最多的那一份）取绿，最后一份取红。
+     */
+    fun trafficStepColor(index: Int, divisions: Int): Color {
+        val n = divisions.coerceAtLeast(2)
+        val i = index.coerceIn(0, n - 1)
+        // 取每份「中间位置」的充裕度，避免首份直接贴边到纯绿、末份贴边到纯红
+        val fraction = 1f - (i + 0.5f) / n
+        return trafficColor(fraction)
+    }
+
+    /** 在 [anchors] 上按 0..1 位置取插值色。 */
+    private fun gradientAt(anchors: List<Color>, position: Float): Color {
+        if (anchors.size == 1) return anchors.first()
+        val p = position.coerceIn(0f, 1f) * (anchors.size - 1)
+        val i = p.toInt().coerceIn(0, anchors.size - 2)
+        return lerp(anchors[i], anchors[i + 1], p - i)
     }
 
     private fun lerp(a: Color, b: Color, t: Float): Color {
@@ -122,7 +142,7 @@ object ExtColors {
 
     /** 调色板档位名称，用于设置页说明。 */
     val PaletteNames: List<String> = listOf(
-        "蓝紫", "天蓝", "青绿", "草绿", "琥珀", "橙", "橙红", "红",
+        "绿", "黄绿", "黄", "橙", "红", "蓝紫", "天蓝", "紫",
     )
 
     internal fun applyMode(mode: ThemeMode, systemDark: Boolean) {

@@ -7,7 +7,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -73,12 +72,14 @@ fun PieTimerView(
     /** 到点后的超时正计时；>0 时中央显示 +MM:SS 并转红色。 */
     overdueMillis: Long = 0L,
     /**
-     * true 时盘面填满父容器而不是强制正方形。
+     * 保留签名以兼容调用方，行为已经统一。
      *
-     * 网格单元高度有限，强制 aspectRatio(1f) 会把内容顶出边界，
-     * 造成中央时间被裁掉一截。Canvas 内部按 minDimension 取直径，
-     * 所以填满容器也不会让圆变形。
+     * 早期这个参数决定「填满父容器」还是「强制正方形」，两种模式的几何基准
+     * 不同，导致中央文字 / 内盘 / 圆按不同尺寸对齐，看起来就是错位的。
+     * 现在盘面**恒为居中的最大内接正方形**，直径 = min(父宽, 父高)，
+     * 这个参数不再有视觉效果。
      */
+    @Suppress("UNUSED_PARAMETER")
     fillParent: Boolean = false,
     /**
      * 内盘是否可见。
@@ -119,16 +120,19 @@ fun PieTimerView(
     val subProgress = if (totalMillis <= 0L) 0f
     else ((remainingMillis % subUnit).toFloat() / subUnit).coerceIn(0f, 1f)
 
+    // 盘面始终是一个「居中的正方形」：
+    // 直径取父容器宽高里较小的那个。之前 fillParent=true 时用 fillMaxSize，
+    // Box 撑成竖长矩形，Canvas 内部按 minDimension 画圆 → 圆是正的，
+    // 但中央文字、内盘控件和外面的标签各按不同基准对齐，看起来就是错位的。
     Box(
-        modifier = if (fillParent) {
-            modifier.fillMaxSize()
-        } else {
-            modifier.fillMaxWidth().aspectRatio(1f)
-        },
+        modifier = modifier
+            .fillMaxSize()
+            .wrapContentSizeCompat(),
         contentAlignment = Alignment.Center,
     ) {
         Canvas(
             modifier = Modifier
+                .aspectRatio(1f)
                 .fillMaxSize()
                 .pointerInput(running, onDurationChange, onDurationCommit, onDragStateChange, stepMillis, maxMillis) {
                     val editable = !running && onDurationChange != null
@@ -353,35 +357,40 @@ internal fun pickColor(
     intervalMinutes: Long,
     fractionDivisions: Int,
 ): Color {
-    if (!running) return ExtColors.Primary
-    val palette = if (thresholdColors.isNotEmpty()) thresholdColors else ExtColors.Palette
+    // 未运行时统一用「绿」—— 静止的盘面表示「满格、充裕」，
+    // 之前用主色蓝紫：蓝紫既不是充裕也不是危险，看着像停用状态。
+    if (!running) return ExtColors.TrafficStart
+
+    val frac = if (totalMillis <= 0L) 0f
+    else (remainingMillis.toFloat() / totalMillis).coerceIn(0f, 1f)
 
     return when (mode) {
         at.cwiesner.android.visualtimer.ext.settings.ColorMode.Threshold ->
             if (thresholdMinutes.isEmpty() || thresholdColors.isEmpty()) {
-                // 没配阈值时用红绿灯连续色带
-                val frac = if (totalMillis <= 0L) 0f
-                else (remainingMillis.toFloat() / totalMillis).coerceIn(0f, 1f)
+                // 没配阈值时用红绿灯连续色带：满格绿 → 到点红
                 ExtColors.trafficColor(frac)
             } else {
                 colorForRemaining(remainingMillis, running, thresholdMinutes, thresholdColors)
             }
 
         at.cwiesner.android.visualtimer.ext.settings.ColorMode.Interval -> {
+            // 每 intervalMinutes 换一次色，但**从绿开始**：
+            // 把整条时长切成等分，第 0 段（刚满）取绿，最后一段取红。
             val step = intervalMinutes.coerceAtLeast(1L) * 60_000L
-            // 剩余的完整间隔数越多 → 越靠前的颜色；每少一个间隔换一次色
-            val bucket = (remainingMillis / step).toInt()
-            palette[Math.floorMod(bucket, palette.size)]
+            val buckets = (totalMillis / step).toInt().coerceAtLeast(1)
+            // 剩余越少 → 落在越靠后的桶 → 越红
+            val used = (((totalMillis - remainingMillis) / step).toInt())
+                .coerceIn(0, buckets - 1)
+            ExtColors.trafficStepColor(used, buckets)
         }
 
         at.cwiesner.android.visualtimer.ext.settings.ColorMode.Fraction -> {
+            // 表盘按剩余比例分成 N 份，每份一个颜色，第 0 份取绿。
+            // 用「已走过第几份」而不是「剩余第几份」，
+            // 这样位置和颜色在整条时间轴上是同一个方向。
             val divisions = fractionDivisions.coerceIn(2, 12)
-            val frac = if (totalMillis <= 0L) 0f
-            else (remainingMillis.toFloat() / totalMillis).coerceIn(0f, 1f)
-            // 表盘比例模式：在红绿灯色带上按档数取离散色块，
-            // 档数越多过渡越细。这样「分几份」和「颜色渐变」是同一件事。
-            val quantized = (kotlin.math.floor(frac * divisions) / divisions).toFloat()
-            ExtColors.trafficColor(quantized, steps = 1)
+            val usedStep = (((1f - frac) * divisions).toInt()).coerceIn(0, divisions - 1)
+            ExtColors.trafficStepColor(usedStep, divisions)
         }
     }
 }
@@ -437,3 +446,26 @@ internal fun fractionToDuration(fraction: Float, maxMillis: Long, stepMillis: Lo
     val snapped = Math.round(raw.toDouble() / stepMillis) * stepMillis
     return snapped.coerceIn(stepMillis, maxMillis)
 }
+
+/**
+ * 让容器在父约束内取「最大内接正方形」并居中。
+ *
+ * 计分卡是竖长的（宽:高 ≈ 0.92），盘面上下的标签各占一行，
+ * 中间这块区域往往是横宽竖窄的。只有把它显式收成正方形，
+ * Canvas 画的圆、中央文字、内盘控件才会共用同一个几何中心。
+ */
+private fun Modifier.wrapContentSizeCompat(): Modifier = this.then(
+    androidx.compose.ui.layout.layout { measurable, constraints ->
+        val side = minOf(constraints.maxWidth, constraints.maxHeight)
+            .coerceAtLeast(1)
+        val placeable = measurable.measure(
+            androidx.compose.ui.unit.Constraints.fixed(side, side),
+        )
+        layout(side, side) {
+            placeable.place(
+                (side - placeable.width) / 2,
+                (side - placeable.height) / 2,
+            )
+        }
+    },
+);
