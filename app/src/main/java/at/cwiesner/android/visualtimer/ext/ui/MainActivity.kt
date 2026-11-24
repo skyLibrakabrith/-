@@ -17,7 +17,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccessTime
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Notifications
-import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
@@ -38,7 +37,6 @@ import at.cwiesner.android.visualtimer.ext.ExtApplication
 import at.cwiesner.android.visualtimer.ext.ui.alerts.AlertsScreen
 import at.cwiesner.android.visualtimer.ext.ui.home.HomeScreen
 import at.cwiesner.android.visualtimer.ext.ui.panels.PanelsScreen
-import at.cwiesner.android.visualtimer.ext.ui.sequences.SequencesScreen
 import at.cwiesner.android.visualtimer.ext.ui.settings.SettingsScreen
 
 class MainActivity : ComponentActivity() {
@@ -116,7 +114,6 @@ private enum class Dest(
 ) {
     Home("时钟", Icons.Filled.AccessTime),
     Panels("面板", Icons.Filled.GridView),
-    Sequences("序列", Icons.Filled.PlayCircle),
     Alerts("警报", Icons.Filled.Notifications),
     Settings("设置", Icons.Filled.Settings),
 }
@@ -148,7 +145,6 @@ private fun MainScaffold() {
             when (dests[selected]) {
                 Dest.Home -> HomeScreen()
                 Dest.Panels -> PanelsScreen()
-                Dest.Sequences -> SequencesScreen()
                 Dest.Alerts -> AlertsScreen()
                 Dest.Settings -> SettingsScreen()
             }

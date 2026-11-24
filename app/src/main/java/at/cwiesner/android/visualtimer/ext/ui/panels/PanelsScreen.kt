@@ -303,6 +303,23 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                                         onClick = { menuOpen = false; showPanelEditor = true },
                                     )
                                     DropdownMenuItem(
+                                        text = { Text("新建序列") },
+                                        onClick = {
+                                            menuOpen = false
+                                            // 新序列直接挂到当前面板，去编辑器里加阶段
+                                            scope.launch {
+                                                val pid = currentPanel?.id ?: return@launch
+                                                val id = db.sequenceDao().upsert(
+                                                    StepSequence(
+                                                        name = "新序列",
+                                                        panelId = pid,
+                                                    ),
+                                                )
+                                                editingSequenceId = id
+                                            }
+                                        },
+                                    )
+                                    DropdownMenuItem(
                                         text = { Text("调整顺序") },
                                         onClick = { menuOpen = false; showOrderDialog = true },
                                     )

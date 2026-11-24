@@ -7,10 +7,13 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -21,6 +24,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -49,12 +53,14 @@ private fun clockOf(epochMillis: Long): String {
 /**
  * 单计时器整页视图。
  *
- * 交互分区明确：
- * - **盘面外圈**：拖拽调整时长（仅未运行时允许），步进 30 秒
- * - **盘面中央的圆**：点一下开始 / 暂停 / 超时后重置
- * - **底部**：重置 + 开始/暂停 按钮
+ * 交互分区：
+ * - **外圈**：拖动调整时长（仅未运行时，30 秒步进）
+ * - **内圈**：点一下开始 / 暂停 / 超时后重置
  *
- * 「改时长」和「启停」分开在两个热区，避免想暂停却改成了时长。
+ * 中央控件与 `PieTimerView` 的内盘**同尺寸同心**（半径 = 饼半径 × 0.46），
+ * 这样视觉上就是「内盘本身可点」，而不是叠了两个大小不一的圆。
+ *
+ * 拖动期间中央控件与内盘一起隐藏 —— 否则每帧重绘会让它闪烁。
  */
 @Composable
 fun TimerFocusScreen(
@@ -75,10 +81,14 @@ fun TimerFocusScreen(
     val running = runtime?.running == true
     val overdue = (runtime?.overdueMillis ?: 0L) > 0L
     var draft by remember(timer.id) { mutableLongStateOf(timer.durationMillis) }
+    var dragging by remember { mutableStateOf(false) }
 
     val remain = if (running) (runtime?.remainingMillis ?: draft) else draft
     val total = if (running) (runtime?.totalMillis ?: draft) else draft
     val landscape = at.cwiesner.android.visualtimer.ext.ui.isLandscape()
+
+    // 中央控件只在「运行中 / 超时」时出现；静止状态由外圈拖动设定时长
+    val showInner = running || overdue
 
     Column(
         modifier = modifier
@@ -110,10 +120,10 @@ fun TimerFocusScreen(
         Box(
             modifier = Modifier
                 .fillMaxWidth(if (landscape) 0.62f else 1f)
+                .aspectRatio(1f)
                 .padding(vertical = 4.dp),
             contentAlignment = Alignment.Center,
         ) {
-            // 外圈：拖拽改时长（未运行时）
             PieTimerView(
                 totalMillis = total,
                 remainingMillis = remain,
@@ -123,40 +133,41 @@ fun TimerFocusScreen(
                     draft = d
                     onDurationCommit(d)
                 },
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxSize(),
                 maxMinutes = 60,
                 stepMinutes = 0.5f,
                 centerFontSize = 56f,
                 showCenterText = false,
+                innerDial = !showInner,
+                innerDialVisible = !dragging,
+                onDragStateChange = { dragging = it },
                 colorMode = colorMode,
                 intervalMinutes = intervalMinutes,
                 fractionDivisions = fractionDivisions,
                 thresholdMinutes = thresholdMinutes,
                 thresholdColors = thresholdColors,
                 overdueMillis = runtime?.overdueMillis ?: 0L,
+                fillParent = true,
             )
 
-            // 内侧圆：启停热区
-            InnerControlCircle(
-                overdue = overdue,
-                remainText = if (overdue) {
-                    "+" + DeadlineCalculator.formatRemaining(runtime?.overdueMillis ?: 0L)
-                } else {
-                    DeadlineCalculator.formatRemaining(remain)
-                },
-                hint = when {
-                    overdue -> "点击重置"
-                    running -> "点击暂停"
-                    else -> "点击开始"
-                },
-                onClick = {
-                    when {
-                        overdue -> onReset()
-                        running -> onPause()
-                        else -> onStart()
-                    }
-                },
-            )
+            // 内圈：与 PieTimerView 的内盘同尺寸（半径 = 饼半径 × 0.46）
+            if (showInner && !dragging) {
+                InnerDialControl(
+                    overdue = overdue,
+                    remainText = if (overdue) {
+                        "+" + DeadlineCalculator.formatRemaining(runtime?.overdueMillis ?: 0L)
+                    } else {
+                        DeadlineCalculator.formatRemaining(remain)
+                    },
+                    onClick = {
+                        when {
+                            overdue -> onReset()
+                            running -> onPause()
+                            else -> onStart()
+                        }
+                    },
+                )
+            }
         }
 
         Text(
@@ -169,12 +180,6 @@ fun TimerFocusScreen(
             },
             fontSize = 13.sp,
             color = if (overdue) ExtColors.Red else ExtColors.TextDim,
-        )
-
-        Text(
-            text = if (running) "计时中不可调整时长" else "拖动外圈调整时长 · 步进 30 秒",
-            fontSize = 11.sp,
-            color = ExtColors.TextDim,
         )
 
         Row(
@@ -198,40 +203,39 @@ fun TimerFocusScreen(
 }
 
 /**
- * 盘面中央的可点击圆 —— 启停 / 超时重置的独立热区。
+ * 内圈控件。
  *
- * 与外圈拖拽层分开，手势不冲突。
+ * 尺寸与 `PieTimerView` 的内盘一致：饼半径 42% 的直径，内盘半径是饼半径的 0.46，
+ * 即整块盘面直径的 `0.42 * 0.46 * 2 ≈ 38.6%`。用 `fillMaxWidth(0.386f)` 对齐，
+ * 避免出现「点了没用」或「盖住外圈」的问题。
  */
 @Composable
-private fun InnerControlCircle(
+private fun InnerDialControl(
     overdue: Boolean,
     remainText: String,
-    hint: String,
     onClick: () -> Unit,
 ) {
     val interaction = remember { MutableInteractionSource() }
-    Column(
+    Box(
         modifier = Modifier
-            .clip(RoundedCornerShape(50))
+            .fillMaxWidth(0.386f)
+            .aspectRatio(1f)
+            .clip(CircleShape)
             .background(
-                if (overdue) ExtColors.Red.copy(alpha = 0.18f)
-                else ExtColors.PureBlack.copy(alpha = 0.55f),
+                if (overdue) ExtColors.Red.copy(alpha = 0.22f)
+                else ExtColors.PureBlack.copy(alpha = 0.9f),
             )
-            .clickable(interactionSource = interaction, indication = null, onClick = onClick)
-            .padding(horizontal = 34.dp, vertical = 26.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
+            .clickable(interactionSource = interaction, indication = null, onClick = onClick),
+        contentAlignment = Alignment.Center,
     ) {
-        Text(
-            text = remainText,
-            fontSize = 42.sp,
-            fontWeight = FontWeight.Light,
-            color = if (overdue) ExtColors.Red else ExtColors.TextPrimary,
-        )
-        Text(
-            text = hint,
-            fontSize = 11.sp,
-            color = if (overdue) ExtColors.Red else ExtColors.TextDim,
-        )
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(
+                text = remainText,
+                fontSize = 22.sp,
+                fontWeight = FontWeight.Light,
+                color = if (overdue) ExtColors.Red else ExtColors.TextPrimary,
+            )
+        }
     }
 }
 

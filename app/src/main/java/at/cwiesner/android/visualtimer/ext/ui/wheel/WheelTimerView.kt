@@ -80,6 +80,15 @@ fun PieTimerView(
      * 所以填满容器也不会让圆变形。
      */
     fillParent: Boolean = false,
+    /**
+     * 内盘是否可见。
+     *
+     * 拖动改时长时内盘会随每帧重组反复重绘，视觉上像在闪。
+     * 由调用方在拖拽期间置为 false，松手再显示。
+     */
+    innerDialVisible: Boolean = true,
+    /** 拖拽开始 / 结束时回调，供外部隐藏中央控件避免闪烁。 */
+    onDragStateChange: ((Boolean) -> Unit)? = null,
 ) {
     val stepMillis = (stepMinutes * 60_000L).toLong()
     val maxMillis = maxMinutes * 60_000L
@@ -121,17 +130,19 @@ fun PieTimerView(
         Canvas(
             modifier = Modifier
                 .fillMaxSize()
-                .pointerInput(running, onDurationChange, onDurationCommit, stepMillis, maxMillis) {
+                .pointerInput(running, onDurationChange, onDurationCommit, onDragStateChange, stepMillis, maxMillis) {
                     val editable = !running && onDurationChange != null
                     if (!editable) return@pointerInput
                     detectDragGestures(
                         onDragStart = { off ->
+                            onDragStateChange?.invoke(true)
                             dragFraction = angleToFraction(off, size.width, size.height)
                             onDurationChange!!(
                                 fractionToDuration(dragFraction, maxMillis, stepMillis),
                             )
                         },
                         onDragEnd = {
+                            onDragStateChange?.invoke(false)
                             if (dragFraction >= 0f) {
                                 onDurationCommit?.invoke(
                                     fractionToDuration(dragFraction, maxMillis, stepMillis),
@@ -139,7 +150,10 @@ fun PieTimerView(
                             }
                             dragFraction = -1f
                         },
-                        onDragCancel = { dragFraction = -1f },
+                        onDragCancel = {
+                            onDragStateChange?.invoke(false)
+                            dragFraction = -1f
+                        },
                         onDrag = { change, _ ->
                             dragFraction = angleToFraction(change.position, size.width, size.height)
                             onDurationChange!!(
@@ -215,7 +229,7 @@ fun PieTimerView(
             }
 
             // ---- 4. 内盘（多表盘：显示更细粒度的时间流逝） ----
-            if (innerDial) {
+            if (innerDial && innerDialVisible) {
                 val innerRadius = pieRadius * 0.46f
                 drawCircle(
                     color = ExtColors.PureBlack,
