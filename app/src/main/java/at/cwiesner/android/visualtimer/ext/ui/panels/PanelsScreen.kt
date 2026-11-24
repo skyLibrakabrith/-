@@ -191,6 +191,12 @@ fun PanelsScreen(
         currentPanel?.let { db.sequenceDao().observeByPanel(it.id) } ?: flowOf(emptyList())
     }.collectAsState(initial = emptyList<StepSequence>())
 
+    // 当前面板的成员计时器 id（编辑器回填勾选状态用）
+    val memberIds = remember(allRefs, currentPanel?.id) {
+        if (currentPanel == null) emptySet()
+        else allRefs.filter { it.panelId == currentPanel.id }.map { it.timerId }.toSet()
+    }
+
     val groupedTimerIds = remember(allGroupMembers) {
         allGroupMembers.map { it.timerId }.toSet()
     }
