@@ -36,8 +36,18 @@ data class TimerRuntime(
         get() = if (totalMillis <= 0L) 0f
         else (remainingMillis.toFloat() / totalMillis).coerceIn(0f, 1f)
 
-    /** 是否已经到点（进入超时正计时）。 */
-    val expired: Boolean get() = overdueMillis > 0L || (remainingMillis <= 0L && totalMillis > 0L)
+    /** 是否已经到过点。暂停后仍为 true —— 这是历史事实。 */
+    val expired: Boolean
+        get() = overdueMillis > 0L || (remainingMillis <= 0L && totalMillis > 0L)
+
+    /**
+     * 是否正处在超时的「运行」状态。
+     *
+     * 与 [expired] 的区别：暂停后 `expired` 仍为 true，但 `isOverdue` 为 false。
+     * 界面与点击逻辑必须用这个来判断「现在是否在超时」，
+     * 否则一暂停就永远是重置，暂停按钮形同虚设。
+     */
+    val isOverdue: Boolean get() = expired && running
 }
 
 /**

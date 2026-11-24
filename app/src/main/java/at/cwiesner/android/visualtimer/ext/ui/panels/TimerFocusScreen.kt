@@ -79,7 +79,9 @@ fun TimerFocusScreen(
     modifier: Modifier = Modifier,
 ) {
     val running = runtime?.running == true
-    val overdue = (runtime?.overdueMillis ?: 0L) > 0L
+    // 用 isOverdue 而不是 overdueMillis > 0：暂停后不应再显示成「超时中」，
+    // 否则中央按钮永远提示「点击重置」
+    val overdue = runtime?.isOverdue == true
     var draft by remember(timer.id) { mutableLongStateOf(timer.durationMillis) }
     var dragging by remember { mutableStateOf(false) }
 
