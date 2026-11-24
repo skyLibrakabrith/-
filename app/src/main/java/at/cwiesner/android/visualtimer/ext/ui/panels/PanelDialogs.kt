@@ -148,7 +148,7 @@ fun TimerEditDialog(
                             onDurationChange = { duration = it },
                             modifier = Modifier.fillMaxWidth(),
                             maxMinutes = 60,
-                            stepMinutes = 1,
+                            stepMinutes = 0.5f,
                         )
                     }
 

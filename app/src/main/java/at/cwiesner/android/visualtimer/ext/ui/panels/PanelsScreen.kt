@@ -28,6 +28,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Checklist
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.Card
@@ -123,6 +124,7 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
     var editingGroupId by remember { mutableStateOf<Long?>(null) }
     var editingSequenceId by remember { mutableStateOf<Long?>(null) }
     var focusSequenceId by remember { mutableStateOf<Long?>(null) }
+    var editingTimerId by remember { mutableStateOf<Long?>(null) }
     var showOrderDialog by remember { mutableStateOf(false) }
     var showNewTimer by remember { mutableStateOf(false) }
     var showDeadline by remember { mutableStateOf(false) }
@@ -297,20 +299,16 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                                     onDismissRequest = { menuOpen = false },
                                 ) {
                                     DropdownMenuItem(
-                                        text = { Text("面板管理") },
-                                        onClick = { menuOpen = false; showPanelManager = true },
+                                        text = { Text("编辑当前面板") },
+                                        onClick = { menuOpen = false; showPanelEditor = true },
                                     )
                                     DropdownMenuItem(
                                         text = { Text("调整顺序") },
                                         onClick = { menuOpen = false; showOrderDialog = true },
                                     )
                                     DropdownMenuItem(
-                                        text = { Text("编辑当前面板") },
-                                        onClick = { menuOpen = false; showPanelEditor = true },
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("倒计时到某个时刻") },
-                                        onClick = { menuOpen = false; showDeadline = true },
+                                        text = { Text("面板管理") },
+                                        onClick = { menuOpen = false; showPanelManager = true },
                                     )
                                     DropdownMenuItem(
                                         text = { Text("开始全部") },
@@ -322,21 +320,6 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                                                     runner.start(t)
                                                 }
                                                 toast("已启动 ${timers.size} 个计时器")
-                                            }
-                                        },
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("清空计时状态") },
-                                        onClick = { menuOpen = false; runner.clearAll() },
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("删除面板") },
-                                        onClick = {
-                                            menuOpen = false
-                                            scope.launch {
-                                                db.panelDao().deleteById(currentPanel.id)
-                                                selectedPanel = 0
-                                                toast("面板已删除")
                                             }
                                         },
                                     )
@@ -468,6 +451,7 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                             toast("已删除 $n 个计时器")
                         }
                     },
+                    onEdit = { t -> editingTimerId = t.id },
                     onBatchStart = {
                         scope.launch {
                             val chosen = timers.filter { it.id in selectedIds }
@@ -838,6 +822,33 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
         )
     }
 
+    // ---- 编辑已有计时器（列表模式 / 长按卡片）----
+    val editingTimer = editingTimerId?.let { id -> allTimers.firstOrNull { it.id == id } }
+    if (editingTimer != null) {
+        TimerEditDialog(
+            alertProfiles = alertProfiles,
+            initialLabel = editingTimer.label ?: "",
+            initialDuration = editingTimer.durationMillis,
+            title = "编辑计时器",
+            onDismiss = { editingTimerId = null },
+            onConfirm = { label, duration, deadlineEpoch, alertProfileId ->
+                editingTimerId = null
+                scope.launch {
+                    db.timerDao().upsert(
+                        editingTimer.copy(
+                            label = label.ifBlank { null },
+                            durationMillis = duration,
+                            alertProfileId = alertProfileId,
+                        ),
+                    )
+                    // 时长变了，运行状态重置，避免旧的倒计时残留
+                    runner.reset(editingTimer.id)
+                    toast("已保存：" + label.ifBlank { "未命名" })
+                }
+            },
+        )
+    }
+
     if (showNewTimer && currentPanel != null) {
         TimerEditDialog(
             alertProfiles = alertProfiles,
@@ -1064,6 +1075,7 @@ private fun TimerList(
     onToggle: (Long) -> Unit,
     onBatchDelete: () -> Unit,
     onBatchStart: () -> Unit,
+    onEdit: (TimerItem) -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
         if (selectedIds.isNotEmpty()) {
@@ -1135,6 +1147,17 @@ private fun TimerList(
                                 ),
                             fontSize = 12.sp,
                             color = ExtColors.TextDim,
+                        )
+                    }
+                    IconButton(
+                        onClick = { onEdit(timer) },
+                        modifier = Modifier.size(32.dp),
+                    ) {
+                        Icon(
+                            Icons.Filled.Edit,
+                            contentDescription = "编辑",
+                            tint = ExtColors.Primary,
+                            modifier = Modifier.size(16.dp),
                         )
                     }
                 }

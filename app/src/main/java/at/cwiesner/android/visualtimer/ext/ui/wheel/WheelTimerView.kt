@@ -54,7 +54,8 @@ fun PieTimerView(
     onDurationCommit: ((Long) -> Unit)? = null,
     modifier: Modifier = Modifier,
     maxMinutes: Int = 60,
-    stepMinutes: Int = 1,
+    /** 吸附步长（分钟）。支持 0.5 表示 30 秒一档。 */
+    stepMinutes: Float = 1f,
     tickMinutes: Int = 5,
     centerLabel: String? = null,
     showCenterText: Boolean = true,
@@ -80,7 +81,7 @@ fun PieTimerView(
      */
     fillParent: Boolean = false,
 ) {
-    val stepMillis = stepMinutes * 60_000L
+    val stepMillis = (stepMinutes * 60_000L).toLong()
     val maxMillis = maxMinutes * 60_000L
     val progress = if (totalMillis <= 0L) 0f
     else (remainingMillis.toFloat() / totalMillis).coerceIn(0f, 1f)

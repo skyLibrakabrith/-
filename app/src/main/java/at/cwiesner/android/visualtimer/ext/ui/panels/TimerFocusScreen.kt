@@ -1,19 +1,23 @@
 package at.cwiesner.android.visualtimer.ext.ui.panels
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
@@ -21,7 +25,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import at.cwiesner.android.visualtimer.ext.data.TimerItem
@@ -41,11 +47,14 @@ private fun clockOf(epochMillis: Long): String {
 }
 
 /**
- * 单个表盘的整页编辑视图。
+ * 单计时器整页视图。
  *
- * **性能要点**：拖动盘面时只更新本地 [draft]，**不写数据库**。
- * 之前的写法是每帧 `db.timerDao().upsert(...)`，Room 写盘造成明显卡顿。
- * 现在只在拖动结束（`onDurationCommit`）时提交一次。
+ * 交互分区明确：
+ * - **盘面外圈**：拖拽调整时长（仅未运行时允许），步进 30 秒
+ * - **盘面中央的圆**：点一下开始 / 暂停 / 超时后重置
+ * - **底部**：重置 + 开始/暂停 按钮
+ *
+ * 「改时长」和「启停」分开在两个热区，避免想暂停却改成了时长。
  */
 @Composable
 fun TimerFocusScreen(
@@ -64,11 +73,12 @@ fun TimerFocusScreen(
     modifier: Modifier = Modifier,
 ) {
     val running = runtime?.running == true
-    // 本地草稿：拖动期间只改这个，不触碰数据库
+    val overdue = (runtime?.overdueMillis ?: 0L) > 0L
     var draft by remember(timer.id) { mutableLongStateOf(timer.durationMillis) }
 
     val remain = if (running) (runtime?.remainingMillis ?: draft) else draft
     val total = if (running) (runtime?.totalMillis ?: draft) else draft
+    val landscape = at.cwiesner.android.visualtimer.ext.ui.isLandscape()
 
     Column(
         modifier = modifier
@@ -80,13 +90,12 @@ fun TimerFocusScreen(
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.End,
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
                 text = timer.label ?: "未命名",
-                fontSize = 15.sp,
-                color = ExtColors.TextSecondary,
+                fontSize = 16.sp,
+                color = ExtColors.TextPrimary,
                 modifier = Modifier.weight(1f),
             )
             IconButton(onClick = onClose) {
@@ -98,57 +107,154 @@ fun TimerFocusScreen(
             }
         }
 
-        PieTimerView(
-            totalMillis = total,
-            remainingMillis = remain,
-            running = running,
-            onDurationChange = if (running) null else { d -> draft = d },
-            onDurationCommit = if (running) null else { d ->
-                draft = d
-                onDurationCommit(d)
-            },
-            modifier = if (at.cwiesner.android.visualtimer.ext.ui.isLandscape()) {
-                Modifier.fillMaxWidth(0.6f)
-            } else {
-                Modifier.fillMaxWidth()
-            },
-            maxMinutes = 60,
-            stepMinutes = 1,
-            centerFontSize = 56f,
-            centerLabel = if (running) null else "拖动盘面调整时长",
-            colorMode = colorMode,
-            intervalMinutes = intervalMinutes,
-            fractionDivisions = fractionDivisions,
-            thresholdMinutes = thresholdMinutes,
-            thresholdColors = thresholdColors,
-            overdueMillis = runtime?.overdueMillis ?: 0L,
-        )
+        Box(
+            modifier = Modifier
+                .fillMaxWidth(if (landscape) 0.62f else 1f)
+                .padding(vertical = 4.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            // 外圈：拖拽改时长（未运行时）
+            PieTimerView(
+                totalMillis = total,
+                remainingMillis = remain,
+                running = running,
+                onDurationChange = if (running) null else { d -> draft = d },
+                onDurationCommit = if (running) null else { d ->
+                    draft = d
+                    onDurationCommit(d)
+                },
+                modifier = Modifier.fillMaxWidth(),
+                maxMinutes = 60,
+                stepMinutes = 0.5f,
+                centerFontSize = 56f,
+                showCenterText = false,
+                colorMode = colorMode,
+                intervalMinutes = intervalMinutes,
+                fractionDivisions = fractionDivisions,
+                thresholdMinutes = thresholdMinutes,
+                thresholdColors = thresholdColors,
+                overdueMillis = runtime?.overdueMillis ?: 0L,
+            )
+
+            // 内侧圆：启停热区
+            InnerControlCircle(
+                overdue = overdue,
+                remainText = if (overdue) {
+                    "+" + DeadlineCalculator.formatRemaining(runtime?.overdueMillis ?: 0L)
+                } else {
+                    DeadlineCalculator.formatRemaining(remain)
+                },
+                hint = when {
+                    overdue -> "点击重置"
+                    running -> "点击暂停"
+                    else -> "点击开始"
+                },
+                onClick = {
+                    when {
+                        overdue -> onReset()
+                        running -> onPause()
+                        else -> onStart()
+                    }
+                },
+            )
+        }
 
         Text(
-            text = if ((runtime?.overdueMillis ?: 0L) > 0L) {
-                "已超时 " + DeadlineCalculator.formatRemaining(runtime!!.overdueMillis)
-            } else if (running) {
-                "剩余 " + DeadlineCalculator.formatRemaining(remain) +
+            text = when {
+                overdue -> "已超时 " + DeadlineCalculator.formatRemaining(runtime?.overdueMillis ?: 0L)
+                running -> "剩余 " + DeadlineCalculator.formatRemaining(remain) +
                     " · " + clockOf(System.currentTimeMillis() + remain) + " 结束"
-            } else {
-                "时长 " + DeadlineCalculator.formatRemaining(draft) +
+                else -> "时长 " + DeadlineCalculator.formatRemaining(draft) +
                     " · " + clockOf(System.currentTimeMillis() + draft) + " 结束"
             },
             fontSize = 13.sp,
+            color = if (overdue) ExtColors.Red else ExtColors.TextDim,
+        )
+
+        Text(
+            text = if (running) "计时中不可调整时长" else "拖动外圈调整时长 · 步进 30 秒",
+            fontSize = 11.sp,
             color = ExtColors.TextDim,
-            modifier = Modifier.fillMaxWidth(),
         )
 
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            if (running) {
-                TextButton(onClick = onPause, modifier = Modifier.weight(1f)) { Text("暂停") }
-            } else {
-                TextButton(onClick = onStart, modifier = Modifier.weight(1f)) { Text("开始") }
-            }
-            TextButton(onClick = onReset, modifier = Modifier.weight(1f)) { Text("重置") }
+            PillButton(
+                text = "重置",
+                primary = false,
+                modifier = Modifier.weight(1f),
+                onClick = onReset,
+            )
+            PillButton(
+                text = if (running) "暂停" else "开始",
+                primary = true,
+                modifier = Modifier.weight(1f),
+                onClick = { if (running) onPause() else onStart() },
+            )
         }
+    }
+}
+
+/**
+ * 盘面中央的可点击圆 —— 启停 / 超时重置的独立热区。
+ *
+ * 与外圈拖拽层分开，手势不冲突。
+ */
+@Composable
+private fun InnerControlCircle(
+    overdue: Boolean,
+    remainText: String,
+    hint: String,
+    onClick: () -> Unit,
+) {
+    val interaction = remember { MutableInteractionSource() }
+    Column(
+        modifier = Modifier
+            .clip(RoundedCornerShape(50))
+            .background(
+                if (overdue) ExtColors.Red.copy(alpha = 0.18f)
+                else ExtColors.PureBlack.copy(alpha = 0.55f),
+            )
+            .clickable(interactionSource = interaction, indication = null, onClick = onClick)
+            .padding(horizontal = 34.dp, vertical = 26.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text(
+            text = remainText,
+            fontSize = 42.sp,
+            fontWeight = FontWeight.Light,
+            color = if (overdue) ExtColors.Red else ExtColors.TextPrimary,
+        )
+        Text(
+            text = hint,
+            fontSize = 11.sp,
+            color = if (overdue) ExtColors.Red else ExtColors.TextDim,
+        )
+    }
+}
+
+@Composable
+private fun PillButton(
+    text: String,
+    primary: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(if (primary) ExtColors.Primary else ExtColors.Surface)
+            .clickable(onClick = onClick)
+            .padding(vertical = 13.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = text,
+            fontSize = 14.sp,
+            fontWeight = FontWeight.Medium,
+            color = if (primary) Color(0xFF001639) else ExtColors.TextPrimary,
+        )
     }
 }
