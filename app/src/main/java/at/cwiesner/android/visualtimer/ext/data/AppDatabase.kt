@@ -139,6 +139,10 @@ interface GroupDao {
     @Query("SELECT * FROM timer_groups")
     fun observeAllGroups(): Flow<List<TimerGroup>>
 
+    /** 导出用的一次性快照（Flow 版拿不到当下的值）。 */
+    @Query("SELECT * FROM timer_groups")
+    suspend fun allGroupsOnce(): List<TimerGroup>
+
     @Upsert
     suspend fun upsertGroup(group: TimerGroup): Long
 
@@ -150,6 +154,10 @@ interface GroupDao {
 
     @Query("SELECT * FROM group_members")
     fun observeAllMembers(): Flow<List<GroupMember>>
+
+    /** 导出用的一次性快照。 */
+    @Query("SELECT * FROM group_members")
+    suspend fun allMembersOnce(): List<GroupMember>
 
     @Upsert
     suspend fun upsertMembers(members: List<GroupMember>)
@@ -168,6 +176,10 @@ interface DeadlineReminderDao {
 
     @Query("SELECT * FROM deadline_reminders WHERE fired = 0")
     suspend fun pending(): List<DeadlineReminder>
+
+    /** 导出用的一次性快照。 */
+    @Query("SELECT * FROM deadline_reminders")
+    suspend fun allOnce(): List<DeadlineReminder>
 
     @Upsert
     suspend fun upsertAll(items: List<DeadlineReminder>)

@@ -3,7 +3,10 @@ package at.cwiesner.android.visualtimer.ext.io
 import android.content.Context
 import android.net.Uri
 import at.cwiesner.android.visualtimer.ext.data.AppDatabase
+import at.cwiesner.android.visualtimer.ext.data.DeadlineReminder
+import at.cwiesner.android.visualtimer.ext.data.GroupMember
 import at.cwiesner.android.visualtimer.ext.data.PanelTimerRef
+import at.cwiesner.android.visualtimer.ext.data.TimerGroup
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -43,6 +46,8 @@ class BackupManager(
                     "sequences" to backup.sequences.size,
                     "steps" to backup.steps.size,
                     "alertProfiles" to backup.alertProfiles.size,
+                    "groups" to backup.groups.size,
+                    "deadlineReminders" to backup.deadlineReminders.size,
                 ),
             )
         }.getOrElse { Result.Failed(it.message ?: it::class.java.simpleName) }
@@ -55,6 +60,8 @@ class BackupManager(
         val seqs = mutableListOf<SequenceDto>()
         val steps = mutableListOf<StepDto>()
         val alerts = mutableListOf<AlertProfileDto>()
+        val groups = mutableListOf<TimerGroupDto>()
+        val reminders = mutableListOf<DeadlineReminderDto>()
 
         // 警报配置：主键即 ref
         db.alertProfileDao().observeAllOnce().forEach { p ->
@@ -85,6 +92,20 @@ class BackupManager(
             }
         }
 
+        // 组 + 成员（成员顺序照搬，导出后组的构成不会散）
+        val membersByGroup = db.groupDao().allMembersOnce().groupBy { it.groupId }
+        db.groupDao().allGroupsOnce().forEach { g ->
+            val memberRefs = membersByGroup[g.id].orEmpty()
+                .sortedBy { it.order }
+                .map { "t${it.timerId}" }
+            groups += g.toDto("g${g.id}", memberRefs)
+        }
+
+        // DDL 提前提醒
+        db.deadlineReminderDao().allOnce().forEach { r ->
+            reminders += r.toDto("t${r.timerId}")
+        }
+
         return BackupFile(
             timers = timers,
             panels = panels,
@@ -92,6 +113,8 @@ class BackupManager(
             sequences = seqs,
             steps = steps,
             alertProfiles = alerts,
+            groups = groups,
+            deadlineReminders = reminders,
         )
     }
 
@@ -130,8 +153,14 @@ class BackupManager(
                     )
                 }
 
+                // 面板：先全部落库拿到新 id，再写关联，
+                // 这样序列 / 组才能按 panelRef 重新绑定到新面板
+                val panelIdMap = mutableMapOf<String, Long>()
                 backup.panels.forEach { dto ->
-                    val pid = db.panelDao().upsert(dto.toEntity())
+                    panelIdMap[dto.ref] = db.panelDao().upsert(dto.toEntity())
+                }
+                backup.panels.forEach { dto ->
+                    val pid = panelIdMap.getValue(dto.ref)
                     val refList = dto.timerRefs.mapIndexedNotNull { idx, tr ->
                         timerIdMap[tr]?.let { tid ->
                             PanelTimerRef(panelId = pid, timerId = tid, order = idx)
@@ -141,7 +170,9 @@ class BackupManager(
                 }
 
                 backup.sequences.forEach { dto ->
-                    val sid = db.sequenceDao().upsert(dto.toEntity())
+                    val sid = db.sequenceDao().upsert(
+                        dto.toEntity(dto.panelRef?.let { panelIdMap[it] }),
+                    )
                     backup.steps.filter { it.sequenceRef == dto.ref }
                         .sortedBy { it.order }
                         .forEach { st ->
@@ -151,6 +182,36 @@ class BackupManager(
                         }
                 }
 
+                // 组：面板与计时器都落库之后才能建，否则拿不到新 id
+                backup.groups.forEach { dto ->
+                    val pid = dto.panelRef?.let { panelIdMap[it] } ?: return@forEach
+                    val gid = db.groupDao().upsertGroup(
+                        TimerGroup(
+                            panelId = pid,
+                            name = dto.name,
+                            order = dto.order,
+                        ),
+                    )
+                    val members = dto.memberRefs.mapIndexedNotNull { idx, tr ->
+                        timerIdMap[tr]?.let { tid ->
+                            GroupMember(gid, tid, idx)
+                        }
+                    }
+                    if (members.isNotEmpty()) db.groupDao().upsertMembers(members)
+                }
+
+                // DDL 提前提醒
+                val reminders = backup.deadlineReminders.mapNotNull { dto ->
+                    timerIdMap[dto.timerRef]?.let { tid ->
+                        DeadlineReminder(
+                            timerId = tid,
+                            leadMinutes = dto.leadMinutes,
+                            fired = dto.fired,
+                        )
+                    }
+                }
+                if (reminders.isNotEmpty()) db.deadlineReminderDao().upsertAll(reminders)
+
                 Result.Ok(
                     mapOf(
                         "timers" to backup.timers.size,
@@ -158,12 +219,24 @@ class BackupManager(
                         "sequences" to backup.sequences.size,
                         "steps" to backup.steps.size,
                         "alertProfiles" to backup.alertProfiles.size,
+                        "groups" to backup.groups.size,
+                        "deadlineReminders" to backup.deadlineReminders.size,
                     ),
                 )
             }.getOrElse { Result.Failed(it.message ?: it::class.java.simpleName) }
         }
 
     private suspend fun wipeAll() {
+        // 顺序要紧：先清依赖方（提醒 / 组成员 / 面板关联），再清被依赖的实体，
+        // 否则会留下一堆指向已删计时器的孤儿行
+        db.deadlineReminderDao().allOnce()
+            .map { it.timerId }
+            .distinct()
+            .forEach { db.deadlineReminderDao().clearTimer(it) }
+        db.groupDao().allGroupsOnce().forEach {
+            db.groupDao().clearMembers(it.id)
+            db.groupDao().deleteGroup(it.id)
+        }
         db.timerDao().observeAllOnce().forEach { db.timerDao().deleteById(it.id) }
         db.panelDao().observeAllOnce().forEach { db.panelDao().deleteById(it.id) }
         db.sequenceDao().observeAllOnce().forEach { db.sequenceDao().deleteById(it.id) }
