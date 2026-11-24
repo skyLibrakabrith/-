@@ -89,6 +89,11 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
     // 悬浮窗权限状态（用户可能在系统里改过，每次重组重新查）
     var canOverlay by remember { mutableStateOf(Settings.canDrawOverlays(context)) }
 
+    // toast 必须在所有 lambda 之前定义，否则 launcher 回调里引用不到
+    fun toast(msg: String) {
+        Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+    }
+
     var status by remember { mutableStateOf<String?>(null) }
     // 系统铃声选择器
     val ringtoneLauncher = rememberLauncherForActivityResult(
@@ -105,9 +110,6 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
     }
     var showAddThreshold by remember { mutableStateOf(false) }
 
-    fun toast(msg: String) {
-        Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
-    }
 
     val exportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/json"),
