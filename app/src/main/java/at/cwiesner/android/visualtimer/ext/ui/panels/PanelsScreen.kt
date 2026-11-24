@@ -281,7 +281,6 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                             }
                         }
                     },
-,
                 )
                 if (panels.isNotEmpty()) {
                     TabRow(
