@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import kotlinx.coroutines.flow.StateFlow
@@ -39,13 +40,17 @@ fun ScreenFlashOverlay(
     val alpha = remember { Animatable(0f) }
 
     // 试听：单独跑三轮就收手。
-    // 之前警报页的「点击卡片试听」只震不闪 —— onPreviewFlash 在 MainActivity
-    // 里根本没接，用户没法确认自己调的闪烁节奏到底长什么样。
-    LaunchedEffect(previewTick, pulseOnMillis, pulseOffMillis) {
+    //
+    // key 只放 previewTick：之前把两个时长也放进 key，拖动滑杆时会反复
+    // 重启这个 effect、意外重放三次闪烁，看起来像「调了没反应」。
+    // 时长通过 rememberUpdatedState 取当前值。
+    val curOn by rememberUpdatedState(pulseOnMillis)
+    val curOff by rememberUpdatedState(pulseOffMillis)
+    LaunchedEffect(previewTick) {
         if (previewTick <= 0) return@LaunchedEffect
         repeat(3) {
-            alpha.animateTo(0.55f, animationSpec = tween(durationMillis = pulseOnMillis))
-            alpha.animateTo(0f, animationSpec = tween(durationMillis = pulseOffMillis))
+            alpha.animateTo(0.55f, animationSpec = tween(durationMillis = curOn))
+            alpha.animateTo(0f, animationSpec = tween(durationMillis = curOff))
         }
     }
 

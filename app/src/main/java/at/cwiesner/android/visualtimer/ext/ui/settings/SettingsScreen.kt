@@ -80,9 +80,7 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
     val fractionDivisions by settings.fractionDivisions.collectAsState(initial = 4)
     val showCenterText by settings.showCenterText.collectAsState(initial = true)
     val vibrationEnabled by settings.vibrationEnabled.collectAsState(initial = true)
-    val ringtoneUri by settings.ringtoneUri.collectAsState(initial = null)
     val soundEnabled by settings.soundEnabled.collectAsState(initial = true)
-    val ringtoneLabel = remember(ringtoneUri) { describeRingtone(context, ringtoneUri) }
     val overlayEnabled by settings.overlayEnabled.collectAsState(initial = false)
     val backgroundEnabled by settings.backgroundEnabled.collectAsState(initial = true)
     val keepScreenOn by settings.keepScreenOn.collectAsState(initial = false)
@@ -96,21 +94,8 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
     }
 
     var status by remember { mutableStateOf<String?>(null) }
-    // 系统铃声选择器
-    val ringtoneLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.StartActivityForResult(),
-    ) { result ->
-        if (result.resultCode != android.app.Activity.RESULT_OK) return@rememberLauncherForActivityResult
-        val uri = result.data?.getParcelableExtra<android.net.Uri>(
-            android.media.RingtoneManager.EXTRA_RINGTONE_PICKED_URI,
-        )
-        scope.launch {
-            settings.setRingtoneUri(uri?.toString())
-            toast(if (uri == null) "已恢复默认铃声" else "铃声已更新")
-        }
-    }
-    var showAddThreshold by remember { mutableStateOf(false) }
 
+    var showAddThreshold by remember { mutableStateOf(false) }
 
     val exportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/json"),
@@ -279,69 +264,6 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
             }
         }
 
-        SettingsCard(title = "铃声") {
-            Text(
-                "只在连接耳机时播放；未连耳机时完全静音，不会外放。",
-                fontSize = 12.sp,
-                color = ExtColors.TextDim,
-            )
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    "当前铃声：" + ringtoneLabel,
-                    fontSize = 13.sp,
-                    color = ExtColors.TextPrimary,
-                    modifier = Modifier.weight(1f),
-                )
-                TextButton(onClick = {
-                    runCatching {
-                        val intent = android.content.Intent(
-                            android.media.RingtoneManager.ACTION_RINGTONE_PICKER,
-                        ).apply {
-                            putExtra(
-                                android.media.RingtoneManager.EXTRA_RINGTONE_TYPE,
-                                android.media.RingtoneManager.TYPE_ALARM,
-                            )
-                            putExtra(
-                                android.media.RingtoneManager.EXTRA_RINGTONE_SHOW_DEFAULT,
-                                true,
-                            )
-                            putExtra(
-                                android.media.RingtoneManager.EXTRA_RINGTONE_SHOW_SILENT,
-                                false,
-                            )
-                            putExtra(
-                                android.media.RingtoneManager.EXTRA_RINGTONE_EXISTING_URI,
-                                ringtoneUri?.let { android.net.Uri.parse(it) },
-                            )
-                        }
-                        ringtoneLauncher.launch(intent)
-                    }
-                }) { Text("选择") }
-            }
-            ToggleRow(
-                label = "启用耳机声音",
-                checked = soundEnabled,
-                onChange = { scope.launch { settings.setSoundEnabled(it) } },
-            )
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                ActionChip("试听", Modifier.weight(1f), primary = false) {
-                    val a = at.cwiesner.android.visualtimer.ext.alarm.HeadphoneSoundAlerter(context)
-                    a.preview(ringtoneUri?.let { android.net.Uri.parse(it) })
-                }
-                ActionChip("检查耳机", Modifier.weight(1f), primary = false) {
-                    val a = at.cwiesner.android.visualtimer.ext.alarm.HeadphoneSoundAlerter(context)
-                    toast(if (a.isHeadphoneConnected()) "已连接耳机，到点会响" else "未检测到耳机，到点不会出声")
-                }
-            }
-        }
-
         SettingsCard(title = "显示") {
             ToggleRow(
                 label = "圆盘中央显示剩余时间",
@@ -396,7 +318,7 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
             )
         }
 
-SettingsCard(title = "悬浮窗") {
+        SettingsCard(title = "悬浮窗") {
             Text(
                 "在别的应用上层显示正在运行的计时器。需要系统「显示在其他应用上层」权限。",
                 fontSize = 12.sp,
@@ -519,15 +441,6 @@ SettingsCard(title = "悬浮窗") {
             },
         )
     }
-}
-
-/** 把铃声 URI 转成可读名称。 */
-private fun describeRingtone(context: android.content.Context, uri: String?): String {
-    if (uri == null) return "系统默认"
-    return runCatching {
-        val u = android.net.Uri.parse(uri)
-        android.media.RingtoneManager.getRingtone(context, u)?.getTitle(context)
-    }.getOrNull() ?: "已选择"
 }
 
 @Composable

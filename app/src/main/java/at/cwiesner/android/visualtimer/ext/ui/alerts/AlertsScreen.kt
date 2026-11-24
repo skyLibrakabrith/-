@@ -88,7 +88,6 @@ fun AlertsScreen(
 
     if (view == AlertsView.Sound) {
         SoundView(
-            profiles = profiles,
             settings = settings,
             onPreviewFlash = onPreviewFlash,
             modifier = modifier,
@@ -218,7 +217,6 @@ private fun FlashTimingCard(settings: SettingsRepo) {
  */
 @Composable
 private fun SoundView(
-    profiles: List<AlertProfile>,
     settings: SettingsRepo,
     onPreviewFlash: () -> Unit,
     modifier: Modifier = Modifier,
@@ -232,6 +230,19 @@ private fun SoundView(
     var headphoneOn by remember { mutableStateOf(false) }
     val alerter = remember { HeadphoneSoundAlerter(context) }
     LaunchedEffect(Unit) { headphoneOn = alerter.isHeadphoneConnected() }
+
+    // 系统铃声选择器。原本在设置页，现在收进这边 —— 声音相关的都在警报页。
+    val ringtoneLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        if (result.resultCode != android.app.Activity.RESULT_OK) {
+            return@rememberLauncherForActivityResult
+        }
+        val uri = result.data?.getParcelableExtra<android.net.Uri>(
+            android.media.RingtoneManager.EXTRA_RINGTONE_PICKED_URI,
+        )
+        scope.launch { settings.setRingtoneUri(uri?.toString()) }
+    }
 
     LazyColumn(
         modifier = modifier.fillMaxSize().padding(12.dp),
@@ -283,41 +294,55 @@ private fun SoundView(
         item {
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    Text("当前铃声", style = MaterialTheme.typography.titleSmall)
+                    Text("铃声", style = MaterialTheme.typography.titleSmall)
                     Spacer(Modifier.height(6.dp))
                     Text(
                         describeRingtoneName(context, ringtoneUri),
                         style = MaterialTheme.typography.labelMedium,
                     )
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        "铃声在设置页选择。这里只负责在耳机里把它放出来。",
-                        style = MaterialTheme.typography.labelSmall,
-                    )
-                }
-            }
-        }
+                    Spacer(Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        TextButton(onClick = {
+                            runCatching {
+                                val intent = android.content.Intent(
+                                    android.media.RingtoneManager.ACTION_RINGTONE_PICKER,
+                                ).apply {
+                                    putExtra(
+                                        android.media.RingtoneManager.EXTRA_RINGTONE_TYPE,
+                                        android.media.RingtoneManager.TYPE_ALARM,
+                                    )
+                                    putExtra(
+                                        android.media.RingtoneManager.EXTRA_RINGTONE_SHOW_DEFAULT,
+                                        true,
+                                    )
+                                    putExtra(
+                                        android.media.RingtoneManager.EXTRA_RINGTONE_SHOW_SILENT,
+                                        false,
+                                    )
+                                    putExtra(
+                                        android.media.RingtoneManager.EXTRA_RINGTONE_EXISTING_URI,
+                                        ringtoneUri?.let { android.net.Uri.parse(it) },
+                                    )
+                                }
+                                ringtoneLauncher.launch(intent)
+                            }
+                        }) { Text("选择铃声") }
 
-        if (profiles.isNotEmpty()) {
-            item {
-                Text(
-                    "各提醒配置的波形节奏（振动视图里可试听）",
-                    style = MaterialTheme.typography.labelSmall,
-                )
-            }
-            items(profiles, key = { it.id }) { profile ->
-                Card(modifier = Modifier.fillMaxWidth()) {
-                    Column(modifier = Modifier.padding(14.dp)) {
-                        Text(profile.name, style = MaterialTheme.typography.labelLarge)
-                        VibrationWaveform(
-                            pattern = profile.vibrationPattern,
-                            modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
-                            showLabels = false,
-                        )
+                        TextButton(
+                            enabled = soundEnabled,
+                            onClick = {
+                                runCatching { settings.setRingtoneUri(null) }
+                            },
+                        ) { Text("恢复默认") }
                     }
                 }
             }
         }
+
+        // 铃声视图只谈声音。振动波形属于振动视图，不在这里重复展示。
     }
 }
 

@@ -218,9 +218,16 @@ class AlertOverlayService : Service() {
      *    否则同一个提醒在应用内外两种观感。
      */
     private fun startFlashing() {
-        val interval = (application as? ExtApplication)?.flashIntervalMillis ?: SettingsRepo.DEFAULT_FLASH_INTERVAL
+        // 必须先撤掉上一个闪动任务。
+        // 之前漏了这一步：START_STICKY 服务被重复 onStartCommand 时，
+        // 旧的 Runnable 还按**旧间隔**在跑，新的又叠上去，两个一起翻牌子 ——
+        // 表现就是「在警报页调了闪烁节奏，实际没效果」。
+        flashJob?.let { handler.removeCallbacks(it) }
         flashJob = object : Runnable {
             override fun run() {
+                // 每次翻牌都重新读一遍间隔，运行中改设置也能立刻生效
+                val interval = (application as? ExtApplication)?.flashIntervalMillis
+                    ?: SettingsRepo.DEFAULT_FLASH_INTERVAL
                 flashOn = !flashOn
                 root?.background = roundedBg(if (flashOn) COLOR_CARD_FLASH else COLOR_CARD_IDLE)
                 handler.postDelayed(this, interval)
