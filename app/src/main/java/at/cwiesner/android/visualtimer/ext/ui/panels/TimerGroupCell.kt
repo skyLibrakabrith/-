@@ -1,6 +1,5 @@
 package at.cwiesner.android.visualtimer.ext.ui.panels
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -48,18 +47,16 @@ fun TimerGroupCell(
     fractionDivisions: Int,
     thresholdMinutes: List<Long>,
     thresholdColors: List<Color>,
-    onClick: () -> Unit,
-    onLongClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val runningCount = members.count { runtimeById[it.id]?.running == true }
 
     Card(
+        // 点按交给 DraggableGrid 的卡片层，这里不再叠加一层。
         modifier = modifier
             .fillMaxWidth()
             .aspectRatio(0.92f)
-            .clip(RoundedCornerShape(16.dp))
-            .clickable(onClick = onClick),
+            .clip(RoundedCornerShape(16.dp)),
         shape = RoundedCornerShape(16.dp),
     ) {
         Box(modifier = Modifier.fillMaxSize()) {

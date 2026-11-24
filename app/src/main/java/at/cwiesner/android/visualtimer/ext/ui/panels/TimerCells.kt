@@ -63,8 +63,7 @@ internal fun TimerCell(
     colorMode: ColorMode,
     intervalMinutes: Long,
     fractionDivisions: Int,
-    onClick: () -> Unit,
-    onLongClick: () -> Unit,
+    // 点按（单击/双击/长按）由 DraggableGrid 统一处理，卡片不再需要这两个回调
     onReset: () -> Unit,
     onDelete: () -> Unit,
 ) {
@@ -73,11 +72,17 @@ internal fun TimerCell(
     val total = if (running) (runtime?.totalMillis ?: timer.durationMillis) else timer.durationMillis
     val frac = if (total <= 0L) 0f else (remain.toFloat() / total).coerceIn(0f, 1f)
 
+    // 卡片本身**不再**挂 combinedClickable。
+    //
+    // 之前这里和 DraggableGrid 的卡片外层各挂了一个点击层：
+    // 内层 combinedClickable 先消费掉「单击」，外层判定成第一次点按，
+    // 用户的第二下（本意是双击）就被内层当成了「又一次单击」——
+    // 表现是「点一下直接进全屏」。
+    // 点按统一交给网格层，卡片只负责画和少数子控件（重置/删除）。
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .aspectRatio(0.92f)
-            .combinedClickable(onClick = onClick, onLongClick = onLongClick),
+            .aspectRatio(0.92f),
         shape = RoundedCornerShape(16.dp),
     ) {
         Box(modifier = Modifier.fillMaxSize()) {

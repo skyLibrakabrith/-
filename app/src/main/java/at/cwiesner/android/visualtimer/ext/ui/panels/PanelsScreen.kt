@@ -549,8 +549,6 @@ fun PanelsScreen(
                                         phase = if (engineActiveId == sq.id) enginePhase
                                         else StepSequenceEngine.Phase.Idle,
                                         isActive = engineActiveId == sq.id,
-                                        onClick = { focusSequenceId = sq.id },
-                                        onLongClick = { editingSequenceId = sq.id },
                                     )
                                 }
                             }
@@ -568,8 +566,6 @@ fun PanelsScreen(
                                         fractionDivisions = fractionDivisions,
                                         thresholdMinutes = thresholdMinutes,
                                         thresholdColors = thresholdColors,
-                                        onClick = { editingGroupId = g.id },
-                                        onLongClick = { editingGroupId = g.id },
                                     )
                                 }
                             }
@@ -585,11 +581,6 @@ fun PanelsScreen(
                                         colorMode = colorMode,
                                         intervalMinutes = intervalMinutes,
                                         fractionDivisions = fractionDivisions,
-                                        onClick = { focusTimerId = t.id },
-                                        onLongClick = {
-                                            // DDL 已锁定时长，长按不打开编辑器
-                                            if (!t.locked) editingTimerId = t.id
-                                        },
                                         onReset = {
                                             scope.launch { runner.reset(t.id) }
                                         },

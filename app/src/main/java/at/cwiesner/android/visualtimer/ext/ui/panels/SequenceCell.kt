@@ -1,8 +1,6 @@
 package at.cwiesner.android.visualtimer.ext.ui.panels
 
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.aspectRatio
@@ -37,15 +35,12 @@ import at.cwiesner.android.visualtimer.ext.ui.ExtColors
  * 与计时器/组**同尺寸**占一个格子。盘面用「分段环」表达：
  * 每个阶段按时长占比分一段，当前阶段高亮 —— 等比缩小版的序列轮盘。
  */
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun SequenceCell(
     sequence: StepSequence,
     steps: List<Step>,
     phase: StepSequenceEngine.Phase,
     isActive: Boolean,
-    onClick: () -> Unit,
-    onLongClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val currentIndex = when (phase) {
@@ -74,11 +69,12 @@ fun SequenceCell(
     val doneColor = ExtColors.TextDim.copy(alpha = 0.4f)
 
     Card(
+        // 点按交给 DraggableGrid 的卡片层，这里不再叠加一层，
+        // 否则单击会被内层先消费，双击永远走不到外层。
         modifier = modifier
             .fillMaxWidth()
             .aspectRatio(0.92f)
-            .clip(RoundedCornerShape(16.dp))
-            .combinedClickable(onClick = onClick, onLongClick = onLongClick),
+            .clip(RoundedCornerShape(16.dp)),
         shape = RoundedCornerShape(16.dp),
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
