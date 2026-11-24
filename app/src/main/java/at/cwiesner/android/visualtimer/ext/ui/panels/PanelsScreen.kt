@@ -410,7 +410,12 @@ fun PanelsScreen(
                             toast("已删除 $n 个计时器")
                         }
                     },
-                    onEdit = { t -> editingTimerId = t.id },
+                    // DDL 锁定了时长，编辑入口要和长按卡片保持一致地拦住，
+                    // 否则列表里能绕过去改时间，倒计时就和真实截止时刻脱节了
+                    onEdit = { t ->
+                        if (t.locked) toast("DDL 已锁定，不能改时长")
+                        else editingTimerId = t.id
+                    },
                     alertProfiles = alertProfiles,
                     onSelectAll = { selectedIds = timers.map { it.id }.toSet() },
                     onClearSelection = { selectedIds = emptySet() },
@@ -818,17 +823,28 @@ fun PanelsScreen(
             alertProfiles = alertProfiles,
             initialLabel = editingTimer.label ?: "",
             initialDuration = editingTimer.durationMillis,
+            initialAlertProfileId = editingTimer.alertProfileId,
             title = "编辑计时器",
             onDismiss = { editingTimerId = null },
             onConfirm = { label, duration, deadlineEpoch, alertProfileId ->
                 editingTimerId = null
                 scope.launch {
+                    // DDL 计时器的类型与截止时刻必须原样保留。
+                    // 之前这里无条件写 kind = Countdown：一旦从列表里编辑一个
+                    // locked 迁移后仍为 false 的旧 DDL，它就静默退化成了普通倒计时。
+                    val keepDeadline = editingTimer.kind == TimerKind.Deadline
                     db.timerDao().upsert(
                         editingTimer.copy(
                             label = label.ifBlank { null },
                             durationMillis = duration,
                             alertProfileId = alertProfileId,
-                            kind = TimerKind.Countdown,
+                            kind = if (keepDeadline) TimerKind.Deadline else TimerKind.Countdown,
+                            deadlineEpochMillis = if (keepDeadline) {
+                                editingTimer.deadlineEpochMillis
+                            } else {
+                                deadlineEpoch
+                            },
+                            locked = keepDeadline && editingTimer.locked,
                         ),
                     )
                     // 时长变了，运行状态重置，避免旧的倒计时残留

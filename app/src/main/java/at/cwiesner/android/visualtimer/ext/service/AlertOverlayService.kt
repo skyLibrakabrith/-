@@ -44,6 +44,7 @@ class AlertOverlayService : Service() {
     private lateinit var windowManager: WindowManager
     private var root: View? = null
     private var flashJob: Runnable? = null
+    private var timeJob: Runnable? = null
     private val handler = Handler(Looper.getMainLooper())
 
     private var titleView: TextView? = null
@@ -82,6 +83,11 @@ class AlertOverlayService : Service() {
     override fun onDestroy() {
         flashJob?.let { handler.removeCallbacks(it) }
         flashJob = null
+        // 超时计数的循环任务必须一起撤掉：它每 300ms 自我重投，
+        // 漏掉这一步会在 Service 销毁后一直空转，把 timeView 和整个 Service 拖住不放
+        timeJob?.let { handler.removeCallbacks(it) }
+        timeJob = null
+        handler.removeCallbacksAndMessages(null)
         removeOverlay()
         super.onDestroy()
     }
@@ -222,7 +228,8 @@ class AlertOverlayService : Service() {
 
     private fun startTickingTime() {
         val app = application as? ExtApplication ?: return
-        flashJob?.let { /* 保留闪烁任务，另起一个计算任务 */ }
+        // 重复进来（比如再次收到 onStartCommand）时先撤掉旧任务，避免叠加出多条循环
+        timeJob?.let { handler.removeCallbacks(it) }
         val ticker = object : Runnable {
             override fun run() {
                 val rt = app.panelRunner.get(timerId)
@@ -235,6 +242,7 @@ class AlertOverlayService : Service() {
                 handler.postDelayed(this, 300)
             }
         }
+        timeJob = ticker
         handler.post(ticker)
     }
 

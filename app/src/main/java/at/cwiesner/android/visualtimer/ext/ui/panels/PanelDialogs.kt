@@ -58,6 +58,13 @@ fun TimerEditDialog(
     alertProfiles: List<at.cwiesner.android.visualtimer.ext.data.AlertProfile> = emptyList(),
     initialLabel: String = "",
     initialDuration: Long = 60_000L,
+    /**
+     * 编辑已有计时器时回填它当前绑定的提醒配置。
+     *
+     * 之前没有这个参数、`alertProfileId` 一律从 null 起步，
+     * 于是「改个名字」也会把计时器的提醒配置悄悄清成默认。
+     */
+    initialAlertProfileId: Long? = null,
     title: String = "新建计时器",
     onDismiss: () -> Unit,
     onConfirm: (label: String, durationMillis: Long, deadlineEpochMillis: Long?, alertProfileId: Long?) -> Unit,
@@ -65,7 +72,7 @@ fun TimerEditDialog(
     var label by remember { mutableStateOf(initialLabel) }
     var duration by remember { mutableLongStateOf(initialDuration) }
     var mode by remember { mutableStateOf(DurationMode.Wheel) }
-    var alertProfileId by remember { mutableStateOf<Long?>(null) }
+    var alertProfileId by remember { mutableStateOf(initialAlertProfileId) }
     var showAlertPicker by remember { mutableStateOf(false) }
 
     // DDL 模式的状态
