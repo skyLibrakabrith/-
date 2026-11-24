@@ -1,53 +1,26 @@
 package at.cwiesner.android.visualtimer.ext.ui.panels
 
 import android.widget.Toast
-import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.background
-import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.GridItemSpan
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Checklist
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.GridView
-import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.Notifications
-import androidx.compose.material3.Card
-import androidx.compose.material3.Checkbox
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -58,12 +31,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import at.cwiesner.android.visualtimer.ext.ExtApplication
@@ -77,17 +46,12 @@ import at.cwiesner.android.visualtimer.ext.data.StepSequence
 import at.cwiesner.android.visualtimer.ext.data.TimerItem
 import at.cwiesner.android.visualtimer.ext.data.TimerKind
 import at.cwiesner.android.visualtimer.ext.domain.DeadlineCalculator
-import at.cwiesner.android.visualtimer.ext.domain.PanelRunner
 import at.cwiesner.android.visualtimer.ext.domain.StepSequenceEngine
 import at.cwiesner.android.visualtimer.ext.domain.TimerRuntime
 import at.cwiesner.android.visualtimer.ext.settings.SettingsRepo
 import at.cwiesner.android.visualtimer.ext.ui.ExtColors
-import at.cwiesner.android.visualtimer.ext.ui.common.alertNameOf
-import at.cwiesner.android.visualtimer.ext.ui.common.clockOf
 import at.cwiesner.android.visualtimer.ext.ui.sequences.SequenceEditorScreen
 import at.cwiesner.android.visualtimer.ext.ui.sequences.SequenceFocusScreen
-import at.cwiesner.android.visualtimer.ext.ui.wheel.PieTimerView
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -143,7 +107,6 @@ fun PanelsScreen(
     var editingTimerId by remember { mutableStateOf<Long?>(null) }
     var alertPickerTimerId by remember { mutableStateOf<Long?>(null) }
     var leadTimeTarget by remember { mutableStateOf<Pair<Long, Long>?>(null) }
-    var showOrderDialog by remember { mutableStateOf(false) }
     var showNewTimer by remember { mutableStateOf(false) }
     var showDeadline by remember { mutableStateOf(false) }
     var showPanelManager by remember { mutableStateOf(false) }
@@ -341,7 +304,7 @@ fun PanelsScreen(
         floatingActionButton = {
             // 任何编辑弹窗打开时隐藏 FAB，避免图标浮在对话框上
             val anyDialogOpen = showPanelEditor || showPanelManager || showNewTimer ||
-                showDeadline || showOrderDialog || editingTimerId != null ||
+                showDeadline || editingTimerId != null ||
                 editingGroupId != null || editingSequenceId != null ||
                 focusSequenceId != null || focusTimerId != null
             if (!anyDialogOpen) ExtendedFloatingActionButton(
@@ -582,80 +545,31 @@ fun PanelsScreen(
                 }
             }
             }
-                    
-                    // 快捷栏只出现在卡片视图，放在网格下方（系统栏留白带内）
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 6.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        QuickAction("新建序列", Modifier.weight(1f)) {
-                            scope.launch {
-                                val pid = currentPanel?.id ?: return@launch
-                                val id = db.sequenceDao().upsert(
-                                    StepSequence(name = "新序列", panelId = pid),
-                                )
-                                editingSequenceId = id
-                            }
-                        }
-                        QuickAction("面板管理", Modifier.weight(1f)) {
-                            showPanelManager = true
-                        }
-                    }
-            }   // 关闭 else {
 
-            
-        }
-    }
-
-    // ---- 调整顺序 ----
-    if (showOrderDialog && currentPanel != null) {
-        // 把序列 / 组 / 未成组计时器拍平成统一列表
-        val entries = remember(panelSequences, groups, timers, groupedTimerIds) {
-            val list = mutableListOf<PanelEntry>()
-            panelSequences.forEach {
-                list += PanelEntry(EntryKind.Sequence, it.id, it.name, it.sortOrder)
-            }
-            groups.forEach {
-                list += PanelEntry(EntryKind.Group, it.id, it.name, it.order)
-            }
-            timers.filter { it.id !in groupedTimerIds }.forEach {
-                list += PanelEntry(EntryKind.Timer, it.id, it.label ?: "未命名", it.position)
-            }
-            list
-        }
-        DragReorderDialog(
-            entries = entries,
-            columns = gridColumns,
-            onDismiss = { showOrderDialog = false },
-            onSave = { ordered ->
-                showOrderDialog = false
-                scope.launch {
-                    // 统一重新编号，再按类型写回各自的 order 字段
-                    ordered.forEachIndexed { idx, entry ->
-                        when (entry.kind) {
-                            EntryKind.Sequence -> {
-                                allSequences.firstOrNull { it.id == entry.refId }?.let { sq ->
-                                    db.sequenceDao().upsert(sq.copy(sortOrder = idx))
-                                }
-                            }
-                            EntryKind.Group -> {
-                                groups.firstOrNull { it.id == entry.refId }?.let { g ->
-                                    db.groupDao().upsertGroup(g.copy(order = idx))
-                                }
-                            }
-                            EntryKind.Timer -> {
-                                timers.firstOrNull { it.id == entry.refId }?.let { t ->
-                                    db.timerDao().upsert(t.copy(position = idx))
-                                }
-                            }
-                        }
+            // 快捷栏只出现在卡片视图，放在网格下方（系统栏留白带内）
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                QuickAction("新建序列", Modifier.weight(1f)) {
+                    scope.launch {
+                        val pid = currentPanel?.id ?: return@launch
+                        val id = db.sequenceDao().upsert(
+                            StepSequence(name = "新序列", panelId = pid),
+                        )
+                        editingSequenceId = id
                     }
-                    toast("顺序已保存")
                 }
-            },
-        )
+                QuickAction("面板管理", Modifier.weight(1f)) {
+                    showPanelManager = true
+                }
+            }
+            }
+
+
+        }
     }
 
     // ---- 组编辑（长按组卡片进入）----
@@ -1002,5 +916,3 @@ fun PanelsScreen(
         )
     }
 }
-
-/** 提醒配置名；未绑定时回退到列表第一个配置名。 */

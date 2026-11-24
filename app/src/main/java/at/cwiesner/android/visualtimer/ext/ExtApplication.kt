@@ -185,23 +185,6 @@ class ExtApplication : Application() {
         vibration.play(pattern, repeatIndex = 0)
     }
 
-    private suspend fun fireVibration(rt: TimerRuntime) {
-        val enabled = runCatching { settings.vibrationEnabled.first() }.getOrDefault(true)
-        if (!enabled) return
-
-        val profile: AlertProfile? = rt.alertProfileId?.let { id ->
-            runCatching { database.alertProfileDao().get(id) }.getOrNull()
-        } ?: runCatching {
-            database.alertProfileDao().observeAllOnce().firstOrNull()
-        }.getOrNull()
-
-        val pattern = (profile?.vibrationPattern?.takeIf { it.isNotEmpty() }
-            ?: listOf(0L, 600L, 200L, 600L)).toLongArray()
-
-        // 到点只震一轮；循环震动交给前台界面处理
-        vibration.play(pattern, repeatIndex = -1)
-    }
-
     /** 提前提醒通知：标注「还有多久到期」。 */
     private fun postLeadNotification(rt: TimerRuntime, leadMinutes: Long) {
         val mgr = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
