@@ -73,6 +73,7 @@ object ExtColors {
      * 这样颜色是「慢慢变红」而不是「啪一下跳过去」。
      */
     private val GreenLight = Color(0xFF35D07F)
+    private val LimeLight = Color(0xFF8FD14F)
     private val YellowLight = Color(0xFFF2C14E)
     private val OrangeLight = Color(0xFFF28F3B)
     private val RedLight = Color(0xFFE5484D)
@@ -88,26 +89,22 @@ object ExtColors {
         val f = fraction.coerceIn(0f, 1f)
         // 把 1..0 映射到 0..1 的「紧张度」
         val tension = 1f - f
-        // 四段：绿→黄→橙→红
-        val seg = (tension * 3f)
-        val i = seg.toInt().coerceIn(0, 2)
-        val t = (seg - i).let {
-            if (steps <= 0) {
-                // 无过渡：直接跳到该段的起始色
-                0f
-            } else {
-                // 有过渡：保留小数部分做插值
-                it
-            }
-        }
+        // 四段等距：绿 → 黄绿 → 黄 → 橙 → 红
+        // 之前只有绿/黄/橙/红三段插值，绿区占比过大，
+        // 现在插入一个黄绿中间色，让四段均分 1/3，颜色推进更均匀
+        val seg = tension * 4f
+        val i = seg.toInt().coerceIn(0, 3)
+        val t = (seg - i).coerceIn(0f, 1f)
         val from = when (i) {
             0 -> GreenLight
-            1 -> YellowLight
+            1 -> LimeLight
+            2 -> YellowLight
             else -> OrangeLight
         }
         val to = when (i) {
-            0 -> YellowLight
-            1 -> OrangeLight
+            0 -> LimeLight
+            1 -> YellowLight
+            2 -> OrangeLight
             else -> RedLight
         }
         return lerp(from, to, t)
@@ -217,7 +214,13 @@ fun ExtTheme(
     content: @Composable () -> Unit,
 ) {
     val systemDark = isSystemInDarkTheme()
-    ExtColors.applyMode(mode, systemDark)
+    // 只在模式真正变化时改全局配色。
+    // 之前每次重组都调用 applyMode + schemeFor，切换页面时会触发
+    // 一轮不必要的整树重组，表现就是「打开新页面先闪一下」。
+    androidx.compose.runtime.LaunchedEffect(mode, systemDark) {
+        ExtColors.applyMode(mode, systemDark)
+    }
     val dark = mode != ThemeMode.Light && (mode != ThemeMode.System || systemDark)
-    MaterialTheme(colorScheme = schemeFor(dark), content = content)
+    val scheme = androidx.compose.runtime.remember(dark) { schemeFor(dark) }
+    MaterialTheme(colorScheme = scheme, content = content)
 }

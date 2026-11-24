@@ -29,6 +29,10 @@ import kotlinx.coroutines.isActive
 fun ScreenFlashOverlay(
     alerting: StateFlow<Set<Long>>,
     modifier: Modifier = Modifier,
+    /** 单次亮起的持续时间（毫秒）。越长越不刺眼。 */
+    pulseOnMillis: Int = 220,
+    /** 两次闪烁之间的暗场时长（毫秒）。 */
+    pulseOffMillis: Int = 420,
 ) {
     val alpha = remember { Animatable(0f) }
 
@@ -39,9 +43,17 @@ fun ScreenFlashOverlay(
             if (ids.isEmpty()) {
                 alpha.animateTo(0f, animationSpec = tween(durationMillis = 120))
             } else {
+                // 与震动节奏大致同步：亮一下、暗一段，循环到用户处理为止。
+                // 之前 120ms 亮 / 180ms 灭太快，像在狂闪，视觉上很刺眼。
                 while (isActive && alerting.value.isNotEmpty()) {
-                    alpha.animateTo(0.85f, animationSpec = tween(durationMillis = 120))
-                    alpha.animateTo(0f, animationSpec = tween(durationMillis = 180))
+                    alpha.animateTo(
+                        0.55f,
+                        animationSpec = tween(durationMillis = pulseOnMillis),
+                    )
+                    alpha.animateTo(
+                        0f,
+                        animationSpec = tween(durationMillis = pulseOffMillis),
+                    )
                 }
             }
         }

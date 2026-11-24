@@ -536,35 +536,36 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
                         )
                     }
                     }
-
-                    // 底部快捷栏：占据系统栏留白那条带，放面板级操作
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 6.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        QuickAction("新建序列", Modifier.weight(1f)) {
-                            scope.launch {
-                                val pid = currentPanel?.id ?: return@launch
-                                val id = db.sequenceDao().upsert(
-                                    StepSequence(name = "新序列", panelId = pid),
-                                )
-                                editingSequenceId = id
-                            }
-                        }
-                        QuickAction(if (listMode) "卡片视图" else "列表视图", Modifier.weight(1f)) {
-                            listMode = !listMode
-                            selectedIds = emptySet()
-                        }
-                        QuickAction("面板管理", Modifier.weight(1f)) {
-                            showPanelManager = true
-                        }
-                    }
                 }
             }
             }
             }   // 关闭 else {
+
+            // 底部快捷栏：放在 when 之外，卡片和列表两种视图都能用
+            Row(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                QuickAction("新建序列", Modifier.weight(1f)) {
+                    scope.launch {
+                        val pid = currentPanel?.id ?: return@launch
+                        val id = db.sequenceDao().upsert(
+                            StepSequence(name = "新序列", panelId = pid),
+                        )
+                        editingSequenceId = id
+                    }
+                }
+                QuickAction(if (listMode) "卡片视图" else "列表视图", Modifier.weight(1f)) {
+                    listMode = !listMode
+                    selectedIds = emptySet()
+                }
+                QuickAction("面板管理", Modifier.weight(1f)) {
+                    showPanelManager = true
+                }
+            }
         }
     }
 
@@ -584,8 +585,9 @@ fun PanelsScreen(modifier: Modifier = Modifier) {
             }
             list
         }
-        PanelOrderDialog(
+        DragReorderDialog(
             entries = entries,
+            columns = gridColumns,
             onDismiss = { showOrderDialog = false },
             onSave = { ordered ->
                 showOrderDialog = false

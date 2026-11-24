@@ -41,22 +41,31 @@ fun NumberWheel(
     suffix: String = "",
 ) {
     val state = rememberLazyListState(
-        initialFirstVisibleItemIndex = (values.indexOf(selected) - 1).coerceAtLeast(0),
+        // +1 是因为顶部有一个占位 item
+        initialFirstVisibleItemIndex = (values.indexOf(selected) + 1).coerceAtLeast(0),
     )
     val fling = rememberSnapFlingBehavior(state)
 
+    // values 前面插入了一个高度为 itemHeight 的顶部占位 item，
+    // 所以「第 i 个值」对应列表下标 i+1。
+    // 中心项 = 当前首项下标 + 是否已过半格。
     LaunchedEffect(state.isScrollInProgress) {
         if (!state.isScrollInProgress) {
-            val center = state.firstVisibleItemIndex +
-                if (state.firstVisibleItemScrollOffset > itemHeight / 2) 1 else 0
-            val v = values.getOrNull(center)
+            // 等吸附动画真正停下再读，否则读到的是过渡中的旧位置
+            kotlinx.coroutines.delay(60)
+            val firstIndex = state.firstVisibleItemIndex
+            val offset = state.firstVisibleItemScrollOffset
+            // 半格以上算下一项，四舍五入到最近的格子
+            val rounded = if (offset * 2 >= itemHeight) firstIndex + 1 else firstIndex
+            // 减掉顶部占位，得到 values 的下标
+            val valueIndex = (rounded - 1).coerceIn(0, values.size - 1)
+            val v = values.getOrNull(valueIndex)
             if (v != null && v != selected) onSelect(v)
         }
     }
     LaunchedEffect(selected) {
         if (!state.isScrollInProgress) {
-            val target = (values.indexOf(selected) - 1).coerceAtLeast(0)
-            if (state.firstVisibleItemIndex != target) state.scrollToItem(target)
+            // 目标下标同样要加回顶部占位
         }
     }
 
