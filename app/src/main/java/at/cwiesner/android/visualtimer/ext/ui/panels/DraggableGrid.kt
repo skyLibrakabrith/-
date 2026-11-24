@@ -94,15 +94,6 @@ fun <T> DraggableGrid(
     // 待派发的单击：等双击窗口过去再执行，避免「双击的第一下先执行了单击」
     var pendingClickIndex by remember { mutableIntStateOf(-1) }
     var pendingClickAt by remember { mutableLongStateOf(0L) }
-    LaunchedEffect(pendingClickIndex, pendingClickAt) {
-        if (pendingClickIndex < 0) return@LaunchedEffect
-        kotlinx.coroutines.delay(DOUBLE_TAP_MS)
-        val i = pendingClickIndex
-        if (i >= 0) {
-            pendingClickIndex = -1
-            items.getOrNull(i)?.let { curOnClick(it) }
-        }
-    }
 
     // 回调捕获在 pointerInput 里，必须用 rememberUpdatedState 拿最新闭包，
     // 否则手势里用的永远是第一次组合时那份过期 lambda
@@ -112,6 +103,16 @@ fun <T> DraggableGrid(
     val curOnMove by rememberUpdatedState(onMove)
     val curOnDragEnd by rememberUpdatedState(onDragEnd)
     val curItemCount by rememberUpdatedState(items.size)
+
+    // 延迟派发待处理的单击。放在 curOnClick 声明之后，
+    // 否则 LaunchedEffect 里的 curOnClick 会「未定义」。
+    LaunchedEffect(pendingClickIndex, pendingClickAt) {
+        if (pendingClickIndex < 0) return@LaunchedEffect
+        kotlinx.coroutines.delay(DOUBLE_TAP_MS)
+        val i = pendingClickIndex
+        pendingClickIndex = -1
+        if (i >= 0) items.getOrNull(i)?.let { curOnClick(it) }
+    }
 
     val density = LocalDensity.current
     val cols = columns.coerceIn(1, 8)
