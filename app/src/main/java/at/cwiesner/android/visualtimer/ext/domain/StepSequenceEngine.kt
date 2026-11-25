@@ -102,11 +102,27 @@ class StepSequenceEngine(
         if (current !is Phase.AwaitingConfirm) return
         val next = current.finishedStepIndex + 1
         if (next >= steps.size) {
-            _phase.value = Phase.Finished
-            tickJob?.cancel()
+            finish()
         } else {
             runStep(next)
         }
+    }
+
+    /**
+     * 正常走完整个序列。
+     *
+     * 必须和 [skip] 走「最后一步」的路径保持一致：**都要清掉 [activeSequenceId]**，
+     * 否则序列明明已经 Finished，界面仍会认为它"正在跑"（序列卡片显示为活动态，
+     * 而且下次点别的序列时行为会很怪）。
+     *
+     * 之前 confirm() 只 `_phase.value = Finished` + `tickJob?.cancel()`，漏了这一句 ——
+     * 是补单元测试时发现的：最后一步 confirm 后 activeSequenceId 仍是 1。
+     */
+    private fun finish() {
+        tickJob?.cancel()
+        tickJob = null
+        activeSequenceId = null
+        _phase.value = Phase.Finished
     }
 
     /** 跳过当前步，直接进入下一步（不触发警报）。 */
@@ -119,8 +135,8 @@ class StepSequenceEngine(
         }
         val next = index + 1
         if (next >= steps.size) {
-            stop()
-            _phase.value = Phase.Finished
+            // 与 confirm() 的终点共用 finish()，保证两条路径行为一致
+            finish()
         } else {
             runStep(next)
         }

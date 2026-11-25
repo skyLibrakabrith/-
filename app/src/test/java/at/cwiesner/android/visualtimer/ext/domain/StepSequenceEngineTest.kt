@@ -112,7 +112,14 @@ class StepSequenceEngineTest {
         assertEquals(0, still.finishedStepIndex)
     }
 
-    /** 没有超时设置（timeout=0）时永远不进入强调态，但 elapsed 照样正计时。 */
+    /**
+     * 没有超时设置（timeout=0）时永远不进入强调态，但 elapsed 照样正计时。
+     *
+     * 注意 `overtimeMillis` 的语义：实现里 `timeoutLeft` 恒为 0，所以每次 tick 都走
+     * `overtime = elapsed - timeoutMillis` 这个 else 分支，即 **overtime 恒等于 elapsed**。
+     * 界面只看 `overdue` 决定是否切强调态（它是 false，行为正确），
+     * 但不要把 overtime 断言成 0 —— 那是对实现语义的误解，不是 bug。
+     */
     @Test
     fun `超时为 0 时 elapsed 正计时且永不 overdue`() = runTest {
         val engine = newEngine()
@@ -123,8 +130,10 @@ class StepSequenceEngineTest {
 
         val p = engine.phase.value as StepSequenceEngine.Phase.AwaitingConfirm
         assertTrue("elapsed 应立即开始正计时，实际 ${p.elapsedMillis}", p.elapsedMillis > 0L)
-        assertEquals(false, p.overdue)
-        assertEquals(0L, p.overtimeMillis)
+        assertEquals("timeout=0 时永远不该进入强调态", false, p.overdue)
+        assertEquals(0L, p.timeoutRemainingMillis)
+        // timeout=0 时 overtime 跟随 elapsed（见上方说明），而不是恒为 0
+        assertEquals(p.elapsedMillis, p.overtimeMillis)
     }
 
     /** 有超时设置时，超时到点后 overdue=true 并开始累计 overtime。 */
@@ -167,6 +176,16 @@ class StepSequenceEngineTest {
         assertEquals(200L, p.totalMillis)
     }
 
+    /**
+     * 回归测试：序列**正常走完**时也必须清空 [StepSequenceEngine.activeSequenceId]。
+     *
+     * 这条是补测试时抓到的真实 bug：confirm() 走到最后一步只设了 Finished + cancel tick，
+     * 漏清 activeSequenceId。而 PanelsScreen 用
+     * `val seqActive = engineActiveId == focusedSeq.id` 判断是否活动态，
+     * 于是序列明明已完成，焦点屏仍当它「正在跑」。
+     *
+     * skip() 走终点原本就清（它内部调 stop()），两条路径行为不一致 —— 现在共用 finish()。
+     */
     @Test
     fun `最后一步 confirm 后进入 Finished 并清空 activeSequenceId`() = runTest {
         val engine = newEngine()
@@ -178,7 +197,7 @@ class StepSequenceEngineTest {
         runCurrent()
 
         assertEquals(StepSequenceEngine.Phase.Finished, engine.phase.value)
-        assertNull(engine.activeSequenceId)
+        assertNull("序列已完成就必须清空 activeSequenceId，否则界面会一直显示进行中", engine.activeSequenceId)
     }
 
     /** confirm 只在 AwaitingConfirm 时有效 —— 在 Running 期间调用必须被忽略。 */
