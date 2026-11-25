@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -279,6 +280,9 @@ private fun MainScaffold(onPreviewFlash: () -> Unit = {}) {
                     listModeState = panelListModeState,
                     actionsSignal = panelActionsTick,
                     pendingAction = pendingPanelAction,
+                    // 消费掉动作：否则 PanelsScreen 重新组合（从别的标签切回来）
+                    // 时会把旧动作再执行一遍，表现为「自己弹出面板管理窗口」。
+                    onActionConsumed = { pendingPanelAction = null },
                 )
                 Dest.Alerts -> AlertsScreen(
                     onPreviewFlash = onPreviewFlash,
@@ -324,14 +328,21 @@ private fun NavItem(
     // 不需要让 MainScaffold 知道"现在哪个菜单开着"。
     var menuExpanded by remember { mutableStateOf(false) }
 
-    Box {
+    // ⚠️ modifier（含调用方的 weight(1f)）必须挂在**最外层** Box 上。
+    //
+    // Row 的 weight 只对其**直接子项**有效。为此项加了一层 Box 来承载
+    // DropdownMenu 之后，如果 weight 还留在内层 Column 上，Row 看到的是
+    // 没有 weight 的 Box —— 四个按钮就各按自身内容宽度挤在左边，
+    // 表现为「底边栏全部挤在左下角」。
+    Box(modifier = modifier) {
         Column(
             // 高度必须**写死**，不能用 fillMaxHeight()。
             // NavigationBar 内部是 defaultMinSize 而不是固定高度约束，
             // 一旦子项 fillMaxHeight，它们会撑满整个可用高度 ——
             // 底边栏吃掉整屏，内容区高度变成 0，界面就只剩一条底边栏。
-            modifier = modifier
+            modifier = Modifier
                 .height(64.dp)
+                .fillMaxWidth()
                 .combinedClickable(
                     onClick = onClick,
                     onLongClick = if (menuContent != null) {

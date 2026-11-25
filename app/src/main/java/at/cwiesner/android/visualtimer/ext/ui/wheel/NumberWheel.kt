@@ -87,11 +87,35 @@ fun NumberWheel(
         }
     }
 
-    // 外部改了 selected（比如别处重置）时，把滚轮滚过去
+    // 外部改了 selected 时，把滚轮滚过去。
+    //
+    // ⚠️ 这里是「滚动卡顿」的元凶，改的时候务必读完：
+    //
+    // 用户滚动的时序是
+    //   手指抬起 → isScrollInProgress: true→false → 吸附动画还在跑
+    //   → 60ms 后读到位置 → onSelect(v) → DataStore → selected 变成 v
+    //   → **这个 effect 重跑** → 此时吸附动画可能还没结束、firstVisibleItemIndex
+    //      仍停在中间值 → 判定「不等于 target」→ scrollToItem 强行拽回去
+    //
+    // 结果就是每滚一格都被自己拽一下，表现为一顿一顿。
+    //
+    // 修法：
+    //   · 只有**不是**由这次滚动引起的变化才需要滚（用 isScrollInProgress 挡住）
+    //   · 再加一层防抖：不在滚动刚结束的 250ms 内强行 scrollToItem，
+    //     给吸附动画留出 settle 的时间
     LaunchedEffect(selected) {
-        if (!state.isScrollInProgress) {
-            val target = values.indexOf(selected).coerceAtLeast(0)
-            if (state.firstVisibleItemIndex != target) state.scrollToItem(target)
+        if (state.isScrollInProgress) return@LaunchedEffect
+        // 等吸附动画收尾（与上面读位置用的 60ms 拉开距离，避免抢同一个窗口）
+        kotlinx.coroutines.delay(250)
+        val target = values.indexOf(selected).coerceAtLeast(0)
+        // 只在**明显**偏离时才滚（差一整格以上）。
+        // 用 offset 一起判断：位置已经对了但还带点偏移属于正常吸附范围，
+        // 这时候去 scrollToItem 反而是打断。
+        val cur = state.firstVisibleItemIndex
+        val off = state.firstVisibleItemScrollOffset
+        val aligned = cur == target && off == 0
+        if (!aligned && (cur != target || off > itemHeight / 2)) {
+            state.scrollToItem(target)
         }
     }
 

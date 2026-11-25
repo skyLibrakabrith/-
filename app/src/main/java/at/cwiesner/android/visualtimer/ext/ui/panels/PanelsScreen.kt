@@ -89,6 +89,14 @@ fun PanelsScreen(
     actionsSignal: Int = 0,
     /** 具体是哪个动作；与 [actionsSignal] 配合使用（信号变了才生效）。 */
     pendingAction: PanelAction? = null,
+    /**
+     * 动作已处理，请外围把 [pendingAction] 置空。
+     *
+     * 必须消费掉：PanelsScreen 在切标签时会被销毁重建，
+     * 如果外围不清空动作，重建后的 LaunchedEffect 会把它再执行一遍
+     * （表现为「从其他界面点回面板时自己弹出窗口」）。
+     */
+    onActionConsumed: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val app = context.applicationContext as ExtApplication
@@ -124,7 +132,9 @@ fun PanelsScreen(
     var focusSequenceId by remember { mutableStateOf<Long?>(null) }
     var editingTimerId by remember { mutableStateOf<Long?>(null) }
     var alertPickerTimerId by remember { mutableStateOf<Long?>(null) }
-    var leadTimeTarget by remember { mutableStateOf<Pair<Long, Long>?>(null) }
+    // DDL 两步创建：第一步选截止时刻，第二步选提前提醒。
+    // 两步都确认后才真正落库并开始计时，避免"先建好了才问要不要提醒"。
+    var pendingDeadline by remember { mutableStateOf<PendingDeadline?>(null) }
     var showNewTimer by remember { mutableStateOf(false) }
     var showDeadline by remember { mutableStateOf(false) }
     var showPanelManager by remember { mutableStateOf(false) }
@@ -141,8 +151,35 @@ fun PanelsScreen(
     // 与拖拽彻底分开，互不干扰。
     //
     // 底边栏长按菜单的点击 → 执行对应动作
+    //
+    // ⚠️ 这里必须做成「一次性消费」，不能只靠 LaunchedEffect(key) 判断：
+    //
+    // 曾经写成 `LaunchedEffect(actionsSignal) { when(pendingAction) { ... } }`，
+    // 结果出现「从其他界面点回面板时自己弹出面板管理/整理念头窗口」。
+    // 原因是 PanelsScreen 在切标签时会被销毁重建，而 panelActionsTick /
+    // pendingPanelAction 由 MainActivity 持有、**不会**重置；新组合里
+    // LaunchedEffect 一定会首次执行一次，于是把上一次的旧动作重放了一遍。
+    //
+    // 现在：动作消费后立刻通知外围置空（onActionConsumed），
+    // 这样即使组件重建、LaunchedEffect 重新首次执行，读到的也是 null。
+    // 记住「已经处理到哪一次信号」。
+    //
+    // 用 rememberSaveable：PanelsScreen 切标签会销毁重建，
+    // 普通 remember 会跟着丢，重建后又变成"从没处理过"，
+    // 于是首次执行时把旧动作重放一遍。rememberSaveable 能跨重组/跨标签切换保留。
+    var lastHandledActionTick by rememberSaveable { mutableIntStateOf(0) }
+
     LaunchedEffect(actionsSignal) {
-        when (pendingAction) {
+        // 关键一跳：signal 没往前走就什么都不做。
+        // 这挡住了"组件重建后 LaunchedEffect 首次执行"把陈年动作重放的情况。
+        if (actionsSignal <= lastHandledActionTick) return@LaunchedEffect
+        val action = pendingAction ?: run {
+            lastHandledActionTick = actionsSignal
+            return@LaunchedEffect
+        }
+        lastHandledActionTick = actionsSignal
+
+        when (action) {
             PanelAction.NewSequence -> {
                 scope.launch {
                     val pid = currentPanel?.id ?: return@launch
@@ -158,8 +195,9 @@ fun PanelsScreen(
             PanelAction.Compile -> {
                 showCompileDialog = true
             }
-            null -> Unit
         }
+        // 消费掉，防止重建后被重放
+        onActionConsumed()
     }
 
     // 视图模式由 MainScaffold 持有（受控组件）。
@@ -865,39 +903,8 @@ fun PanelsScreen(
         )
     }
 
-    // ---- DDL 提前提醒（创建后立即弹出）----
-    val leadTarget = leadTimeTarget
-    if (leadTarget != null) {
-        DeadlineLeadTimeDialog(
-            remainingMillis = leadTarget.second,
-            onDismiss = { leadTimeTarget = null },
-            onConfirm = { leads ->
-                leadTimeTarget = null
-                scope.launch {
-                    db.deadlineReminderDao().clearTimer(leadTarget.first)
-                    if (leads.isNotEmpty()) {
-                        db.deadlineReminderDao().upsertAll(
-                            leads.map { m ->
-                                at.cwiesner.android.visualtimer.ext.data.DeadlineReminder(
-                                    timerId = leadTarget.first,
-                                    leadMinutes = m,
-                                )
-                            },
-                        )
-                    }
-                    // 同步注册到运行时，tick 才能按时触发
-                    runner.setLeadMinutes(leadTarget.first, leads)
-                    // 初始化时把「已经过去的档位」标记为已触发，
-                    // 否则刚设完第一个 tick 会把所有档位一次性全部触发
-                    runner.markLeadsBaseline(leadTarget.first, leadTarget.second)
-                    toast(
-                        if (leads.isEmpty()) "已跳过提前提醒"
-                        else "已设置 ${leads.size} 个提前提醒"
-                    )
-                }
-            },
-        )
-    }
+    // DDL 提前提醒的对话框现在住在「创建流程第二步」里（见文件末尾），
+    // 这里不再有"创建完才问"的那一块。
 
     // ---- 提醒类型（列表右侧按钮触发）----
     val alertPickerTimer = alertPickerTimerId?.let { id ->
@@ -1002,37 +1009,125 @@ fun PanelsScreen(
             onDismiss = { showDeadline = false },
             onConfirm = { label, deadlineEpoch ->
                 showDeadline = false
-                scope.launch {
-                    val now = System.currentTimeMillis()
-                    val remaining = (deadlineEpoch - now).coerceAtLeast(1000L)
-                    val timerId = db.timerDao().upsert(
-                        TimerItem(
-                            label = label.ifBlank { "到点倒计时" },
-                            durationMillis = remaining,
-                            deadlineEpochMillis = deadlineEpoch,
-                            kind = TimerKind.Deadline,
-                            // DDL 一旦创建就锁定：时间由截止时刻决定，不允许再改
-                            locked = true,
-                        ),
-                    )
-                    val existing = db.panelDao().refsOf(currentPanel.id)
-                    db.panelDao().upsertRefs(
-                        listOf(
-                            PanelTimerRef(
-                                panelId = currentPanel.id,
-                                timerId = timerId,
-                                order = existing.size,
-                            ),
-                        ),
-                    )
-                    // 自动开始倒计时
-                    db.timerDao().get(timerId)?.let { runner.startUntil(it, deadlineEpoch, now) }
-                    toast("DDL 已创建并开始倒计时")
-                    // 紧接着问一句要不要提前提醒
-                    // 传秒级精度，避免整毫秒取整后档位错位
-                    leadTimeTarget = timerId to (remaining / 60_000L * 60_000L)
+                // 不在这里创建！先问「提前多久提醒」，用户确认后才真正落库。
+                //
+                // 原来的顺序是反的：先创建 + 自动开始倒计时 + toast，
+                // 然后才弹出提醒档位选择。用户看到的观感是
+                // 「DDL 已经建好了，才来问我提醒」——而且如果这时直接返回，
+                // 计时器已经在跑，却没设任何提前提醒。
+                //
+                // 现在把参数暂存到 pendingDeadline，交给下面的提前提醒对话框，
+                // 确认（或显式跳过）后再一次性 createDeadlineTimer()。
+                pendingDeadline = PendingDeadline(
+                    label = label,
+                    deadlineEpochMillis = deadlineEpoch,
+                )
+            },
+        )
+    }
+
+    // ---- DDL 创建第二步：选提前提醒档位 ----
+    //
+    // 这是 DDL 创建流程的必经一步（不是"创建完之后的可选补充"）。
+    // 用户在这里取消 = 放弃创建，不会留下一个已经在跑的计时器。
+    val pending = pendingDeadline
+    if (pending != null) {
+        val now = System.currentTimeMillis()
+        val remaining = (pending.deadlineEpochMillis - now).coerceAtLeast(1000L)
+
+        /**
+         * 真正落库 + 挂到面板 + 自动开始 + 登记提前提醒。
+         *
+         * 参数全部显式传入（pid / 截止时刻 / 名称），不依赖捕获的 Composable 局部变量 ——
+         * 这个 lambda 可能在下一次重组后执行，捕获到的 `currentPanel` 等值可能已经过期。
+         */
+        suspend fun commitDeadline(
+            panelId: Long,
+            label: String,
+            deadlineAt: Long,
+            leads: List<Long>,
+        ) {
+            val startAt = System.currentTimeMillis()
+            val remain = (deadlineAt - startAt).coerceAtLeast(1000L)
+            val timerId = db.timerDao().upsert(
+                TimerItem(
+                    label = label.ifBlank { "到点倒计时" },
+                    durationMillis = remain,
+                    deadlineEpochMillis = deadlineAt,
+                    kind = TimerKind.Deadline,
+                    // DDL 一旦创建就锁定：它的时间由截止时刻决定，不允许再改。
+                    // 配合卡片上的 locked 判断，编辑入口对它不出现。
+                    locked = true,
+                ),
+            )
+            val existing = runCatching { db.panelDao().refsOf(panelId) }.getOrDefault(emptyList())
+            db.panelDao().upsertRefs(
+                listOf(
+                    PanelTimerRef(
+                        panelId = panelId,
+                        timerId = timerId,
+                        order = (existing.maxOfOrNull { it.order } ?: -1) + 1,
+                    ),
+                ),
+            )
+            // 自动开始：DDL 建好就该在跑，用户不需要再点一下
+            db.timerDao().get(timerId)?.let { runner.startUntil(it, deadlineAt, startAt) }
+
+            // 提前提醒落库 + 同步到运行时
+            db.deadlineReminderDao().clearTimer(timerId)
+            if (leads.isNotEmpty()) {
+                db.deadlineReminderDao().upsertAll(
+                    leads.map { m ->
+                        at.cwiesner.android.visualtimer.ext.data.DeadlineReminder(
+                            timerId = timerId,
+                            leadMinutes = m,
+                        )
+                    },
+                )
+            }
+            runner.setLeadMinutes(timerId, leads)
+            // 把「已经过去的档位」标记为已触发，
+            // 否则刚设完第一个 tick 会把所有档位一次性全部触发
+            runner.markLeadsBaseline(timerId, remain)
+
+            toast(
+                if (leads.isEmpty()) "DDL 已创建并开始计时（未设提前提醒）"
+                else "DDL 已创建并开始计时，${leads.size} 个提前提醒",
+            )
+        }
+
+        // 在组合期把当前面板 id 取出来，传给上面的函数
+        val panelId = currentPanel?.id
+
+        DeadlineLeadTimeDialog(
+            remainingMillis = remaining,
+            onDismiss = { pendingDeadline = null },
+            onConfirm = { leads ->
+                pendingDeadline = null
+                if (panelId == null) {
+                    toast("先选一个面板")
+                } else {
+                    scope.launch {
+                        commitDeadline(
+                            panelId = panelId,
+                            label = pending.label,
+                            deadlineAt = pending.deadlineEpochMillis,
+                            leads = leads,
+                        )
+                    }
                 }
             },
         )
     }
 }
+
+/**
+ * DDL 两步创建的中间状态：已经选好截止时刻，正在问提前提醒档位。
+ *
+ * 单独抽出来是为了让「取消第二步 = 放弃创建」成为自然结果 ——
+ * 此刻数据库里还没有任何东西，不需要回滚。
+ */
+private data class PendingDeadline(
+    val label: String,
+    val deadlineEpochMillis: Long,
+)

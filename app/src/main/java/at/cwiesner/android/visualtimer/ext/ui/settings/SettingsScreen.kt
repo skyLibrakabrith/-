@@ -238,7 +238,7 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                         color = ExtColors.TextPrimary,
                     )
                     NumberWheel(
-                        values = (1..60).toList(),
+                        values = remember { (1..60).toList() },
                         selected = intervalMinutes.toInt().coerceIn(1, 60),
                         onSelect = { scope.launch { settings.setIntervalMinutes(it.toLong()) } },
                         modifier = Modifier.fillMaxWidth(),
@@ -253,7 +253,7 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                         color = ExtColors.TextPrimary,
                     )
                     NumberWheel(
-                        values = (2..8).toList(),
+                        values = remember { (2..8).toList() },
                         selected = fractionDivisions.coerceIn(2, 8),
                         onSelect = { scope.launch { settings.setFractionDivisions(it) } },
                         modifier = Modifier.fillMaxWidth(),
@@ -310,7 +310,7 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                 color = ExtColors.Primary,
             )
             NumberWheel(
-                values = (1..8).toList(),
+                values = remember { (1..8).toList() },
                 selected = gridColumns.coerceIn(1, 8),
                 onSelect = { scope.launch { settings.setGridColumns(it) } },
                 modifier = Modifier.fillMaxWidth(),

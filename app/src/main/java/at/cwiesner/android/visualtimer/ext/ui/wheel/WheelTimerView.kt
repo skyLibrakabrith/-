@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -23,6 +24,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.layout
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
@@ -114,7 +116,8 @@ fun PieTimerView(
     val trackColor = ExtColors.Track
     val tickColor = ExtColors.OutlineStrong
     val majorTickColor = ExtColors.TextDim
-    val editColor = ExtColors.Primary
+    // 暂停时内盘仍用运行时的同色系（只调淡），不再切到一个"编辑色"——
+    // 换色会被误读成"切换了状态"，而不是"停了一下"。
     val innerColor = if (running) pieColor.copy(alpha = 0.55f) else ExtColors.PrimaryDim
 
     // 内盘粒度：长时长按小时，短时长按分钟
@@ -189,17 +192,29 @@ fun PieTimerView(
             )
 
             // ---- 2. 实心扇形 ----
+            //
+            // 「暂停时外观不变样」是用户提过两次的要求（pickColor 里修过颜色那一半）。
+            // 上一版只修了颜色，弧长还是照变：
+            //   暂停时 shownFraction 走 else 分支，用的是「设定时长占整个刻度盘的比例」
+            //   （totalMillis / maxMillis），而不是「剩余比例」——
+            //   于是按下暂停，盘面会**猛地涨满**，看起来像被重置了。
+            //
+            // 现在：运行 / 暂停 / 超时 三种状态一律用同一个 progress；
+            // dragFraction 只在「空闲且正在拖动改时长」时才生效（那时本就没有剩余比例可看）。
             val shownFraction = when {
-                running -> progress
-                dragFraction >= 0f -> dragFraction
-                else -> if (maxMillis > 0) (totalMillis.toFloat() / maxMillis).coerceIn(0f, 1f) else 0f
+                // 拖动改时长：只在没在跑的时候可能发生
+                dragFraction >= 0f && !running -> dragFraction
+                // 其余全部沿用剩余比例 —— 暂停时画面就此冻结，不跳变
+                else -> progress
             }
             val sliceTopLeft = Offset(center.x - pieRadius, center.y - pieRadius)
             val sliceSize = Size(pieRadius * 2f, pieRadius * 2f)
 
             if (shownFraction > 0f) {
                 drawArc(
-                    color = if (running) pieColor else editColor,
+                    // 暂停时只把同色系调淡一点（alpha 0.72），不换成 editColor。
+                    // 换成另一个颜色会被误读成"变成了别的状态"，而不是"停了一下"。
+                    color = if (running || isOverdue) pieColor else pieColor.copy(alpha = 0.72f),
                     startAngle = -90f,
                     sweepAngle = 360f * shownFraction,
                     useCenter = true,
@@ -248,9 +263,19 @@ fun PieTimerView(
                     center = center,
                     style = Stroke(width = diameter * 0.012f),
                 )
-                val subFrac = if (running) subProgress else {
-                    // 未运行时内盘显示「当前设定的整点余数」，同样有视觉变化
-                    if (totalMillis > 0L) (totalMillis % subUnit).toFloat() / subUnit else 0f
+                // 内盘同样是「暂停不变样」的一部分：
+                // 原来未运行时会改成显示 (totalMillis % subUnit) / subUnit，
+                // 一暂停内盘的弧长也会跟着跳一下。
+                // 现在除了「空闲且正在拖动改时长」，其余情况一律沿用运行时的 subProgress，
+                // 于是暂停时整个表盘（外圈饼 + 内盘）都冻结在同一帧。
+                val subFrac = if (running || isOverdue) {
+                    subProgress
+                } else if (dragFraction >= 0f && onDurationChange != null) {
+                    // 拖动改时长：内盘跟着动，作为"正在设定"的反馈
+                    val shownTotal = (dragFraction * maxMillis).toLong()
+                    if (subUnit > 0) (shownTotal % subUnit).toFloat() / subUnit else 0f
+                } else {
+                    subProgress
                 }
                 if (subFrac > 0f) {
                     drawArc(
@@ -296,6 +321,26 @@ fun PieTimerView(
 
         // ---- 6. 中央文字 ----
         if (showCenterText) {
+            // 字号必须**跟着表盘直径走**，不能用固定的 centerFontSize。
+            //
+            // 原来写死 centerFontSize.sp：2 列时卡片宽、看着正好；切到 3/4 列后
+            // 卡片和表盘一起变窄，字却不变，于是 "1:23:45" 这种较长的字符串
+            // 直接溢出圆盘、被裁掉一半（用户反馈「多列时数字显示不全」）。
+            //
+            // 现在的算法：
+            //   · 以表盘直径为基准取一个比例（直径的 13%），再夹到
+            //     [centerFontSize 的 55%, centerFontSize] 区间里
+            //   · 上限仍是调用方给的值，所以 2 列时观感不变
+            //   · 下限 55% 保证再窄也读得清，不会缩成蚂蚁
+            //   · 再用 widthIn 把文字宽度限制在圆盘内径以内
+            //
+            // 注意：这里**不能**用 Text 的 autoSize / TextAutoSize 参数 ——
+            // 那是 compose-ui 1.8.0 才有的 API，本项目 BOM 2024.12.01 对应 1.7.5，
+            // 用了会直接编译失败。所以靠「按直径算字号 + maxLines=1 + 限宽」来兜。
+            val diameterDp = with(LocalDensity.current) { diameter.toDp() }
+            val adaptiveFont = (diameterDp.value * 0.13f)
+                .coerceIn(centerFontSize * 0.55f, centerFontSize)
+
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(
                     text = if (isOverdue) "+" + formatBig(overdueMillis) else formatBig(remainingMillis),
@@ -304,14 +349,23 @@ fun PieTimerView(
                         running -> Color.White
                         else -> ExtColors.TextPrimary
                     },
-                    fontSize = centerFontSize.sp,
+                    fontSize = adaptiveFont.sp,
                     fontWeight = FontWeight.Light,
+                    // 单行且限宽：宁可小一点，也不能溢出圆盘被裁掉半截
+                    maxLines = 1,
+                    softWrap = false,
+                    modifier = Modifier
+                        // 内盘直径的 82%，留出圆周的呼吸空间
+                        .widthIn(max = (diameterDp * 0.82f).coerceAtLeast(8.dp))
+                        .padding(horizontal = 1.dp),
                 )
                 if (centerLabel != null) {
                     Text(
                         text = centerLabel,
                         color = if (running) Color.White.copy(alpha = 0.75f) else ExtColors.TextDim,
-                        fontSize = 12.sp,
+                        // 副标题同样跟着缩放，否则窄列下它比标题还抢地方
+                        fontSize = (adaptiveFont * 0.38f).coerceIn(8f, 12f).sp,
+                        maxLines = 1,
                         modifier = Modifier.padding(top = 2.dp),
                     )
                 }

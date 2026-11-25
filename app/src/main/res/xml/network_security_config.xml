@@ -2,30 +2,39 @@
 <!--
     网络安全配置。
 
-    为什么需要它：
-    Android 9（API 28）起默认禁止明文 HTTP。本地 ollama 通常是
-    http://100.x.x.x:19931（Tailscale 内网地址），不是 HTTPS，
-    不加这个配置请求会被系统直接拒绝（CLEARTEXT communication not permitted）。
+    ## 为什么需要它
+    Android 9（API 28）起默认禁止明文 HTTP。本地 ollama 是
+    http://<Tailscale IP>:19931，不是 HTTPS，不放行就会被系统直接拒绝：
+        Cleartext HTTP traffic to 100.x.x.x not permitted
 
-    这里只放行**内网/环回**地址，其余一律仍强制 HTTPS：
-    - 10.0.0.0/8        常见家庭/校园网段
-    - 172.16.0.0/12     同上
-    - 192.168.0.0/16    同上
-    - 100.64.0.0/10     ← Tailscale 分配的地址就在这一段
-    - localhost / 127.0.0.1  本机调试
+    ## ⚠️ 关键坑：<domain> 必须是**完整主机名或完整 IP**，不是网段
+    第一版这里写了 10.0.0.0 / 100.64.0.0 想表示"整个网段"，**这是错的**。
+    系统拿它跟请求的 host 做**字符串匹配**（最多是子域后缀匹配），
+    所以 http://100.77.176.63 永远不可能命中 "100.64.0.0"，照样被拒。
 
-    云端 API（api.deepseek.com 等）不在白名单里，所以仍然走 HTTPS，
-    不会因为这里放开而降低云端链路的安全性。
+    network-security-config **不支持 CIDR 网段**，只能：
+      · 逐个列出具体 IP（就是下面这样），或
+      · 用 cleartextTrafficPermitted="true" 全局放开（会连带放开云端，不划算）。
+
+    另外：<domain> 里**不能带端口**（写 100.77.176.63:19931 会失效）。
+
+    所以这里列出本机实际会用到的地址。换机器/换 Tailscale 地址时，
+    **必须同步改这里**，否则会重现同样的报错。
+
+    ## 安全性
+    只放行下面这几个具体地址，其余（含 api.deepseek.com）仍然强制 HTTPS。
 -->
 <network-security-config>
     <base-config cleartextTrafficPermitted="false" />
 
     <domain-config cleartextTrafficPermitted="true">
-        <domain includeSubdomains="true">10.0.0.0</domain>
-        <domain includeSubdomains="true">172.16.0.0</domain>
-        <domain includeSubdomains="true">192.168.0.0</domain>
-        <domain includeSubdomains="true">100.64.0.0</domain>
-        <domain includeSubdomains="true">localhost</domain>
-        <domain includeSubdomains="true">127.0.0.1</domain>
+        <!-- 本机笔记本的 Tailscale 地址（跑 ollama，端口 19931）。
+             这是 App 里「本地 ollama」默认地址，改默认值时一起改这里。 -->
+        <domain includeSubdomains="false">100.77.176.63</domain>
+
+        <!-- 本机调试 -->
+        <domain includeSubdomains="false">localhost</domain>
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">10.0.2.2</domain>
     </domain-config>
 </network-security-config>
