@@ -73,10 +73,11 @@ object LlmPrompts {
      * 顺带把条目数写进去：模型看到"共 N 条"时更容易保证不丢，实测有效。
      */
     fun compileUser(brainDump: String): String {
+        // 注意用 count() 不是 size：lineSequence() 返回 Sequence，Sequence 没有 size 属性
+        // （这里犯过一次，CI 报 "Unresolved reference 'size'"）。
         val items = brainDump.lineSequence()
             .map { it.trim() }
-            .filter { it.isNotEmpty() }
-            .size
+            .count { it.isNotEmpty() }
         val hint = if (items > 0) "（共 $items 条，请全部归入组内）" else ""
         return "把下面这些零散想法归类整理$hint：\n" + brainDump.trim()
     }
