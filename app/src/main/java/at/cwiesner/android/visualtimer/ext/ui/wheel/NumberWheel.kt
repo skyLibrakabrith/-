@@ -28,6 +28,25 @@ import at.cwiesner.android.visualtimer.ext.ui.ExtColors
  *
  * 用于选「每几分钟变色」「表盘分几份」这类离散参数。
  * 滚动停下才回调，避免拖动过程中频繁写设置。
+ *
+ * ## 坐标关系（改之前务必看这里）
+ *
+ * 列表结构：
+ * ```
+ * index 0        顶部占位（itemHeight）
+ * index 1..n     values[0]..values[n-1]
+ * index n+1      底部占位（itemHeight）
+ * ```
+ * 视口高 `itemHeight * visibleCount`，高亮条在正中，占
+ * `[itemHeight, 2*itemHeight)`，中心在 `1.5 * itemHeight`。
+ *
+ * **要让 values[i] 正好落在高亮条里，`firstVisibleItemIndex` 必须等于 `i`** ——
+ * 不是 `i + 1`。因为 `firstVisibleItemIndex = i` 表示「第 i 项顶边对齐视口顶边」，
+ * 那一刻第 i 项占据 y=0..itemHeight，第 i+1 项（= values[i]）正好占据
+ * y=itemHeight..2*itemHeight，与高亮条重合。
+ *
+ * 这里原本写的是 `parseIndex + 1`，导致滚轮打开时高亮显示的**永远是实际值的下一项**，
+ * 用户一滑动就把那个错位的值写回设置（用 Python 按 LazyColumn 语义逐项模拟核对过）。
  */
 @Composable
 fun NumberWheel(
@@ -39,33 +58,39 @@ fun NumberWheel(
     visibleCount: Int = 3,
     suffix: String = "",
 ) {
+    /**
+     * LazyColumn 下标 → values 下标。
+     *
+     * `listIndex - 1` 就是 values 下标；顶部占位（listIndex=0）与底部占位
+     * 都会落到边界外，靠 coerceIn 夹回合法范围。
+     */
+    fun valueIndex(listIndexValue: Int): Int = (listIndexValue - 1).coerceIn(0, values.size - 1)
+
     val state = rememberLazyListState(
-        // +1 是因为顶部有一个占位 item
-        initialFirstVisibleItemIndex = (values.indexOf(selected) + 1).coerceAtLeast(0),
+        // 要让 values[i] 落在高亮条里，firstVisibleItemIndex 要等于「该值在列表里的下标 - 1」，
+        // 也就是 values 下标本身。详见上方坐标关系说明。
+        initialFirstVisibleItemIndex = values.indexOf(selected).coerceAtLeast(0),
     )
     val fling = rememberSnapFlingBehavior(state)
 
-    // values 前面插入了一个高度为 itemHeight 的顶部占位 item，
-    // 所以「第 i 个值」对应列表下标 i+1。
-    // 中心项 = 当前首项下标 + 是否已过半格。
+    // 滚动停止后把「高亮条里的那一项」写回去。
     LaunchedEffect(state.isScrollInProgress) {
         if (!state.isScrollInProgress) {
             // 等吸附动画真正停下再读，否则读到的是过渡中的旧位置
             kotlinx.coroutines.delay(60)
             val firstIndex = state.firstVisibleItemIndex
             val offset = state.firstVisibleItemScrollOffset
-            // 半格以上算下一项，四舍五入到最近的格子
+            // 半格以上就算滚到下一项（四舍五入到最近的格）
             val rounded = if (offset * 2 >= itemHeight) firstIndex + 1 else firstIndex
-            // 减掉顶部占位，得到 values 的下标
-            val valueIndex = (rounded - 1).coerceIn(0, values.size - 1)
-            val v = values.getOrNull(valueIndex)
-            if (v != null && v != selected) onSelect(v)
+            val v = values.getOrNull(valueIndex(rounded)) ?: return@LaunchedEffect
+            if (v != selected) onSelect(v)
         }
     }
+
+    // 外部改了 selected（比如别处重置）时，把滚轮滚过去
     LaunchedEffect(selected) {
         if (!state.isScrollInProgress) {
-            // value[i] 在列表里是下标 i+1（前面有顶部占位）
-            val target = (values.indexOf(selected) + 1).coerceAtLeast(0)
+            val target = values.indexOf(selected).coerceAtLeast(0)
             if (state.firstVisibleItemIndex != target) state.scrollToItem(target)
         }
     }
