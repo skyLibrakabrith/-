@@ -828,7 +828,9 @@ fun PanelsScreen(
                     // 建序列（先建空的，拿到 id 再写步骤）
                     val seqId = db.sequenceDao().upsert(
                         StepSequence(
-                            name = orderedSteps.firstOrNull()?.let { "整理：" + it.title } ?: "整理结果",
+                            // StepDraft 里叫 label（和 Step.label 对齐），不是 title
+                            name = orderedSteps.firstOrNull()?.label?.takeIf { it.isNotBlank() }
+                                ?.let { "整理：$it" } ?: "整理结果",
                             panelId = compilePanelId ?: currentPanel?.id,
                             sortOrder = (panelSequences.maxOfOrNull { it.sortOrder } ?: -1) + 1,
                         ),
