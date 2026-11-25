@@ -10,3 +10,7 @@ captures/
 *.aab
 *.jks
 *.keystore
+
+# Python 工具的字节码缓存（tools/*.py 被别的脚本 import 时会生成）
+__pycache__/
+*.pyc
