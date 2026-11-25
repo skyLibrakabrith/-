@@ -18,6 +18,8 @@ import at.cwiesner.android.visualtimer.ext.domain.TimerRuntime
 import at.cwiesner.android.visualtimer.ext.service.AlertOverlayService
 import at.cwiesner.android.visualtimer.ext.service.TimerOverlayService
 import at.cwiesner.android.visualtimer.ext.settings.SettingsRepo
+import at.cwiesner.android.visualtimer.ext.util.logCatching
+import at.cwiesner.android.visualtimer.ext.util.logCatchingOr
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -88,7 +90,7 @@ class ExtApplication : Application() {
 
     /** 用户处理了提醒：停掉可能还在播的声音。 */
     fun stopAlertSound() {
-        runCatching { headphoneSound.stop() }
+        logCatching("stopAlertSound") { headphoneSound.stop() }
     }
 
     private val vibration: VibrationAlerter by lazy { VibrationAlerter(this) }
@@ -130,10 +132,10 @@ class ExtApplication : Application() {
         // 1) 新到点：发通知 + 拉起全屏闪烁悬浮窗
         appScope.launch {
             panelRunner.alerts.collect { rt ->
-                runCatching { postNotification(rt) }
+                logCatching("notify-end") { postNotification(rt) }
                 // 只在耳机下出声；没耳机时这个方法自身会直接返回
-                runCatching { headphoneSound.playIfHeadphone() }
-                runCatching {
+                logCatching("sound-play") { headphoneSound.playIfHeadphone() }
+                logCatching("overlay-start") {
                     AlertOverlayService.start(
                         this@ExtApplication,
                         rt.label ?: "计时结束",
@@ -150,7 +152,7 @@ class ExtApplication : Application() {
                 if (ids.isNotEmpty()) {
                     ids.forEach { id ->
                         panelRunner.get(id)?.let { rt ->
-                            runCatching { postNotification(rt) }
+                            logCatching("notify-overdue") { postNotification(rt) }
                         }
                     }
                 }
@@ -161,9 +163,9 @@ class ExtApplication : Application() {
         // 1.8) 提前提醒：到点前的预警，走通知 + 震动 + 声音（不进入持续提醒态）
         appScope.launch {
             panelRunner.leadAlerts.collect { (rt, lead) ->
-                runCatching { postLeadNotification(rt, lead) }
-                runCatching { vibration.play(longArrayOf(0L, 300L, 150L, 300L), repeatIndex = -1) }
-                runCatching { headphoneSound.playIfHeadphone() }
+                logCatching("notify-lead") { postLeadNotification(rt, lead) }
+                logCatching("vibrate-lead") { vibration.play(longArrayOf(0L, 300L, 150L, 300L), repeatIndex = -1) }
+                logCatching("sound-play-lead") { headphoneSound.playIfHeadphone() }
             }
         }
 
@@ -171,9 +173,9 @@ class ExtApplication : Application() {
         appScope.launch {
             panelRunner.alerting.collect { ids ->
                 if (ids.isEmpty()) {
-                    runCatching { vibration.cancel() }
+                    logCatching("vibrate-cancel") { vibration.cancel() }
                 } else {
-                    runCatching { startLoopingVibration(ids) }
+                    logCatching("vibrate-loop") { startLoopingVibration(ids) }
                 }
             }
         }
@@ -182,11 +184,11 @@ class ExtApplication : Application() {
         appScope.launch {
             panelRunner.runtimes.collect { map ->
                 val running = map.values.count { it.running }
-                val enabled = runCatching { settings.overlayEnabled.first() }.getOrDefault(false)
+                val enabled = logCatchingOr("overlay-enabled", false) { settings.overlayEnabled.first() }
                 if (enabled && running > 0) {
-                    runCatching { TimerOverlayService.start(this@ExtApplication) }
+                    logCatching("overlay-start") { TimerOverlayService.start(this@ExtApplication) }
                 } else if (running == 0) {
-                    runCatching { TimerOverlayService.stop(this@ExtApplication) }
+                    logCatching("overlay-stop") { TimerOverlayService.stop(this@ExtApplication) }
                 }
             }
         }
@@ -199,15 +201,15 @@ class ExtApplication : Application() {
      * 直到用户重置计时器 / 关闭悬浮窗。
      */
     private suspend fun startLoopingVibration(ids: Set<Long>) {
-        val enabled = runCatching { settings.vibrationEnabled.first() }.getOrDefault(true)
+        val enabled = logCatchingOr("vibration-enabled", true) { settings.vibrationEnabled.first() }
         if (!enabled) return
 
         val first = ids.firstNotNullOfOrNull { panelRunner.get(it) } ?: return
         val profile: AlertProfile? = first.alertProfileId?.let { id ->
-            runCatching { database.alertProfileDao().get(id) }.getOrNull()
-        } ?: runCatching {
+            logCatching("alert-profile-get") { database.alertProfileDao().get(id) }
+        } ?: logCatching("alert-profile-first") {
             database.alertProfileDao().observeAllOnce().firstOrNull()
-        }.getOrNull()
+        }
 
         val pattern = (profile?.vibrationPattern?.takeIf { it.isNotEmpty() }
             ?: listOf(0L, 600L, 200L, 600L, 600L)).toLongArray()
@@ -225,7 +227,7 @@ class ExtApplication : Application() {
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setAutoCancel(true)
             .build()
-        runCatching { mgr.notify((rt.timerId + leadMinutes).toInt(), n) }
+        logCatching("notify-post-lead") { mgr.notify((rt.timerId + leadMinutes).toInt(), n) }
     }
 
     private fun postNotification(rt: TimerRuntime) {
@@ -255,7 +257,7 @@ class ExtApplication : Application() {
             .setAutoCancel(true)
             .apply { pi?.let { setContentIntent(it) } }
             .build()
-        runCatching { mgr.notify(rt.timerId.toInt(), n) }
+        logCatching("notify-post") { mgr.notify(rt.timerId.toInt(), n) }
     }
 
     private fun createAlertChannel() {
