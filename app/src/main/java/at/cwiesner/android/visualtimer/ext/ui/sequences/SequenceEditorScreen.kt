@@ -7,10 +7,12 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -35,6 +37,7 @@ import androidx.compose.ui.unit.sp
 import at.cwiesner.android.visualtimer.ext.data.Step
 import at.cwiesner.android.visualtimer.ext.data.StepSequence
 import at.cwiesner.android.visualtimer.ext.domain.DeadlineCalculator
+import at.cwiesner.android.visualtimer.ext.ui.common.AiSplitDialog
 import at.cwiesner.android.visualtimer.ext.ui.duration.DurationSlider
 
 /**
@@ -61,6 +64,7 @@ fun SequenceEditorScreen(
         mutableStateOf(steps.map { (it.label ?: "") to it.durationMillis })
     }
     var showAddStep by remember { mutableStateOf(false) }
+    var showSplitDialog by remember { mutableStateOf(false) }
 
     Column(
         modifier = modifier
@@ -105,9 +109,16 @@ fun SequenceEditorScreen(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text("阶段（${draft.size} 个）", style = MaterialTheme.typography.titleSmall)
-            TextButton(onClick = { showAddStep = true }) {
-                Icon(Icons.Filled.Add, contentDescription = null)
-                Text("添加")
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                // Magic ToDo：把一段话拆成有序阶段，直接追加到草稿里
+                TextButton(onClick = { showSplitDialog = true }) {
+                    Icon(Icons.Filled.AutoAwesome, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Text("拆解")
+                }
+                TextButton(onClick = { showAddStep = true }) {
+                    Icon(Icons.Filled.Add, contentDescription = null)
+                    Text("添加")
+                }
             }
         }
 
@@ -179,6 +190,19 @@ fun SequenceEditorScreen(
             onConfirm = { label, duration ->
                 showAddStep = false
                 draft = draft + (label to duration)
+            },
+        )
+    }
+
+    if (showSplitDialog) {
+        AiSplitDialog(
+            onDismiss = { showSplitDialog = false },
+            onApply = { splitSteps ->
+                showSplitDialog = false
+                // 追加而不是替换：用户可能已经手填了几步，直接覆盖等于毁了他的输入
+                draft = draft + splitSteps.map { it.title to it.minutes * 60_000L }
+                // 序列名还是空的就顺手填上，省一次输入
+                if (name.isBlank()) name = splitSteps.firstOrNull()?.title ?: name
             },
         )
     }

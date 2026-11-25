@@ -399,8 +399,9 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
             }) { Text("测试悬浮窗") }
         }
 
-        SettingsCard(title = "备份") {
-            Text(
+        AiSettingsCard(settings = settings, toast = { toast(it) })
+
+        SettingsCard(title = "备份") {            Text(
                 "导出为 JSON，包含面板、序列、警报配置。使用系统文件选择器，不需要存储权限。",
                 fontSize = 12.sp,
                 color = ExtColors.TextDim,
