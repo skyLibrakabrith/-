@@ -68,7 +68,7 @@ fun PieTimerView(
     thresholdColors: List<Color> = emptyList(),
     /** 变色模式与对应参数。 */
     colorMode: at.cwiesner.android.visualtimer.ext.settings.ColorMode =
-        at.cwiesner.android.visualtimer.ext.settings.ColorMode.Threshold,
+        at.cwiesner.android.visualtimer.ext.settings.ColorMode.Fraction,
     intervalMinutes: Long = 5L,
     fractionDivisions: Int = 4,
     /** 到点后的超时正计时；>0 时中央显示 +MM:SS 并转红色。 */

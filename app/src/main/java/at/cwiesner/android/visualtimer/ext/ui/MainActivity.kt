@@ -14,6 +14,7 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -29,6 +30,8 @@ import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.Scaffold
@@ -45,6 +48,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -54,6 +58,7 @@ import at.cwiesner.android.visualtimer.ext.settings.SettingsRepo
 import at.cwiesner.android.visualtimer.ext.settings.ThemeMode
 import at.cwiesner.android.visualtimer.ext.ui.alerts.AlertsScreen
 import at.cwiesner.android.visualtimer.ext.ui.home.HomeScreen
+import at.cwiesner.android.visualtimer.ext.ui.panels.PanelAction
 import at.cwiesner.android.visualtimer.ext.ui.panels.PanelsScreen
 import at.cwiesner.android.visualtimer.ext.ui.settings.SettingsScreen
 import kotlinx.coroutines.launch
@@ -169,8 +174,12 @@ private fun MainScaffold(onPreviewFlash: () -> Unit = {}) {
     // 不额外占页面里的按钮。
     var panelViewToggleTick by remember { mutableIntStateOf(0) }
     var alertsModeToggleTick by remember { mutableIntStateOf(0) }
-    // 长按底边栏「面板」→ 打开面板操作抽屉
+    // 长按底边栏「面板」→ 在按钮上方弹出菜单；点了某一项后，
+    // 用「动作 + 自增信号」两个东西通知 PanelsScreen 去执行。
+    // 两个都要：pendingPanelAction 说明做什么，tick 保证连点同一项也能再次触发
+    // （如果只传枚举，连点两次同一个 Action 时 LaunchedEffect 的 key 没变就不会重跑）。
     var panelActionsTick by remember { mutableIntStateOf(0) }
+    var pendingPanelAction by remember { mutableStateOf<PanelAction?>(null) }
 
     // 各页当前视图。**由导航层持有**：页面组件切标签时会被销毁重建，
     // 视图状态放在页面内部就会丢，表现为「从别处进来变成列表视图」。
@@ -219,12 +228,40 @@ private fun MainScaffold(onPreviewFlash: () -> Unit = {}) {
                             }
                         },
                         onLongClick = if (dest == Dest.Panels) {
-                            // 长按「面板」→ 面板操作抽屉（新建序列 / 面板管理）
+                            // 长按「面板」→ 展开按钮上方的菜单（见下方 menuContent）
                             {
                                 if (selected != index) selected = index
-                                panelActionsTick++
                             }
                         } else null,
+                        menuContent = if (dest == Dest.Panels) {
+                            {
+                                // 菜单项：点了就发一个动作信号给 PanelsScreen。
+                                // 先保证当前就在面板页（长按时已切过去），再发信号。
+                                DropdownMenuItem(
+                                    text = { Text("新建序列") },
+                                    onClick = {
+                                        pendingPanelAction = PanelAction.NewSequence
+                                        panelActionsTick++
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("面板管理") },
+                                    onClick = {
+                                        pendingPanelAction = PanelAction.Manage
+                                        panelActionsTick++
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("🧠 整理念头") },
+                                    onClick = {
+                                        pendingPanelAction = PanelAction.Compile
+                                        panelActionsTick++
+                                    },
+                                )
+                            }
+                        } else {
+                            null
+                        },
                     )
                 }
             }
@@ -241,6 +278,7 @@ private fun MainScaffold(onPreviewFlash: () -> Unit = {}) {
                     toggleViewSignal = panelViewToggleTick,
                     listModeState = panelListModeState,
                     actionsSignal = panelActionsTick,
+                    pendingAction = pendingPanelAction,
                 )
                 Dest.Alerts -> AlertsScreen(
                     onPreviewFlash = onPreviewFlash,
@@ -269,46 +307,85 @@ private fun NavItem(
     label: String,
     onClick: () -> Unit,
     onLongClick: (() -> Unit)?,
+    /**
+     * 长按菜单。
+     *
+     * 用 [DropdownMenu] 而不是居中的 AlertDialog：它是**锚定在本项上方**弹出的，
+     * 长按哪个按钮就从哪个按钮旁边冒出来，位置和手指对得上。
+     * 居中弹窗会让视线从底边栏跳到屏幕正中，而且挡住整个面板（看不出自己在操作哪一页）。
+     *
+     * 只有「面板」这一项传值，其余为 null —— 菜单不出现时 DropdownMenu
+     * 本身不会占位也不会拦截事件。
+     */
+    menuContent: (@Composable ColumnScope.() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
-    Column(
-        // 高度必须**写死**，不能用 fillMaxHeight()。
-        // NavigationBar 内部是 defaultMinSize 而不是固定高度约束，
-        // 一旦子项 fillMaxHeight，它们会撑满整个可用高度 ——
-        // 底边栏吃掉整屏，内容区高度变成 0，界面就只剩一条底边栏。
-        modifier = modifier
-            .height(64.dp)
-            .combinedClickable(
-                onClick = onClick,
-                onLongClick = onLongClick,
-            ),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
-    ) {
-        // 选中指示：M3 的 NavigationBarItem 会画一个胶囊底色包住图标，
-        // 自绘时也要补上，否则「选中」只靠图标变色，几乎看不出来。
-        Box(
-            modifier = Modifier
-                .width(52.dp)
-                .height(26.dp)
-                .clip(RoundedCornerShape(13.dp))
-                .background(
-                    if (selected) ExtColors.PrimaryDim else androidx.compose.ui.graphics.Color.Transparent,
+    // 菜单展开状态放在 NavItem 内部：每个按钮各管各的，
+    // 不需要让 MainScaffold 知道"现在哪个菜单开着"。
+    var menuExpanded by remember { mutableStateOf(false) }
+
+    Box {
+        Column(
+            // 高度必须**写死**，不能用 fillMaxHeight()。
+            // NavigationBar 内部是 defaultMinSize 而不是固定高度约束，
+            // 一旦子项 fillMaxHeight，它们会撑满整个可用高度 ——
+            // 底边栏吃掉整屏，内容区高度变成 0，界面就只剩一条底边栏。
+            modifier = modifier
+                .height(64.dp)
+                .combinedClickable(
+                    onClick = onClick,
+                    onLongClick = if (menuContent != null) {
+                        {
+                            onLongClick?.invoke()
+                            menuExpanded = true
+                        }
+                    } else {
+                        onLongClick
+                    },
                 ),
-            contentAlignment = Alignment.Center,
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
         ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = label,
-                tint = if (selected) ExtColors.Primary else ExtColors.TextSecondary,
-                modifier = Modifier.size(20.dp),
+            // 选中指示：M3 的 NavigationBarItem 会画一个胶囊底色包住图标，
+            // 自绘时也要补上，否则「选中」只靠图标变色，几乎看不出来。
+            Box(
+                modifier = Modifier
+                    .width(52.dp)
+                    .height(26.dp)
+                    .clip(RoundedCornerShape(13.dp))
+                    .background(
+                        if (selected) ExtColors.PrimaryDim else androidx.compose.ui.graphics.Color.Transparent,
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = label,
+                    tint = if (selected) ExtColors.Primary else ExtColors.TextSecondary,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+            Spacer(Modifier.height(2.dp))
+            Text(
+                text = label,
+                fontSize = 11.sp,
+                color = if (selected) ExtColors.Primary else ExtColors.TextSecondary,
             )
         }
-        Spacer(Modifier.height(2.dp))
-        Text(
-            text = label,
-            fontSize = 11.sp,
-            color = if (selected) ExtColors.Primary else ExtColors.TextSecondary,
-        )
+
+        if (menuContent != null) {
+            DropdownMenu(
+                expanded = menuExpanded,
+                onDismissRequest = { menuExpanded = false },
+                containerColor = ExtColors.Surface,
+                // 菜单锚定在这个 Box（= 本按钮）的左上角。
+                // 底边栏贴着屏幕底部，菜单向下展开必然超出屏幕 ——
+                // DropdownMenu 自带"放不下就向上翻转"的处理，所以这里
+                // **不需要**手动加负偏移去翻方向，只微调一点间距让它别贴太紧。
+                offset = DpOffset(0.dp, (-8).dp),
+            ) {
+                menuContent()
+            }
+        }
     }
 }

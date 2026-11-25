@@ -206,7 +206,16 @@ internal fun TimerCell(
     }
 }
 
-/** 列表模式：多选 + 批量操作。长按某行进入编辑，右侧显示提醒名称。 */
+/**
+ * 列表模式：多选 + 批量操作。右侧显示提醒名称。
+ *
+ * 手势分配（与卡片视图刻意不同）：
+ * - **单击** → 编辑该计时器
+ * - **长按** → 切换选中（配合顶部的批量开始/删除）
+ *
+ * 为什么这样分：卡片视图里长按已经被**拖拽排序**完全占用，编辑入口只能另找地方；
+ * 列表视图没有拖拽，正好承接编辑功能。两边不重叠，用户不用记两套规则冲突。
+ */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 internal fun TimerList(
@@ -261,8 +270,9 @@ internal fun TimerList(
                         .clip(RoundedCornerShape(12.dp))
                         .background(ExtColors.Surface)
                         .combinedClickable(
-                            onClick = { onToggle(timer.id) },
-                            onLongClick = { onEdit(timer) },
+                            // 单击编辑、长按选中（详见文件里 TimerList 的注释）
+                            onClick = { onEdit(timer) },
+                            onLongClick = { onToggle(timer.id) },
                         )
                         .padding(horizontal = 10.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -281,7 +291,7 @@ internal fun TimerList(
                         maxMinutes = 60,
                         centerFontSize = 14f,
                         innerDial = false,
-                        colorMode = ColorMode.Threshold,
+                        colorMode = ColorMode.Fraction,
                         intervalMinutes = 5L,
                         fractionDivisions = 4,
                         thresholdMinutes = emptyList(),

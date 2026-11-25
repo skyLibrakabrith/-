@@ -1,11 +1,9 @@
 package at.cwiesner.android.visualtimer.ext.ui.panels
 
 import android.widget.Toast
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.grid.items
@@ -13,7 +11,6 @@ import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
@@ -21,7 +18,6 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -80,8 +76,19 @@ fun PanelsScreen(
      * 组件内部就跟着一起丢，表现为「从别处进来变成列表视图」。
      */
     listModeState: MutableState<Boolean> = remember { mutableStateOf(false) },
-    /** 每次自增表示长按了底边栏「面板」，要求展开面板操作抽屉。 */
+    /**
+     * 底边栏「面板」按钮长按后，在按钮上方弹出的菜单项被点中时递增。
+     *
+     * 菜单本身画在 MainActivity 的底边栏上（锚定到按钮，而不是屏幕中央），
+     * 但它要触发的动作（新建序列 / 面板管理 / 整理念头）都住在 PanelsScreen 内部 ——
+     * 所以用一个「命令」信号把点击传进来，PanelsScreen 收到后执行对应的动作。
+     *
+     * 用自增的 Id 而不是 Boolean：连点两次同一项也要都能触发，
+     * Boolean 会被去重。
+     */
     actionsSignal: Int = 0,
+    /** 具体是哪个动作；与 [actionsSignal] 配合使用（信号变了才生效）。 */
+    pendingAction: PanelAction? = null,
 ) {
     val context = LocalContext.current
     val app = context.applicationContext as ExtApplication
@@ -93,7 +100,7 @@ fun PanelsScreen(
 
     val thresholds by settings.thresholds.collectAsState(initial = emptyList())
     val colorMode by settings.colorMode.collectAsState(
-        initial = at.cwiesner.android.visualtimer.ext.settings.ColorMode.Threshold,
+        initial = at.cwiesner.android.visualtimer.ext.settings.ColorMode.Fraction,
     )
     val intervalMinutes by settings.intervalMinutes.collectAsState(initial = 5L)
     val fractionDivisions by settings.fractionDivisions.collectAsState(initial = 4)
@@ -126,14 +133,32 @@ fun PanelsScreen(
     var showCompileDialog by remember { mutableStateOf(false) }
     var focusTimerId by remember { mutableStateOf<Long?>(null) }
 
-    // 长按卡片后弹出「面板操作」抽屉
-    var longPressEntry by remember { mutableStateOf<PanelEntry?>(null) }
-    var showPanelActions by remember { mutableStateOf(false) }
-    // 底边栏「面板」按钮被长按 → 展开抽屉
+    // 以前这里有一对 longPressEntry / showPanelActions，负责「长按卡片弹出面板操作框」。
+    // 已经删掉：**格子上的长按被拖拽排序完全占用**，再挂一个 onLongClick 会让弹框
+    // 抢在拖拽前面把事件吃掉，表现就是"长按弹出个框，根本拖不动"。
+    //
+    // 那几个动作改由底边栏「面板」按钮的长按菜单提供（锚定在按钮上的 DropdownMenu），
+    // 与拖拽彻底分开，互不干扰。
+    //
+    // 底边栏长按菜单的点击 → 执行对应动作
     LaunchedEffect(actionsSignal) {
-        if (actionsSignal > 0) {
-            longPressEntry = null
-            showPanelActions = true
+        when (pendingAction) {
+            PanelAction.NewSequence -> {
+                scope.launch {
+                    val pid = currentPanel?.id ?: return@launch
+                    val id = db.sequenceDao().upsert(
+                        StepSequence(name = "新序列", panelId = pid),
+                    )
+                    editingSequenceId = id
+                }
+            }
+            PanelAction.Manage -> {
+                showPanelManager = true
+            }
+            PanelAction.Compile -> {
+                showCompileDialog = true
+            }
+            null -> Unit
         }
     }
 
@@ -538,11 +563,7 @@ fun PanelsScreen(
                                 EntryKind.Group -> editingGroupId = entry.refId
                             }
                         },
-                        onLongClick = { entry ->
-                            // 长按只弹出面板操作抽屉，不再直接进编辑。
-                            // 格子上长按已经被拖拽排序占用，编辑入口收进抽屉里。
-                            longPressEntry = entry
-                        },
+                        onLongClick = null,
                     ) { entry, dragging ->
                         when (entry.kind) {
                             EntryKind.Sequence -> {
@@ -615,81 +636,6 @@ fun PanelsScreen(
         }
     }
 
-    // ---- 面板操作抽屉（长按顶部面板名，或长按任意格子唤出）----
-    //
-    // 原先是网格下方一条常驻快捷栏，占一行高度、也和长按重复；
-    // 现在收进抽屉，长按面板名或长按格子都能打开。
-    if (showPanelActions || longPressEntry != null) {
-        val entry = longPressEntry
-        val pressedTimer = entry
-            ?.takeIf { it.kind == EntryKind.Timer }
-            ?.let { e -> timers.firstOrNull { it.id == e.refId } }
-        AlertDialog(
-            onDismissRequest = {
-                showPanelActions = false
-                longPressEntry = null
-            },
-            containerColor = ExtColors.PureBlack,
-            titleContentColor = ExtColors.TextPrimary,
-            textContentColor = ExtColors.TextSecondary,
-            title = { Text(entry?.name ?: (currentPanel?.name ?: "面板")) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    TextButton(
-                        onClick = {
-                            showPanelActions = false
-                            longPressEntry = null
-                            scope.launch {
-                                val pid = currentPanel?.id ?: return@launch
-                                val id = db.sequenceDao().upsert(
-                                    StepSequence(name = "新序列", panelId = pid),
-                                )
-                                editingSequenceId = id
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) { Text("新建序列") }
-
-                    TextButton(
-                        onClick = {
-                            showPanelActions = false
-                            longPressEntry = null
-                            showPanelManager = true
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) { Text("面板管理") }
-
-                    // Compiler：一堆碎片念头 → 归类成若干计时器，直接放进当前面板
-                    TextButton(
-                        onClick = {
-                            showPanelActions = false
-                            longPressEntry = null
-                            showCompileDialog = true
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) { Text("🧠 整理念头") }
-
-                    // DDL 一律没有编辑入口：它的时间由截止时刻决定
-                    if (pressedTimer != null && !pressedTimer.locked) {
-                        TextButton(
-                            onClick = {
-                                showPanelActions = false
-                                longPressEntry = null
-                                editingTimerId = pressedTimer.id
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                        ) { Text("编辑计时器") }
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    showPanelActions = false
-                    longPressEntry = null
-                }) { Text("关闭") }
-            },
-        )
-    }
 
     // ---- 组编辑（长按组卡片进入）----
     val editingGroup = editingGroupId?.let { gid -> groups.firstOrNull { it.id == gid } }

@@ -90,10 +90,18 @@ class SettingsRepo(private val context: Context) {
         parseThresholds(raw)
     }
 
-    /** 变色模式。 */
+    /**
+     * 变色模式。
+     *
+     * 默认是 [ColorMode.Fraction]（表盘按剩余比例分成 N 份，每份一种颜色）。
+     * 之前默认阈值模式，问题是：在阈值之间整块盘面几乎不变色，
+     * 扫一眼看不出"还剩多少"，得去读中间的数字。
+     * 比例模式让盘面上颜色占的**面积**直接等于剩余比例，正是这个 App
+     * 「不依赖读数字」的设计目标（见 README 的「可视化设计」）。
+     */
     val colorMode: Flow<ColorMode> = store.data.map { prefs ->
         ColorMode.entries.firstOrNull { it.name == prefs[KEY_COLOR_MODE] }
-            ?: ColorMode.Threshold
+            ?: ColorMode.Fraction
     }
 
     /** 等间隔模式的间隔分钟数。 */

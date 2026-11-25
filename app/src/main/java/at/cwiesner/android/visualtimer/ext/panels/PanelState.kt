@@ -79,7 +79,7 @@ fun rememberPanelState(): PanelState {
 
     // 设置项
     val thresholds by settings.thresholds.collectAsState(initial = emptyList())
-    val colorMode by settings.colorMode.collectAsState(initial = ColorMode.Threshold)
+    val colorMode by settings.colorMode.collectAsState(initial = ColorMode.Fraction)
     val intervalMinutes by settings.intervalMinutes.collectAsState(initial = 5L)
     val fractionDivisions by settings.fractionDivisions.collectAsState(initial = 4)
     val gridColumns by settings.gridColumns.collectAsState(initial = 2)

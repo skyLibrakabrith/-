@@ -75,7 +75,7 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
 
     val themeMode by settings.themeMode.collectAsState(initial = ThemeMode.PureBlack)
     val thresholds by settings.thresholds.collectAsState(initial = emptyList())
-    val colorMode by settings.colorMode.collectAsState(initial = ColorMode.Threshold)
+    val colorMode by settings.colorMode.collectAsState(initial = ColorMode.Fraction)
     val intervalMinutes by settings.intervalMinutes.collectAsState(initial = 5L)
     val fractionDivisions by settings.fractionDivisions.collectAsState(initial = 4)
     val showCenterText by settings.showCenterText.collectAsState(initial = true)
