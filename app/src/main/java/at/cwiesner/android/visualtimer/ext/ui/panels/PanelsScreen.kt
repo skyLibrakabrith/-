@@ -49,6 +49,7 @@ import at.cwiesner.android.visualtimer.ext.domain.StepSequenceEngine
 import at.cwiesner.android.visualtimer.ext.domain.TimerRuntime
 import at.cwiesner.android.visualtimer.ext.ui.ExtColors
 import at.cwiesner.android.visualtimer.ext.ui.common.AiCompileDialog
+import at.cwiesner.android.visualtimer.ext.ui.common.CompileReviewDialog
 import at.cwiesner.android.visualtimer.ext.ui.sequences.SequenceEditorScreen
 import at.cwiesner.android.visualtimer.ext.ui.sequences.SequenceFocusScreen
 import kotlinx.coroutines.flow.flowOf
@@ -138,8 +139,12 @@ fun PanelsScreen(
     var showDeadline by remember { mutableStateOf(false) }
     var showPanelManager by remember { mutableStateOf(false) }
 
-    // Compiler：碎片念头 → 若干计时器
+    // Compiler：碎片念头 → 序列。三步：拆 → 排 → 估。
     var showCompileDialog by remember { mutableStateOf(false) }
+    // 拆完待排的结果；非 null 时打开排序界面
+    var compileGroups by remember { mutableStateOf<List<at.cwiesner.android.visualtimer.ext.llm.TodoGroup>?>(null) }
+    // 记住要建到哪个面板（用户可能在排序期间切了面板）
+    var compilePanelId by remember { mutableStateOf<Long?>(null) }
     var focusTimerId by remember { mutableStateOf<Long?>(null) }
 
     // 以前这里有一对 longPressEntry / showPanelActions，负责「长按卡片弹出面板操作框」。
@@ -354,7 +359,7 @@ fun PanelsScreen(
             sequence = editingSeq,
             steps = stepsBySequence[editingSeq.id].orEmpty(),
             onDismiss = { editingSequenceId = null },
-            onSave = { name, timeout, stepPairs ->
+            onSave = { name, timeout, stepDrafts ->
                 scope.launch {
                     val seqId = db.sequenceDao().upsert(
                         editingSeq.copy(
@@ -364,18 +369,21 @@ fun PanelsScreen(
                         ),
                     )
                     db.sequenceDao().steps(seqId).forEach { db.sequenceDao().deleteStep(it.id) }
-                    stepPairs.forEachIndexed { idx, pair ->
+                    stepDrafts.forEachIndexed { idx, d ->
                         db.sequenceDao().upsertStep(
                             Step(
                                 sequenceId = seqId,
-                                durationMillis = pair.second,
-                                label = pair.first.ifBlank { null },
+                                durationMillis = d.durationMillis,
+                                label = d.label.ifBlank { null },
                                 order = idx,
+                                // AI 拆解带来的两个属性要一起落库，否则界面改完顺序就丢了
+                                difficulty = d.difficulty,
+                                context = d.context,
                             ),
                         )
                     }
                     editingSequenceId = null
-                    toast("序列「" + name + "」已保存，" + stepPairs.size + " 个阶段")
+                    toast("序列「" + name + "」已保存，" + stepDrafts.size + " 个阶段")
                 }
             },
             modifier = Modifier.fillMaxSize(),
@@ -785,42 +793,61 @@ fun PanelsScreen(
     }
 
     if (showCompileDialog) {
-        // Compiler：把一堆零散想法归类成若干计时器，逐个放进当前面板。
+        // Compiler：碎片念头 → **一个序列**（不是一堆散装计时器）。
         //
-        // 只建计时器、不建序列 —— 序列有"每步等确认"的语义，
-        // 而整理念头产出的通常是互不相关的小事，做成独立计时器更符合直觉。
+        // 流程按用户要求做成三步：
+        //   1) 拆：模型只给 title + difficulty + context（不估时）
+        //   2) 排：用户在 CompileReviewDialog 里调顺序、改难度/背景
+        //   3) 估：对**最终顺序**一次性估时，然后建序列并直接打开编辑器
+        //
+        // 为什么一定要先排再估：顺序变化会让时长完全不同
+        // （先查资料再写和先写再补资料，摩擦差很多）。
         AiCompileDialog(
             onDismiss = { showCompileDialog = false },
             onApply = { groups ->
                 showCompileDialog = false
+                val pid = currentPanel?.id ?: run {
+                    toast("先选一个面板")
+                    return@AiCompileDialog
+                }
+                compileGroups = groups
+                compilePanelId = pid
+            },
+        )
+    }
+
+    // Compiler 第 2、3 步：排序 + 估时 + 建序列
+    val pendingCompile = compileGroups
+    if (pendingCompile != null) {
+        CompileReviewDialog(
+            groups = pendingCompile,
+            onDismiss = { compileGroups = null },
+            onConfirm = { orderedSteps ->
+                compileGroups = null
                 scope.launch {
-                    val pid = currentPanel?.id ?: run {
-                        toast("先选一个面板")
-                        return@launch
+                    // 建序列（先建空的，拿到 id 再写步骤）
+                    val seqId = db.sequenceDao().upsert(
+                        StepSequence(
+                            name = orderedSteps.firstOrNull()?.let { "整理：" + it.title } ?: "整理结果",
+                            panelId = compilePanelId ?: currentPanel?.id,
+                            sortOrder = (panelSequences.maxOfOrNull { it.sortOrder } ?: -1) + 1,
+                        ),
+                    )
+                    orderedSteps.forEachIndexed { idx, d ->
+                        db.sequenceDao().upsertStep(
+                            Step(
+                                sequenceId = seqId,
+                                durationMillis = d.durationMillis,
+                                label = d.label.ifBlank { null },
+                                order = idx,
+                                difficulty = d.difficulty,
+                                context = d.context,
+                            ),
+                        )
                     }
-                    val existingRefs = runCatching { db.panelDao().refsOf(pid) }.getOrDefault(emptyList())
-                    var order = (existingRefs.maxOfOrNull { it.order } ?: -1) + 1
-                    val newRefs = mutableListOf<PanelTimerRef>()
-                    var added = 0
-                    groups.forEach { g ->
-                        g.items.forEach { item ->
-                            // 标题带上组名，网格里一眼能看出归属
-                            val label = "${g.name}·${item.title}"
-                            val timerId = db.timerDao().upsert(
-                                TimerItem(
-                                    label = label,
-                                    durationMillis = item.minutes * 60_000L,
-                                ),
-                            )
-                            newRefs += PanelTimerRef(panelId = pid, timerId = timerId, order = order)
-                            order++
-                            added++
-                        }
-                    }
-                    if (newRefs.isNotEmpty()) {
-                        db.panelDao().upsertRefs(newRefs)
-                    }
-                    toast("已加入 $added 个计时器")
+                    toast("已生成序列，共 ${orderedSteps.size} 步，可在这里调整顺序")
+                    // 直接打开序列编辑器 —— 用户仍可能想再调
+                    editingSequenceId = seqId
                 }
             },
         )

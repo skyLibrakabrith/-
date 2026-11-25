@@ -14,6 +14,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -41,16 +43,33 @@ import at.cwiesner.android.visualtimer.ext.ui.common.AiSplitDialog
 import at.cwiesner.android.visualtimer.ext.ui.duration.DurationSlider
 
 /**
+ * 编辑器里的一条阶段草稿。
+ *
+ * 不再用 `Pair<String, Long>`：AI 拆解会给出 difficulty 与 context，
+ * 用 Pair 就只能把它们丢掉。换成具名类之后，
+ * 加字段也只改构造点，不会牵动一堆解构声明。
+ *
+ * @property difficulty 1–5；null = 没标注
+ * @property context 背景/理由；null = 没写
+ */
+data class StepDraft(
+    val label: String,
+    val durationMillis: Long,
+    val difficulty: Int? = null,
+    val context: String? = null,
+)
+
+/**
  * 序列编辑器：名称 + 超时时长 + 有序步骤列表。
  *
- * 步骤用 [DurationSlider] 选时长，列表内可增删。
+ * 步骤用 [DurationSlider] 选时长，列表内可增删、可上下移动。
  */
 @Composable
 fun SequenceEditorScreen(
     sequence: StepSequence,
     steps: List<Step>,
     onDismiss: () -> Unit,
-    onSave: (name: String, timeoutMillis: Long, steps: List<Pair<String, Long>>) -> Unit,
+    onSave: (name: String, timeoutMillis: Long, steps: List<StepDraft>) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     // 全部以 sequence.id 为 key —— 否则切换到另一个序列时，
@@ -61,7 +80,16 @@ fun SequenceEditorScreen(
         mutableStateOf(sequence.timeoutMillis > 0L)
     }
     var draft by remember(sequence.id) {
-        mutableStateOf(steps.map { (it.label ?: "") to it.durationMillis })
+        mutableStateOf(
+            steps.map {
+                StepDraft(
+                    label = it.label ?: "",
+                    durationMillis = it.durationMillis,
+                    difficulty = it.difficulty,
+                    context = it.context,
+                )
+            },
+        )
     }
     var showAddStep by remember { mutableStateOf(false) }
     var showSplitDialog by remember { mutableStateOf(false) }
@@ -136,19 +164,70 @@ fun SequenceEditorScreen(
                     itemsIndexed(draft) { index, item ->
                         Card(modifier = Modifier.fillMaxWidth()) {
                             Row(
-                                modifier = Modifier.padding(12.dp),
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween,
                             ) {
-                                Column {
+                                Column(modifier = Modifier.weight(1f)) {
                                     Text(
-                                        "${index + 1}. " + (item.first.ifBlank { "未命名" }),
+                                        "${index + 1}. " + (item.label.ifBlank { "未命名" }),
                                         style = MaterialTheme.typography.bodyMedium,
                                     )
-                                    Text(
-                                        DeadlineCalculator.formatRemaining(item.second),
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        Text(
+                                            DeadlineCalculator.formatRemaining(item.durationMillis),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                        item.difficulty?.let { d ->
+                                            Text(
+                                                "难" + "▮".repeat(d.coerceIn(1, 5)),
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.primary,
+                                            )
+                                        }
+                                    }
+                                    // 背景：一行小字，没有就不占位
+                                    item.context?.let { c ->
+                                        Text(
+                                            c,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 1,
+                                        )
+                                    }
+                                }
+
+                                // 上下移动：AI 给的顺序只是建议，用户调顺序是这条流程的关键一步。
+                                // 用两个小按钮而不是拖拽 —— 拖拽在这个列表里容易误触，
+                                // 而"上移一格"本来就更精确。
+                                IconButton(
+                                    enabled = index > 0,
+                                    onClick = {
+                                        draft = draft.toMutableList().also {
+                                            val tmp = it[index]; it[index] = it[index - 1]; it[index - 1] = tmp
+                                        }
+                                    },
+                                ) {
+                                    Icon(
+                                        Icons.Filled.KeyboardArrowUp,
+                                        contentDescription = "上移",
+                                        tint = if (index > 0) MaterialTheme.colorScheme.onSurface
+                                        else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.25f),
+                                    )
+                                }
+                                IconButton(
+                                    enabled = index < draft.lastIndex,
+                                    onClick = {
+                                        draft = draft.toMutableList().also {
+                                            val tmp = it[index]; it[index] = it[index + 1]; it[index + 1] = tmp
+                                        }
+                                    },
+                                ) {
+                                    Icon(
+                                        Icons.Filled.KeyboardArrowDown,
+                                        contentDescription = "下移",
+                                        tint = if (index < draft.lastIndex) MaterialTheme.colorScheme.onSurface
+                                        else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.25f),
                                     )
                                 }
                                 IconButton(
@@ -189,7 +268,7 @@ fun SequenceEditorScreen(
             onDismiss = { showAddStep = false },
             onConfirm = { label, duration ->
                 showAddStep = false
-                draft = draft + (label to duration)
+                draft = draft + StepDraft(label = label, durationMillis = duration)
             },
         )
     }
@@ -200,7 +279,14 @@ fun SequenceEditorScreen(
             onApply = { splitSteps ->
                 showSplitDialog = false
                 // 追加而不是替换：用户可能已经手填了几步，直接覆盖等于毁了他的输入
-                draft = draft + splitSteps.map { it.title to it.minutes * 60_000L }
+                draft = draft + splitSteps.map {
+                    StepDraft(
+                        label = it.title,
+                        durationMillis = it.minutes * 60_000L,
+                        difficulty = it.difficulty,
+                        context = it.context,
+                    )
+                }
                 // 序列名还是空的就顺手填上，省一次输入
                 if (name.isBlank()) name = splitSteps.firstOrNull()?.title ?: name
             },

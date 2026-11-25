@@ -204,7 +204,7 @@ interface DeadlineReminderDao {
         GroupMember::class,
         DeadlineReminder::class,
     ],
-    version = 6,
+    version = 7,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -282,6 +282,20 @@ abstract class AppDatabase : RoomDatabase() {
         }
 
         /**
+         * v6 → v7：步骤增加 difficulty（困难程度）与 context（背景/理由）两列。
+         *
+         * 都可空且默认 NULL：「没标注」本身就等于 null，语义正确，
+         * 不需要回填任何猜测值。两条 ALTER 放在同一个迁移里，
+         * 避免为同一张表连开两个版本。
+         */
+        private val MIGRATION_6_7 = object : androidx.room.migration.Migration(6, 7) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE steps ADD COLUMN difficulty INTEGER")
+                db.execSQL("ALTER TABLE steps ADD COLUMN context TEXT")
+            }
+        }
+
+        /**
          * 打开数据库。
          *
          * **刻意不用 `fallbackToDestructiveMigration()`**：那个兜底会在迁移写错、
@@ -300,7 +314,7 @@ abstract class AppDatabase : RoomDatabase() {
                     context.applicationContext,
                     AppDatabase::class.java,
                     "visual-timer-ext.db",
-                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
                     .fallbackToDestructiveMigrationOnDowngrade()
                     .build()
                     .also { INSTANCE = it }

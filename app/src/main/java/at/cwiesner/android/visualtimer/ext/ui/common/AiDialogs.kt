@@ -32,7 +32,6 @@ import at.cwiesner.android.visualtimer.ext.llm.AiFeatures
 import at.cwiesner.android.visualtimer.ext.llm.AiResult
 import at.cwiesner.android.visualtimer.ext.llm.TodoStep
 import at.cwiesner.android.visualtimer.ext.settings.AiMode
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /**
@@ -57,28 +56,31 @@ fun <T> AiPromptDialog(
     title: String,
     hint: String,
     actionLabel: String,
-    initiallyEmpty: Boolean = false,
-    run: suspend (AiFeatures, String) -> AiResult<T>,
+    run: suspend (AiFeatures, String, AiTuning) -> AiResult<T>,
     renderPreview: @Composable (T) -> Unit,
     onApply: (T) -> Unit,
     onDismiss: () -> Unit,
+    /** 是否显示「颗粒度 / 难度 / 背景」这组高级选项。估时这类不需要。 */
+    showTuning: Boolean = false,
+    /** 输入框预填内容（例如从已有计时器拆解时把它当前的名字带进来）。 */
+    initialInput: String = "",
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val settings = (context.applicationContext as ExtApplication).settings
     val ai = remember { AiFeatures(settings) }
 
-    var input by remember { mutableStateOf("") }
+    var input by remember { mutableStateOf(initialInput) }
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var result by remember { mutableStateOf<T?>(null) }
-    // AI 关闭时把入口藏起来，而不是让用户点进去再报「未开启」
-    var aiOff by remember { mutableStateOf(true) }
+    var tuning by remember { mutableStateOf(AiTuning()) }
 
-    LaunchedEffect(Unit) {
-        aiOff = settings.aiMode.first() == AiMode.Off
-        if (initiallyEmpty) input = ""
-    }
+    // 用 collectAsState 而不是 LaunchedEffect+局部 state：
+    // 后者首帧是默认值、协程结束后才变真值 —— 会让内容"先少一块再补上"。
+    // settings 底层是应用级预热的 StateFlow，这里同步读到缓存。
+    val aiMode by settings.aiMode.collectAsState(initial = AiMode.Off)
+    val aiOff = aiMode == AiMode.Off
 
     AlertDialog(
         onDismissRequest = { if (!loading) onDismiss() },
@@ -87,7 +89,7 @@ fun <T> AiPromptDialog(
             Column(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
                 modifier = Modifier
-                    .heightIn(max = 420.dp)
+                    .heightIn(max = 460.dp)
                     .verticalScroll(rememberScrollState()),
             ) {
                 if (aiOff) {
@@ -107,6 +109,32 @@ fun <T> AiPromptDialog(
                     enabled = !loading,
                     modifier = Modifier.fillMaxWidth(),
                 )
+
+                if (showTuning) {
+                    LevelSlider(
+                        label = "颗粒度",
+                        help = "越高拆得越细（1=3~4 步，5=8~12 步）",
+                        value = tuning.granularity,
+                        enabled = !loading,
+                        onChange = { tuning = tuning.copy(granularity = it) },
+                    )
+                    LevelSlider(
+                        label = "难度",
+                        help = "越高估时越保守（含启动摩擦、卡壳、返工）",
+                        value = tuning.difficulty,
+                        enabled = !loading,
+                        onChange = { tuning = tuning.copy(difficulty = it) },
+                    )
+                    OutlinedTextField(
+                        value = tuning.context,
+                        onValueChange = { tuning = tuning.copy(context = it) },
+                        label = { Text("背景 / 理由（可空）") },
+                        minLines = 1,
+                        maxLines = 3,
+                        enabled = !loading,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
 
                 if (loading) {
                     Row(
@@ -130,6 +158,7 @@ fun <T> AiPromptDialog(
             }
         },
         confirmButton = {
+            // 结果已经生成时按钮变成「采用」；改过输入会清掉结果，重新变回原动作
             val hasResult = result != null
             TextButton(
                 enabled = !loading && input.isNotBlank() && !aiOff,
@@ -140,7 +169,7 @@ fun <T> AiPromptDialog(
                         loading = true
                         error = null
                         scope.launch {
-                            when (val r = run(ai, input)) {
+                            when (val r = run(ai, input, tuning)) {
                                 is AiResult.Ok -> result = r.value
                                 is AiResult.Failed -> error = r.message
                             }
@@ -157,6 +186,71 @@ fun <T> AiPromptDialog(
 }
 
 /**
+ * 一次 AI 调用的"旋钮"：颗粒度、难度、背景。
+ *
+ * 做成不可变 data class 而不是三个独立 state：调用方可以整体传递，
+ * 也不会出现"改了颗粒度忘了改难度"这种局部不一致。
+ */
+data class AiTuning(
+    val granularity: Int = 3,
+    val difficulty: Int = 3,
+    val context: String = "",
+)
+
+/**
+ * 1–5 的档位选择，用一排小方块表示。
+ *
+ * 不用 Slider：5 个离散档位用滑块很难点准（手指一滑就跳过一格），
+ * 而这里恰恰需要"准确选第 N 档"。点格子没有这个问题。
+ */
+@Composable
+private fun LevelSlider(
+    label: String,
+    help: String,
+    value: Int,
+    enabled: Boolean,
+    onChange: (Int) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(label, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+            Text(
+                "  $value",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            (1..5).forEach { i ->
+                val on = i <= value
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(22.dp)
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(
+                            if (on) {
+                                MaterialTheme.colorScheme.primary.copy(alpha = 0.75f)
+                            } else {
+                                MaterialTheme.colorScheme.surfaceVariant
+                            },
+                        )
+                        .clickable(enabled = enabled) { onChange(i) },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        "$i",
+                        fontSize = 11.sp,
+                        color = if (on) Color.White else Color.Gray,
+                    )
+                }
+            }
+        }
+        Text(help, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+/**
  * Magic ToDo 的入口：一段话 → 有序阶段。
  *
  * 复用 [AiPromptDialog]，只负责渲染步骤预览。
@@ -165,12 +259,18 @@ fun <T> AiPromptDialog(
 fun AiSplitDialog(
     onDismiss: () -> Unit,
     onApply: (List<TodoStep>) -> Unit,
+    /** 预填内容：从已有计时器拆解时，把它当前名称带进来省一次输入。 */
+    initialInput: String = "",
 ) {
     AiPromptDialog(
         title = "✨ 拆解成阶段",
         hint = "要完成的一件事，例如：写一份实验报告",
         actionLabel = "拆解",
-        run = { ai, text -> ai.split(text) },
+        showTuning = true,
+        initialInput = initialInput,
+        run = { ai, text, t ->
+            ai.split(text, t.granularity, t.difficulty, t.context)
+        },
         renderPreview = { steps ->
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 steps.forEachIndexed { i, s ->
@@ -179,8 +279,18 @@ fun AiSplitDialog(
                         horizontalArrangement = Arrangement.SpaceBetween,
                     ) {
                         Text("${i + 1}. ${s.title}", fontSize = 13.sp, modifier = Modifier.weight(1f))
-                        Text("${s.minutes} 分钟", fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Column(horizontalAlignment = Alignment.End) {
+                            Text("${s.minutes} 分钟", fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            // 难度用「▮」重复表示，比数字更快看出哪步吃力
+                            s.difficulty?.let { d ->
+                                Text(
+                                    "难" + "▮".repeat(d.coerceIn(1, 5)),
+                                    fontSize = 10.sp,
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
+                            }
+                        }
                     }
                 }
                 Text(
@@ -206,23 +316,41 @@ fun AiCompileDialog(
         title = "🧠 整理念头",
         hint = "每行一个念头",
         actionLabel = "整理",
-        run = { ai, text -> ai.compile(text) },
+        // 这里**不给任何旋钮**：用户此刻手里是一堆混乱念头，
+        // 逼他先回答"这堆有多难/拆多细"是过早固化。
+        // 难度和背景由模型拆完之后**逐条**给出，用户在下一步的排序界面里改。
+        run = { ai, text, _ -> ai.compile(text) },
         renderPreview = { groups ->
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 groups.forEach { g ->
                     Text("【${g.name}】", fontSize = 13.sp,
                         style = MaterialTheme.typography.titleSmall)
                     g.items.forEach { it ->
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(start = 8.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                        ) {
-                            Text("· ${it.title}", fontSize = 12.sp, modifier = Modifier.weight(1f))
-                            Text("${it.minutes} 分", fontSize = 11.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Column(modifier = Modifier.padding(start = 8.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                            ) {
+                                Text("· ${it.title}", fontSize = 12.sp, modifier = Modifier.weight(1f))
+                                it.difficulty?.let { d ->
+                                    Text("难$d", fontSize = 10.sp,
+                                        color = MaterialTheme.colorScheme.primary)
+                                }
+                            }
+                            it.context?.let { c ->
+                                Text(c, fontSize = 10.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1)
+                            }
                         }
                     }
                 }
+                Text(
+                    "确认后进入排序界面，可在那里调顺序、改难度和背景",
+                    fontSize = 10.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
             }
         },
         onApply = onApply,

@@ -10,33 +10,44 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import at.cwiesner.android.visualtimer.ext.ExtApplication
 import at.cwiesner.android.visualtimer.ext.domain.DeadlineCalculator
+import at.cwiesner.android.visualtimer.ext.llm.AiFeatures
+import at.cwiesner.android.visualtimer.ext.llm.AiResult
+import at.cwiesner.android.visualtimer.ext.settings.AiMode
 import at.cwiesner.android.visualtimer.ext.ui.ExtColors
 import at.cwiesner.android.visualtimer.ext.ui.duration.DeadlineTimePicker
 import at.cwiesner.android.visualtimer.ext.ui.duration.deadlineEpochMillis
 import at.cwiesner.android.visualtimer.ext.ui.duration.describeDeadline
 import at.cwiesner.android.visualtimer.ext.ui.wheel.HmsWheelPicker
 import at.cwiesner.android.visualtimer.ext.ui.wheel.PieTimerView
+import kotlinx.coroutines.launch
 
 /** 时长输入模式。 */
 private enum class DurationMode(val label: String) {
@@ -75,6 +86,23 @@ fun TimerEditDialog(
     var alertProfileId by remember { mutableStateOf(initialAlertProfileId) }
     var showAlertPicker by remember { mutableStateOf(false) }
 
+    // ---- AI 估时（Estimator）----
+    //
+    // 用名称当输入问模型"这件事大概要多久"，估出来的分钟数直接填进 duration，
+    // 用户还可以再手动微调。**不覆盖用户已手动设过的值** —— 只有在按按钮时才写。
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val aiSettings = (context.applicationContext as ExtApplication).settings
+    val ai = remember { AiFeatures(aiSettings) }
+    var estimating by remember { mutableStateOf(false) }
+    var estimateHint by remember { mutableStateOf<String?>(null) }
+
+    // 用 collectAsState 而不是 LaunchedEffect+局部 state：
+    // 后者首帧是 Off（按钮不显示）、协程结束后才变成真值（按钮突然冒出来）——
+    // 又是一次闪动，正是用户刚抱怨的问题。
+    // SettingsRepo 的底层设置已经是应用级预热的 StateFlow，这里同步就读到缓存值。
+    val aiMode by aiSettings.aiMode.collectAsState(initial = AiMode.Off)
+
     // DDL 模式的状态
     var dateOffset by remember { mutableIntStateOf(0) }
     var hour by remember { mutableIntStateOf(0) }
@@ -108,6 +136,54 @@ fun TimerEditDialog(
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
+
+                // ⏱ 估一下：用名称问模型"大概要多久"，结果填进 duration。
+                // AI 未开启时整行不出现 —— 默认关闭的用户不该看到一个必然失败的按钮。
+                if (aiMode != AiMode.Off) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        TextButton(
+                            enabled = !estimating && label.isNotBlank(),
+                            onClick = {
+                                estimating = true
+                                estimateHint = null
+                                scope.launch {
+                                    when (val r = ai.estimate(label)) {
+                                        is AiResult.Ok -> {
+                                            // 至少 1 分钟，避免 0 时长
+                                            duration = (r.value.toLong() * 60_000L)
+                                                .coerceAtLeast(60_000L)
+                                            estimateHint = "估了 ${r.value} 分钟，可继续微调"
+                                        }
+                                        is AiResult.Failed -> estimateHint = r.message
+                                    }
+                                    estimating = false
+                                }
+                            },
+                        ) {
+                            if (estimating) {
+                                // 必须同时限宽限高：只给 height 会撑成一个占满行宽的大圆
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(14.dp),
+                                    strokeWidth = 2.dp,
+                                )
+                            } else {
+                                Text("⏱ 估一下")
+                            }
+                        }
+                        estimateHint?.let {
+                            Text(
+                                it,
+                                fontSize = 11.sp,
+                                color = ExtColors.TextDim,
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                    }
+                }
 
                 // 模式切换
                 Row(

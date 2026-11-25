@@ -97,6 +97,17 @@ data class StepDto(
     val label: String? = null,
     val alertProfileRef: String? = null,
     val order: Int = 0,
+    /**
+     * 困难程度 1–5；null = 没标注。
+     *
+     * **带默认值**是硬要求：schema v2 的旧备份没有这个字段，
+     * 靠默认值才能继续导入（导入逻辑里 `.copy()` 也会保留它）。
+     */
+    val difficulty: Int? = null,
+    /**
+     * 背景/理由。同样**带默认值** —— 旧备份没有这个字段也要能导入。
+     */
+    val context: String? = null,
 )
 
 @Serializable
@@ -220,6 +231,8 @@ fun Step.toDto(ref: String, seqRef: String, alertRef: String?) = StepDto(
     label = label,
     alertProfileRef = alertRef,
     order = order,
+    difficulty = difficulty,
+    context = context,
 )
 
 fun StepDto.toEntity(sequenceId: Long, alertId: Long?) = Step(
@@ -228,6 +241,9 @@ fun StepDto.toEntity(sequenceId: Long, alertId: Long?) = Step(
     label = label,
     alertProfileId = alertId,
     order = order,
+    // 旧备份没有这些字段 -> 默认 null（未标注），不会报错
+    difficulty = difficulty?.coerceIn(1, 5),
+    context = context?.takeIf { it.isNotBlank() },
 )
 
 fun PanelTimerRef.toDto(panelRef: String, timerRef: String) =

@@ -83,7 +83,7 @@ fun SequencesScreen(modifier: Modifier = Modifier) {
             sequence = editTarget,
             steps = editingSteps,
             onDismiss = { editing = null },
-            onSave = { name, timeout, stepPairs ->
+            onSave = { name, timeout, stepDrafts ->
                 scope.launch {
                     // 新建时 id=0，upsert 会插入并返回真实 id
                     val seqId = db.sequenceDao().upsert(
@@ -93,18 +93,20 @@ fun SequencesScreen(modifier: Modifier = Modifier) {
                     db.sequenceDao().steps(seqId).forEach {
                         db.sequenceDao().deleteStep(it.id)
                     }
-                    stepPairs.forEachIndexed { idx, pair ->
+                    stepDrafts.forEachIndexed { idx, d ->
                         db.sequenceDao().upsertStep(
                             Step(
                                 sequenceId = seqId,
-                                durationMillis = pair.second,
-                                label = pair.first.ifBlank { null },
+                                durationMillis = d.durationMillis,
+                                label = d.label.ifBlank { null },
                                 order = idx,
+                                difficulty = d.difficulty,
+                                context = d.context,
                             ),
                         )
                     }
                     editing = null
-                    toastText("序列「" + name + "」已保存，" + stepPairs.size + " 个阶段")
+                    toastText("序列「" + name + "」已保存，" + stepDrafts.size + " 个阶段")
                 }
             },
             modifier = modifier,

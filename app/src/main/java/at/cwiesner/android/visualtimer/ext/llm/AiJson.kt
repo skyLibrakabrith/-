@@ -38,6 +38,8 @@ object AiJson {
 
     private val TITLE_KEYS = listOf("title", "label", "text", "name", "task", "step", "content")
     private val MINUTES_KEYS = listOf("minutes", "min", "mins", "duration", "estimate", "time")
+    private val DIFFICULTY_KEYS = listOf("difficulty", "hard", "level", "hardness")
+    private val CONTEXT_KEYS = listOf("context", "note", "why", "reason", "detail", "description")
 
     /**
      * 剥掉 markdown 代码围栏和前后噪声，取出第一段像 JSON 对象的文本。
@@ -87,7 +89,7 @@ object AiJson {
             val title = pickString(o, TITLE_KEYS)?.trim().orEmpty()
             if (title.isEmpty()) return@mapNotNull null
             val minutes = pickMinutes(o)
-            TodoStep(title = title, minutes = minutes)
+            TodoStep(title = title, minutes = minutes, difficulty = findDifficulty(o))
         }.filter { it.title.isNotEmpty() }
 
         return steps.ifEmpty { null }
@@ -117,7 +119,15 @@ object AiJson {
                 val io = runCatching { itEl.jsonObject }.getOrNull() ?: return@mapNotNull null
                 val title = pickString(io, TITLE_KEYS)?.trim().orEmpty()
                 if (title.isEmpty()) return@mapNotNull null
-                TodoStep(title, pickMinutes(io))
+                // 分组结果里的 minutes 用 findMinutes（找不到就是 0 = 还没估），
+                // **不用** pickMinutes 的默认 15：Compiler 第一步本来就不估时，
+                // 给个 15 会让界面显示一堆假的"15 分钟"。
+                TodoStep(
+                    title = title,
+                    minutes = findMinutes(io) ?: 0,
+                    difficulty = findDifficulty(io),
+                    context = findContext(io),
+                )
             }
             if (items.isEmpty()) null else TodoGroup(name = name, items = items)
         }
@@ -149,6 +159,36 @@ object AiJson {
         Regex("""(\d+)""").find(raw)?.groupValues?.get(1)?.toIntOrNull()
             ?.let { return clampMinutes(it) }
         return null
+    }
+
+    /**
+     * 解析**一组**估时（Compiler 第三步用）。
+     *
+     * 期望 `{"minutes":[15,30,45]}`，与输入顺序一一对应。
+     *
+     * @param expected 期望的条数。返回的数组**必须等长**，否则返回 null ——
+     *   长度对不上就说明模型漏了/多给了条目，这时宁可整批失败让用户重试，
+     *   也不能硬凑：错位的时长会让整条序列的节奏全错。
+     */
+    fun parseMinutesList(raw: String, expected: Int): List<Int>? {
+        if (expected <= 0) return null
+        val body = extractJsonObject(raw) ?: return null
+        val obj = runCatching { json.parseToJsonElement(body).jsonObject }.getOrNull()
+
+        // 优先 minutes 字段；兼容模型直接给数组或换个名字的情况
+        val arr = obj?.get("minutes")?.jsonArray
+            ?: obj?.get("estimates")?.jsonArray
+            ?: obj?.values?.firstOrNull { runCatching { it.jsonArray }.isSuccess }?.jsonArray
+            ?: runCatching { json.parseToJsonElement(body).jsonArray }.getOrNull()
+            ?: return null
+
+        val values = arr.mapNotNull { el ->
+            val n = runCatching { el.jsonPrimitive }.getOrNull() ?: return@mapNotNull null
+            n.intOrNull?.let { return@mapNotNull clampMinutes(it) }
+            Regex("""(\d+)""").find(n.contentOrNull.orEmpty())?.groupValues?.get(1)
+                ?.toIntOrNull()?.let { clampMinutes(it) }
+        }
+        return if (values.size == expected) values else null
     }
 
     private fun pickString(o: JsonObject, keys: List<String>): String? {
@@ -183,6 +223,45 @@ object AiJson {
 
     /** 没给时长就用默认值，而不是丢弃这个步骤。 */
     private fun pickMinutes(o: JsonObject): Int = findMinutes(o) ?: DEFAULT_MINUTES
+
+    /**
+     * 找困难程度，夹到 1–5；没有或解析不了就返回 null（= 未标注）。
+     *
+     * 和 minutes 不同，这里**不做默认值填充**：
+     * "没标难度" 和 "难度 3" 是两件事，编一个默认值会让界面显示假的难度标签。
+     */
+    private fun findDifficulty(o: JsonObject): Int? {
+        for (k in DIFFICULTY_KEYS) {
+            val v = o[k] ?: continue
+            val n = runCatching { v.jsonPrimitive }.getOrNull() ?: continue
+            n.intOrNull?.let { return it.coerceIn(1, 5) }
+            // "3/5"、"hard" 这类：抓出数字；纯文字就用关键词兜底
+            val text = n.contentOrNull.orEmpty()
+            Regex("""(\d)""").find(text)?.groupValues?.get(1)?.toIntOrNull()
+                ?.let { return it.coerceIn(1, 5) }
+            when (text.trim().lowercase()) {
+                "easy", "simple", "容易", "简单" -> return 1
+                "medium", "normal", "中等" -> return 3
+                "hard", "difficult", "困难", "难" -> return 5
+            }
+        }
+        return null
+    }
+
+    /**
+     * 找背景/理由，空字符串归一成 null。
+     *
+     * 提示词里允许模型"推不出就留空字符串"，所以这里必须把 "" 也当"没有"，
+     * 否则界面会显示一行的空引号。
+     */
+    private fun findContext(o: JsonObject): String? {
+        for (k in CONTEXT_KEYS) {
+            val v = o[k] ?: continue
+            val s = runCatching { v.jsonPrimitive.contentOrNull }.getOrNull()
+            if (!s.isNullOrBlank()) return s.trim().take(60)
+        }
+        return null
+    }
 
     private fun clampMinutes(m: Int): Int = m.coerceIn(MIN_MINUTES, MAX_MINUTES)
 }
