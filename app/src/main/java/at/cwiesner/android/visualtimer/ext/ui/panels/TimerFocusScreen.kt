@@ -1,7 +1,9 @@
 package at.cwiesner.android.visualtimer.ext.ui.panels
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -16,8 +18,10 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.Icon
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -31,6 +35,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import at.cwiesner.android.visualtimer.ext.data.TimerItem
@@ -61,6 +66,7 @@ private fun clockOf(epochMillis: Long): String {
  *
  * 拖动期间中央控件与内盘一起隐藏 —— 否则每帧重绘会让它闪烁。
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun TimerFocusScreen(
     timer: TimerItem,
@@ -76,6 +82,8 @@ fun TimerFocusScreen(
     onStart: () -> Unit,
     onPause: () -> Unit,
     onReset: () -> Unit,
+    /** 长按顶部标题重命名。DDL 也允许改名 —— `locked` 锁的是时长，不是名字。 */
+    onRename: (String) -> Unit,
     onClose: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -85,6 +93,9 @@ fun TimerFocusScreen(
     val overdue = runtime?.isOverdue == true
     var draft by remember(timer.id) { mutableLongStateOf(timer.durationMillis) }
     var dragging by remember { mutableStateOf(false) }
+    // 长按标题重命名的临时状态
+    var renaming by remember { mutableStateOf(false) }
+    var renameText by remember(timer.id) { mutableStateOf(timer.label ?: "") }
 
     // 暂停时同样要停在暂停位置（之前一暂停就回落到 draft = 原始时长，
     // 视觉上和重置没区别）。只有「从未开始」或「正在拖动改时长」才用 draft。
@@ -124,18 +135,56 @@ fun TimerFocusScreen(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(
-                text = timer.label ?: "未命名",
-                fontSize = 16.sp,
-                color = ExtColors.TextPrimary,
-                modifier = Modifier.weight(1f),
-            )
-            IconButton(onClick = onClose) {
-                Icon(
-                    Icons.Filled.Close,
-                    contentDescription = "关闭",
-                    tint = ExtColors.TextSecondary,
+            // 长按标题重命名。
+            //
+            // 为什么放在这里而不是卡片上：卡片上的长按已经被拖拽排序独占
+            // （两者抢同一个手势，这一点踩过坑）。全屏视图里没有拖拽，
+            // 长按是空闲的，正好给改名用。
+            if (renaming) {
+                OutlinedTextField(
+                    value = renameText,
+                    onValueChange = { renameText = it },
+                    singleLine = true,
+                    textStyle = androidx.compose.ui.text.TextStyle(fontSize = 16.sp),
+                    modifier = Modifier.weight(1f),
+                    label = { Text("名称", fontSize = 11.sp) },
                 )
+                IconButton(
+                    onClick = {
+                        // 允许留空 —— 空名会回退成「未命名」，比强行塞一个占位名好
+                        onRename(renameText)
+                        renaming = false
+                    },
+                ) {
+                    Icon(Icons.Filled.Check, contentDescription = "确定", tint = ExtColors.Primary)
+                }
+                IconButton(onClick = { renaming = false }) {
+                    Icon(Icons.Filled.Close, contentDescription = "取消", tint = ExtColors.TextSecondary)
+                }
+            } else {
+                Text(
+                    text = timer.label ?: "未命名",
+                    fontSize = 16.sp,
+                    color = ExtColors.TextPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .weight(1f)
+                        .combinedClickable(
+                            onClick = {},
+                            onLongClick = {
+                                renameText = timer.label ?: ""
+                                renaming = true
+                            },
+                        ),
+                )
+                IconButton(onClick = onClose) {
+                    Icon(
+                        Icons.Filled.Close,
+                        contentDescription = "关闭",
+                        tint = ExtColors.TextSecondary,
+                    )
+                }
             }
         }
 

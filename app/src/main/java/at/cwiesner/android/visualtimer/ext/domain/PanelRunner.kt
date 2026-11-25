@@ -289,6 +289,21 @@ class PanelRunner(private val scope: CoroutineScope) {
     }
 
     /**
+     * 改名：只更新运行时里缓存的 label。
+     *
+     * 为什么需要：[TimerRuntime.label] 是**创建运行时那一刻**从库里复制来的。
+     * 用户在计时过程中改名，如果只写数据库，运行时里仍是旧名字 ——
+     * 悬浮窗、通知、卡片标题都会继续显示旧名，看起来像改名没生效。
+     *
+     * 运行时不存在时直接返回（没在跑的计时器不需要同步，下次 start 会从库里取新名）。
+     */
+    fun updateLabel(timerId: Long, label: String?) {
+        val r = _runtimes.value[timerId] ?: return
+        if (r.label == label) return
+        _runtimes.value = _runtimes.value + (timerId to r.copy(label = label))
+    }
+
+    /**
      * 重置到原始时长。
      *
      * 必须同时清掉 [TimerRuntime.overdueMillis] —— 否则「超时后重置」会把

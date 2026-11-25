@@ -522,6 +522,21 @@ fun PanelsScreen(
                         toast("已暂停")
                     },
                     onReset = { runner.reset(focused.id) },
+                    // 长按标题改名：只改 label，不碰时长/类型/截止时刻。
+                    // 空串统一存成 null —— 这样界面会回退显示「未命名」，
+                    // 而不是显示一个看不见的空字符串。
+                    onRename = { newName ->
+                        scope.launch {
+                            val trimmed = newName.trim()
+                            db.timerDao().upsert(
+                                focused.copy(label = trimmed.ifBlank { null }),
+                            )
+                            // 正在跑的话，运行时的 label 也要同步，
+                            // 否则悬浮窗/通知上还是旧名字
+                            runner.updateLabel(focused.id, trimmed.ifBlank { null })
+                            toast(if (trimmed.isBlank()) "已清空名称" else "已改名：$trimmed")
+                        }
+                    },
                     onClose = { focusTimerId = null },
                 )
             } else when {
