@@ -9,6 +9,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -18,6 +19,9 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccessTime
 import androidx.compose.material.icons.filled.Checklist
@@ -39,6 +43,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -256,8 +261,12 @@ private fun NavItem(
     modifier: Modifier = Modifier,
 ) {
     Column(
+        // 高度必须**写死**，不能用 fillMaxHeight()。
+        // NavigationBar 内部是 defaultMinSize 而不是固定高度约束，
+        // 一旦子项 fillMaxHeight，它们会撑满整个可用高度 ——
+        // 底边栏吃掉整屏，内容区高度变成 0，界面就只剩一条底边栏。
         modifier = modifier
-            .fillMaxHeight()
+            .height(64.dp)
             .combinedClickable(
                 onClick = onClick,
                 onLongClick = onLongClick,
@@ -265,11 +274,25 @@ private fun NavItem(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = label,
-            tint = if (selected) ExtColors.Primary else ExtColors.TextSecondary,
-        )
+        // 选中指示：M3 的 NavigationBarItem 会画一个胶囊底色包住图标，
+        // 自绘时也要补上，否则「选中」只靠图标变色，几乎看不出来。
+        Box(
+            modifier = Modifier
+                .width(52.dp)
+                .height(26.dp)
+                .clip(RoundedCornerShape(13.dp))
+                .background(
+                    if (selected) ExtColors.PrimaryDim else androidx.compose.ui.graphics.Color.Transparent,
+                ),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = label,
+                tint = if (selected) ExtColors.Primary else ExtColors.TextSecondary,
+                modifier = Modifier.size(20.dp),
+            )
+        }
         Spacer(Modifier.height(2.dp))
         Text(
             text = label,
