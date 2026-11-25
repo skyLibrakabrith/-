@@ -74,9 +74,18 @@ def api(method, path, body=None, token=None, tries=5):
 
 
 def git(*args, cwd="."):
-    return subprocess.run(
-        ["git", *args], cwd=cwd, capture_output=True, text=True, check=True
-    ).stdout.strip()
+    """跑一条 git 命令，返回 UTF-8 解码后的 stdout。
+
+    **不能**用 `text=True` 让它按系统默认编码解码：这台机器是简体中文 Windows，
+    默认是 GBK，而 git 输出（提交信息、文件名）是 UTF-8 —— 一旦有中文就会抛
+    `UnicodeDecodeError: 'gbk' codec can't decode byte ...`，而且是在读子进程
+    输出的线程里抛，主流程拿到的是 None，报一个毫不相关的 AttributeError。
+    （这个坑让一次推送静默失败过。）
+
+    显式 decode 成 UTF-8 并 `errors="replace"` 兜底，避免任何一条脏输出中断推送。
+    """
+    proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, check=True)
+    return proc.stdout.decode("utf-8", errors="replace").strip()
 
 
 def main():

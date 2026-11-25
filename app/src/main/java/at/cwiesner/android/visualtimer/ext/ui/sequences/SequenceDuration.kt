@@ -8,7 +8,7 @@ import at.cwiesner.android.visualtimer.ext.data.Step
  * 为什么单独一个文件：
  * - 序列列表（[SequencesScreen]）和序列编辑器（[SequenceEditorScreen]）都要用，
  *   编辑器里的数据是草稿 [StepDraft] 而列表里是数据库实体 [Step]，
- *   所以两个重载都要；写成 private 就得到处复制一份。
+ *   所以两个版本都要（注意用不同的函数名，见下面的说明）；写成 private 就得到处复制一份。
  * - 它是本包内部的展示细节，**故意不暴露给面板网格**：
  *   `ui/panels/SequenceCell.kt` 的圆形卡片中间只能放一个短文本，
  *   那里已经直接用 `DeadlineCalculator.formatRemaining(总秒)` 显示总时长了，
@@ -27,10 +27,16 @@ fun totalDurationMillis(steps: List<Step>): Long =
 /**
  * 编辑器的草稿版本的合计时长。
  *
+ * ⚠️ **不能**和上面那个同名重载。原来写成 `fun totalDurationMillis(drafts: List<StepDraft>)`
+ * 与 `fun totalDurationMillis(steps: List<Step>)` 并存，CI 直接报：
+ *     Platform declaration clash: the same JVM signature (totalDurationMillis(Ljava/util/List;)J)
+ * 因为 JVM 会擦除泛型参数，两个 `List<...>` 在字节码里都是 `List`，签名完全一样。
+ * Kotlin 层面能分辨，JVM 层面不能 —— 所以必须用不同函数名（或 @JvmName）。
+ *
  * 单独写而不是复用 [totalDurationMillis]：草稿还没落库，
  * 不能为了算个数字去造一堆 `Step` 对象（它们还带 sequenceId 等无关字段）。
  */
-fun totalDurationMillis(drafts: List<StepDraft>): Long =
+fun totalDraftDurationMillis(drafts: List<StepDraft>): Long =
     drafts.sumOf { if (it.durationMillis > 0L) it.durationMillis else 0L }
 
 /**
@@ -72,4 +78,4 @@ fun describeSequenceDuration(steps: List<Step>): String = when {
  * 避免出现「合计 0s」。
  */
 fun describeDraftTotal(drafts: List<StepDraft>): String =
-    if (drafts.isEmpty()) "合计 —" else "合计 " + formatTotalDuration(totalDurationMillis(drafts))
+    if (drafts.isEmpty()) "合计 —" else "合计 " + formatTotalDuration(totalDraftDurationMillis(drafts))
