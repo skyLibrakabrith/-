@@ -281,6 +281,19 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * 打开数据库。
+         *
+         * **刻意不用 `fallbackToDestructiveMigration()`**：那个兜底会在迁移写错、
+         * 或版本号对不上时**静默把整库删掉重建** —— 用户的计时器、序列、分组全没了，
+         * 而且毫无提示，事后只能靠导入备份救。
+         *
+         * 现在的行为：
+         * - 缺迁移 → Room 抛出异常，由 [at.cwiesner.android.visualtimer.ext.ExtApplication] 捕获，
+         *   记日志并提示用户「请先导出备份」。**数据文件原地保留，不清库。**
+         * - 仅向下兼容（APK 被降级安装）时允许破坏性回退 —— 这种情况无法靠迁移解决，
+         *   且属于用户主动行为。
+         */
         fun get(context: Context): AppDatabase =
             INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -288,7 +301,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "visual-timer-ext.db",
                 ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
-                    .fallbackToDestructiveMigration()
+                    .fallbackToDestructiveMigrationOnDowngrade()
                     .build()
                     .also { INSTANCE = it }
             }

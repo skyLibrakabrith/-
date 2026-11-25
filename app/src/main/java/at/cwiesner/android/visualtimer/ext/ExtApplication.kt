@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.os.Build
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import at.cwiesner.android.visualtimer.ext.alarm.VibrationAlerter
 import at.cwiesner.android.visualtimer.ext.data.AlertProfile
@@ -20,6 +21,7 @@ import at.cwiesner.android.visualtimer.ext.settings.SettingsRepo
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
@@ -40,6 +42,17 @@ class ExtApplication : Application() {
     }
 
     val database: AppDatabase by lazy { AppDatabase.get(this) }
+
+    /**
+     * 数据库打开失败的提示。
+     *
+     * [AppDatabase.get] 去掉了 `fallbackToDestructiveMigration()`，所以迁移缺失时
+     * Room 会**抛异常而不是静默清库**。这里把那次异常变成一句看得懂的提示，
+     * 数据文件原地保留，用户可以先把备份导出来。
+     *
+     * 取值非空时，界面层应弹一次提示并把该标志清掉。
+     */
+    val databaseOpenError = MutableStateFlow<String?>(null)
 
     /**
      * 计时器运行时。挂在这里而不是界面上，
@@ -262,7 +275,18 @@ class ExtApplication : Application() {
 
     private fun seedDefaultsIfEmpty() {
         appScope.launch(Dispatchers.IO) {
-            val dao = database.alertProfileDao()
+            // 这里是数据库的**首次打开点**。AppDatabase.get() 已去掉静默清库的兜底，
+            // 所以迁移缺失时会在这里抛 IllegalStateException（Room 的 missing migration）。
+            // 捕获它、记日志、给界面一句人话，**不要**让整个进程崩在启动阶段，
+            // 更不要吞掉异常后假装一切正常 —— 那正是原来最坏的行为。
+            val dao = try {
+                database.alertProfileDao()
+            } catch (e: Throwable) {
+                Log.e(TAG, "数据库打开失败（迁移缺失？）。数据文件保持原样，未清理。", e)
+                databaseOpenError.value =
+                    "数据库打不开：版本不匹配。数据没有被删除，请先在「导入/导出」里备份，再反馈此问题。"
+                return@launch
+            }
             if (dao.count() > 0) return@launch
             VibrationPresets.all.forEach { (name, pattern) ->
                 dao.upsert(
@@ -280,6 +304,7 @@ class ExtApplication : Application() {
     }
 
     companion object {
+        private const val TAG = "ExtApplication"
         private const val CHANNEL_ALERTS = "timer_alerts"
     }
 }

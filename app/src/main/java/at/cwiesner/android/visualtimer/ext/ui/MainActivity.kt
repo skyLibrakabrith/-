@@ -113,6 +113,17 @@ class MainActivity : ComponentActivity() {
                 initial = SettingsRepo.DEFAULT_FLASH_INTERVAL,
             )
             var flashPreviewTick by remember { mutableIntStateOf(0) }
+
+            // 数据库打不开（迁移缺失）时，AppApplication 会把一句人话放进来。
+            // 这里只负责**弹一次**，然后立刻把标志清掉，避免每次重组都重复提示。
+            val dbError by app.databaseOpenError.collectAsState()
+            val context = androidx.compose.ui.platform.LocalContext.current
+            androidx.compose.runtime.LaunchedEffect(dbError) {
+                val msg = dbError ?: return@LaunchedEffect
+                android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_LONG).show()
+                app.databaseOpenError.value = null
+            }
+
             ExtTheme(mode = mode) {
                 Box(modifier = Modifier.fillMaxSize()) {
                     MainScaffold(onPreviewFlash = { flashPreviewTick++ })
