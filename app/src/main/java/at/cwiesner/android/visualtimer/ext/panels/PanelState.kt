@@ -44,7 +44,7 @@ fun rememberPanelState(): PanelState {
     val app = context.applicationContext as ExtApplication
     val db = app.database
     val scope = rememberCoroutineScope()
-    val settings = remember { SettingsRepo(context) }
+    val settings = app.settings   // 共享 + 预热，见 ExtApplication.settings 的注释
 
     val panels by remember { db.panelDao().observeAll() }
         .collectAsState(initial = emptyList<Panel>())
@@ -68,7 +68,7 @@ fun rememberPanelState(): PanelState {
     val allGroupMembers by remember { db.groupDao().observeAllMembers() }
         .collectAsState(initial = emptyList<GroupMember>())
 
-    val alertProfiles by remember { db.alertProfileDao().observeAll() }
+    val alertProfiles by app.alertProfiles
         .collectAsState(initial = emptyList<AlertProfile>())
 
     val allSequences by remember { db.sequenceDao().observeAll() }

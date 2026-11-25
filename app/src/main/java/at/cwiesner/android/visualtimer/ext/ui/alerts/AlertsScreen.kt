@@ -36,7 +36,6 @@ import androidx.compose.ui.unit.dp
 import at.cwiesner.android.visualtimer.ext.ExtApplication
 import at.cwiesner.android.visualtimer.ext.alarm.AlertDispatcher
 import at.cwiesner.android.visualtimer.ext.alarm.HeadphoneSoundAlerter
-import at.cwiesner.android.visualtimer.ext.data.AlertProfile
 import at.cwiesner.android.visualtimer.ext.settings.SettingsRepo
 import kotlinx.coroutines.launch
 
@@ -79,14 +78,14 @@ fun AlertsScreen(
     val db = app.database
     val scope = rememberCoroutineScope()
 
-    val profiles by remember { db.alertProfileDao().observeAll() }
-        .collectAsState(initial = emptyList<AlertProfile>())
+    // 应用级共享订阅：切标签不会重新查库，避免振动波形先空一帧
+    val profiles by app.alertProfiles.collectAsState()
 
     val activity = context as? android.app.Activity
     val dispatcher = remember(activity) {
         activity?.let { AlertDispatcher(it, scope) }
     }
-    val settings = remember { SettingsRepo(context) }
+    val settings = app.settings   // 共享 + 预热，避免切标签时先画默认值
 
     if (view == AlertsView.Sound) {
         SoundView(

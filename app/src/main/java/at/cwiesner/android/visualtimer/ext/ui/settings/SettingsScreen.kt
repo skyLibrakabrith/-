@@ -54,7 +54,6 @@ import at.cwiesner.android.visualtimer.ext.ui.wheel.NumberWheel
 import at.cwiesner.android.visualtimer.ext.ui.wheel.PaletteStrip
 import at.cwiesner.android.visualtimer.ext.settings.ColorMode
 import at.cwiesner.android.visualtimer.ext.settings.ColorThreshold
-import at.cwiesner.android.visualtimer.ext.settings.SettingsRepo
 import at.cwiesner.android.visualtimer.ext.settings.ThemeMode
 import at.cwiesner.android.visualtimer.ext.ui.ExtColors
 import kotlinx.coroutines.launch
@@ -71,7 +70,7 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
     val app = context.applicationContext as ExtApplication
     val scope = rememberCoroutineScope()
     val backup = remember { BackupManager(context, app.database) }
-    val settings = remember { SettingsRepo(context) }
+    val settings = app.settings   // 共享 + 预热，避免切标签时先画默认值
 
     val themeMode by settings.themeMode.collectAsState(initial = ThemeMode.PureBlack)
     val thresholds by settings.thresholds.collectAsState(initial = emptyList())

@@ -24,7 +24,10 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 /**
@@ -44,6 +47,25 @@ class ExtApplication : Application() {
     }
 
     val database: AppDatabase by lazy { AppDatabase.get(this) }
+
+    /**
+     * 警报配置（振动模式）的**应用级共享订阅**。
+     *
+     * 以前 AlertsScreen / PanelsScreen / PanelState 各自
+     * `remember { db.alertProfileDao().observeAll() }` + `collectAsState(initial = emptyList())`。
+     * 每次切进页面都新建一个 Flow、重新查一次 Room，而首帧只能画空列表 ——
+     * 于是振动波形区先空一下再出现（用户报的「振动波形会闪」）。
+     *
+     * 现在统一在这里订阅一次：应用启动就开始查，页面直接读缓存。
+     * 首帧要么已经有数据，要么在极短时间内到齐，不再每次重建重查。
+     *
+     * 初始值是空表：冷启动时仍可能先空一帧，但切标签绝不会再闪。
+     */
+    val alertProfiles: StateFlow<List<at.cwiesner.android.visualtimer.ext.data.AlertProfile>> by lazy {
+        database.alertProfileDao().observeAll()
+            .stateIn(appScope, SharingStarted.Eagerly, emptyList())
+    }
+
 
     /**
      * 数据库打开失败的提示。
@@ -98,7 +120,17 @@ class ExtApplication : Application() {
     /** 耳机限定声音：没有耳机时完全不响，避免外放打扰。 */
     private val headphoneSound: at.cwiesner.android.visualtimer.ext.alarm.HeadphoneSoundAlerter
         by lazy { at.cwiesner.android.visualtimer.ext.alarm.HeadphoneSoundAlerter(this) }
-    private val settings: SettingsRepo by lazy { SettingsRepo(this) }
+    /**
+     * 全应用共享的设置仓库。
+     *
+     * **挂在 Application 上而不是各页面各自 new**：设置需要**预热** ——
+     * 传 appScope 进去，DataStore 一启动就开始读，缓存好之后
+     * 页面 `collectAsState` 的首帧就是真值，切标签时才不会「先闪默认值」。
+     *
+     * 如果每个页面自己 `remember { SettingsRepo(context) }`，那就是一份新缓存、
+     * 重新读一次盘，预热白做。
+     */
+    val settings: SettingsRepo by lazy { SettingsRepo(this, appScope) }
 
     /**
      * 屏幕闪烁的暗场间隔（毫秒）。

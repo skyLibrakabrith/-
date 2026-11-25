@@ -80,9 +80,12 @@ class MainActivity : ComponentActivity() {
 
         ensureNotificationPermission()
 
-        val settings = SettingsRepo(this)
-
         val app = application as ExtApplication
+
+        // 顺序注意：app 必须先声明，settings 才能引用它。
+        // （本节开头是普通 Kotlin 代码不是 Composable，局部变量只是普通顺序执行；
+        //   但仍要遵守「先定义后使用」，这正是 AGENTS.md「Compose 局部声明有顺序」那条坑。）
+        val settings = app.settings
 
         // 有未处理提醒时把亮度拉满，离开提醒后还原
         lifecycleScope.launch {

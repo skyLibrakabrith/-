@@ -27,11 +27,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import at.cwiesner.android.visualtimer.ext.ExtApplication
 import at.cwiesner.android.visualtimer.ext.llm.AiFeatures
 import at.cwiesner.android.visualtimer.ext.llm.AiResult
 import at.cwiesner.android.visualtimer.ext.llm.TodoStep
 import at.cwiesner.android.visualtimer.ext.settings.AiMode
-import at.cwiesner.android.visualtimer.ext.settings.SettingsRepo
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
@@ -65,7 +65,7 @@ fun <T> AiPromptDialog(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val settings = remember { SettingsRepo(context) }
+    val settings = (context.applicationContext as ExtApplication).settings
     val ai = remember { AiFeatures(settings) }
 
     var input by remember { mutableStateOf("") }

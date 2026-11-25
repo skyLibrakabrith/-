@@ -5,11 +5,18 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 
 /** 主题模式。 */
 enum class ThemeMode(val label: String) {
@@ -73,19 +80,67 @@ enum class AiMode(val label: String) {
  *
  * 用 DataStore 存，避免自己处理 SharedPreferences 的异步问题。
  */
-class SettingsRepo(private val context: Context) {
+class SettingsRepo(
+    private val context: Context,
+    /**
+     * 用于预热设置缓存的作用域。传 Application 级作用域即可。
+     *
+     * 为什么需要它：DataStore 的 `store.data` 是冷流，订阅后要读一次文件才有第一帧。
+     * 页面里 `collectAsState(initial = 默认值)` 于是**先画出默认值**、再跳到真实值 ——
+     * 用户看到的就是「每次打开界面先闪一下」（切标签尤其明显）。
+     *
+     * 这里把 `store.data` 预热成一个**应用级共享的 StateFlow**，
+     * 所有派生设置项都基于它。应用启动就开始收集，等用户切到某个页面时
+     * 缓存里早已是真值，首帧直接正确，不再有「默认值 -> 真值」的跳变。
+     *
+     * 传 null 时退回原来的冷流行为（只在不需要预热的场景用，如单元测试）。
+     */
+    warmupScope: CoroutineScope? = null,
+) {
 
     private val store: DataStore<Preferences> = context.applicationContext.appDataStore
 
+    /**
+     * 预热的设置快照。
+     *
+     * - 传了 [warmupScope] 时用 `stateIn(Eagerly)`：订阅者一上来就读到缓存值。
+     * - 初始值是 [emptyPreferences]（= 全部走默认值），所以**冷启动**第一帧
+     *   仍可能是默认值；但应用启动远早于界面组合，实际上通常来得及。
+     *   真正的收益在**切标签**：那时缓存一定是热的，不会再闪。
+     *
+     * `catch` 吞掉读盘异常并保持空设置，避免 DataStore 损坏导致整个 App 起不来。
+     */
+    private val prefs: Flow<Preferences> = run {
+        val safe = store.data.catch { emit(emptyPreferences()) }
+        if (warmupScope == null) {
+            safe
+        } else {
+            safe.stateIn(
+                scope = warmupScope,
+                started = SharingStarted.Eagerly,
+                initialValue = emptyPreferences(),
+            )
+        }
+    }
+
+    /** 当前设置是否已经从磁盘加载完成（预热场景）。供需要"等就绪"的界面使用。 */
+    private val _ready = MutableStateFlow(false)
+    val ready: StateFlow<Boolean> get() = _ready
+
+    /** 标记已就绪。由 ExtApplication 在首次收到真实设置后调用。 */
+    fun markReady() {
+        _ready.value = true
+    }
+
     /** 主题模式。 */
-    val themeMode: Flow<ThemeMode> = store.data.map { prefs ->
+    val themeMode: Flow<ThemeMode> = prefs.map { prefs ->
         ThemeMode.entries.firstOrNull {
             it.name == prefs[KEY_THEME]
         } ?: ThemeMode.PureBlack
     }
 
     /** 变色阈值，按剩余时间从大到小排列。 */
-    val thresholds: Flow<List<ColorThreshold>> = store.data.map { prefs ->
+    val thresholds: Flow<List<ColorThreshold>> = prefs.map { prefs ->
         val raw = prefs[KEY_THRESHOLDS] ?: DEFAULT_THRESHOLDS
         parseThresholds(raw)
     }
@@ -99,44 +154,44 @@ class SettingsRepo(private val context: Context) {
      * 比例模式让盘面上颜色占的**面积**直接等于剩余比例，正是这个 App
      * 「不依赖读数字」的设计目标（见 README 的「可视化设计」）。
      */
-    val colorMode: Flow<ColorMode> = store.data.map { prefs ->
+    val colorMode: Flow<ColorMode> = prefs.map { prefs ->
         ColorMode.entries.firstOrNull { it.name == prefs[KEY_COLOR_MODE] }
             ?: ColorMode.Fraction
     }
 
     /** 等间隔模式的间隔分钟数。 */
-    val intervalMinutes: Flow<Long> = store.data.map { prefs ->
+    val intervalMinutes: Flow<Long> = prefs.map { prefs ->
         prefs[KEY_INTERVAL_MINUTES]?.toLongOrNull()?.takeIf { it > 0 } ?: 5L
     }
 
     /** 比例模式把表盘分成几份。 */
-    val fractionDivisions: Flow<Int> = store.data.map { prefs ->
+    val fractionDivisions: Flow<Int> = prefs.map { prefs ->
         prefs[KEY_FRACTION_DIVISIONS]?.toIntOrNull()?.coerceIn(2, 12) ?: 4
     }
 
     /** 圆盘上是否显示中央文字。 */
-    val showCenterText: Flow<Boolean> = store.data.map { it[KEY_CENTER_TEXT] ?: true }
+    val showCenterText: Flow<Boolean> = prefs.map { it[KEY_CENTER_TEXT] ?: true }
 
     /** 提醒铃声 URI；null 表示系统默认。 */
-    val ringtoneUri: Flow<String?> = store.data.map { it[KEY_RINGTONE] }
+    val ringtoneUri: Flow<String?> = prefs.map { it[KEY_RINGTONE] }
 
     /** 是否启用耳机声音。 */
-    val soundEnabled: Flow<Boolean> = store.data.map { it[KEY_SOUND] ?: true }
+    val soundEnabled: Flow<Boolean> = prefs.map { it[KEY_SOUND] ?: true }
 
     /** 是否启用振动（总开关）。 */
-    val vibrationEnabled: Flow<Boolean> = store.data.map { it[KEY_VIBRATE] ?: true }
+    val vibrationEnabled: Flow<Boolean> = prefs.map { it[KEY_VIBRATE] ?: true }
 
     /** 悬浮窗：在别的应用上层显示正在跑的计时器。 */
-    val overlayEnabled: Flow<Boolean> = store.data.map { it[KEY_OVERLAY] ?: false }
+    val overlayEnabled: Flow<Boolean> = prefs.map { it[KEY_OVERLAY] ?: false }
 
     /** 后台运行：退出界面后继续走表并报警。 */
-    val backgroundEnabled: Flow<Boolean> = store.data.map { it[KEY_BACKGROUND] ?: true }
+    val backgroundEnabled: Flow<Boolean> = prefs.map { it[KEY_BACKGROUND] ?: true }
 
     /** 屏幕常亮：计时界面不自动熄屏。 */
-    val keepScreenOn: Flow<Boolean> = store.data.map { it[KEY_KEEP_SCREEN_ON] ?: false }
+    val keepScreenOn: Flow<Boolean> = prefs.map { it[KEY_KEEP_SCREEN_ON] ?: false }
 
     /** 网格列数：1=单列大表盘，2=两列，3=三列小表盘。 */
-    val gridColumns: Flow<Int> = store.data.map {
+    val gridColumns: Flow<Int> = prefs.map {
         (it[KEY_GRID_COLUMNS]?.toIntOrNull() ?: 2).coerceIn(1, 8)
     }
 
@@ -147,7 +202,7 @@ class SettingsRepo(private val context: Context) {
      * 用户反馈「一直在高频闪动」，真正刺眼的是间隔太短，
      * 所以只给一个旋钮，调大就是变慢。
      */
-    val flashIntervalMillis: Flow<Long> = store.data.map {
+    val flashIntervalMillis: Flow<Long> = prefs.map {
         (it[KEY_FLASH_INTERVAL]?.toLongOrNull() ?: DEFAULT_FLASH_INTERVAL)
             .coerceIn(MIN_FLASH_INTERVAL, MAX_FLASH_INTERVAL)
     }
@@ -160,16 +215,16 @@ class SettingsRepo(private val context: Context) {
      * 默认 [AiMode.Off]：**默认关闭**，不联网、不产生任何请求。
      * 用户必须主动在设置里配好端点才会启用。
      */
-    val aiMode: Flow<AiMode> = store.data.map { prefs ->
+    val aiMode: Flow<AiMode> = prefs.map { prefs ->
         AiMode.entries.firstOrNull { it.name == prefs[KEY_AI_MODE] } ?: AiMode.Off
     }
 
     /** 云端 OpenAI 兼容端点，默认 DeepSeek。 */
-    val aiCloudBaseUrl: Flow<String> = store.data.map {
+    val aiCloudBaseUrl: Flow<String> = prefs.map {
         it[KEY_AI_CLOUD_BASE]?.takeIf { u -> u.isNotBlank() } ?: DEFAULT_AI_CLOUD_BASE_URL
     }
 
-    val aiCloudModel: Flow<String> = store.data.map {
+    val aiCloudModel: Flow<String> = prefs.map {
         it[KEY_AI_CLOUD_MODEL]?.takeIf { m -> m.isNotBlank() } ?: DEFAULT_AI_CLOUD_MODEL
     }
 
@@ -179,19 +234,19 @@ class SettingsRepo(private val context: Context) {
      * 只存在本机 DataStore（明文，普通 App 读不到）。
      * **不会**写进导出备份，也不进日志。设置页会明确提示这一点。
      */
-    val aiCloudKey: Flow<String> = store.data.map { it[KEY_AI_CLOUD_KEY] ?: "" }
+    val aiCloudKey: Flow<String> = prefs.map { it[KEY_AI_CLOUD_KEY] ?: "" }
 
     /** 本地 ollama 地址，例如 http://100.77.176.63:19931（Tailscale）。 */
-    val aiLocalBaseUrl: Flow<String> = store.data.map {
+    val aiLocalBaseUrl: Flow<String> = prefs.map {
         it[KEY_AI_LOCAL_BASE]?.takeIf { u -> u.isNotBlank() } ?: DEFAULT_AI_LOCAL_BASE_URL
     }
 
-    val aiLocalModel: Flow<String> = store.data.map {
+    val aiLocalModel: Flow<String> = prefs.map {
         it[KEY_AI_LOCAL_MODEL]?.takeIf { m -> m.isNotBlank() } ?: DEFAULT_AI_LOCAL_MODEL
     }
 
     /** 单次请求超时（秒）。云端慢、本地快，但统一一个上限够用。 */
-    val aiTimeoutSeconds: Flow<Int> = store.data.map {
+    val aiTimeoutSeconds: Flow<Int> = prefs.map {
         (it[KEY_AI_TIMEOUT]?.toIntOrNull() ?: DEFAULT_AI_TIMEOUT_SECONDS)
             .coerceIn(MIN_AI_TIMEOUT, MAX_AI_TIMEOUT)
     }

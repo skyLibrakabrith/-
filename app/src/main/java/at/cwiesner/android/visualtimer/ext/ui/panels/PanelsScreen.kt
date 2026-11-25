@@ -47,7 +47,6 @@ import at.cwiesner.android.visualtimer.ext.data.TimerKind
 import at.cwiesner.android.visualtimer.ext.domain.DeadlineCalculator
 import at.cwiesner.android.visualtimer.ext.domain.StepSequenceEngine
 import at.cwiesner.android.visualtimer.ext.domain.TimerRuntime
-import at.cwiesner.android.visualtimer.ext.settings.SettingsRepo
 import at.cwiesner.android.visualtimer.ext.ui.ExtColors
 import at.cwiesner.android.visualtimer.ext.ui.common.AiCompileDialog
 import at.cwiesner.android.visualtimer.ext.ui.sequences.SequenceEditorScreen
@@ -104,7 +103,7 @@ fun PanelsScreen(
     val scope = rememberCoroutineScope()
     // Application 持有：切标签 / 回桌面都不会丢倒计时
     val runner = app.panelRunner
-    val settings = remember { SettingsRepo(context) }
+    val settings = app.settings   // 共享 + 预热，避免切标签时先画默认值
 
     val thresholds by settings.thresholds.collectAsState(initial = emptyList())
     val colorMode by settings.colorMode.collectAsState(
@@ -233,7 +232,7 @@ fun PanelsScreen(
         }
     }
 
-    val alertProfiles by remember { db.alertProfileDao().observeAll() }
+    val alertProfiles by app.alertProfiles
         .collectAsState(initial = emptyList<AlertProfile>())
 
     val allSequences by remember { db.sequenceDao().observeAll() }
