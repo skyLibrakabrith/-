@@ -547,6 +547,12 @@ fun PanelsScreen(
                     timers = timers,
                     runtimeById = runtimeById,
                     selectedIds = selectedIds,
+                    // 变色配置来自设置，让列表里的小圆盘和网格大表盘保持一致
+                    colorMode = colorMode,
+                    intervalMinutes = intervalMinutes,
+                    fractionDivisions = fractionDivisions,
+                    thresholdMinutes = thresholdMinutes,
+                    thresholdColors = thresholdColors,
                     onToggle = { id ->
                         // 选中是**单选**语义（与"拆解只能针对一件事"保持一致）：
                         // 点已选中的 -> 取消；点别的 -> 替换成它，而不是累加。

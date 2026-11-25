@@ -223,6 +223,18 @@ internal fun TimerList(
     runtimeById: Map<Long, TimerRuntime>,
     selectedIds: Set<Long>,
     alertProfiles: List<at.cwiesner.android.visualtimer.ext.data.AlertProfile>,
+    /**
+     * 变色配置，必须来自 settings。
+     *
+     * 之前这里的小圆盘写死了 `ColorMode.Fraction` + `fractionDivisions = 4`，
+     * 于是在设置里改「表盘比例」的份数，列表视图里的小圆盘纹丝不动 ——
+     * 用户看到的就是「设置没生效」。
+     */
+    colorMode: ColorMode,
+    intervalMinutes: Long,
+    fractionDivisions: Int,
+    thresholdMinutes: List<Long>,
+    thresholdColors: List<androidx.compose.ui.graphics.Color>,
     onToggle: (Long) -> Unit,
     onEdit: (TimerItem) -> Unit,
     onChangeAlert: (TimerItem) -> Unit,
@@ -317,11 +329,12 @@ internal fun TimerList(
                         maxMinutes = 60,
                         centerFontSize = 14f,
                         innerDial = false,
-                        colorMode = ColorMode.Fraction,
-                        intervalMinutes = 5L,
-                        fractionDivisions = 4,
-                        thresholdMinutes = emptyList(),
-                        thresholdColors = emptyList(),
+                        // 跟随设置（原来是写死的 Fraction + 4 份，导致设置改了这里不变）
+                        colorMode = colorMode,
+                        intervalMinutes = intervalMinutes,
+                        fractionDivisions = fractionDivisions,
+                        thresholdMinutes = thresholdMinutes,
+                        thresholdColors = thresholdColors,
                     )
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
