@@ -53,6 +53,7 @@ import at.cwiesner.android.visualtimer.ext.domain.StepSequenceEngine
 import at.cwiesner.android.visualtimer.ext.domain.TimerRuntime
 import at.cwiesner.android.visualtimer.ext.settings.SettingsRepo
 import at.cwiesner.android.visualtimer.ext.ui.ExtColors
+import at.cwiesner.android.visualtimer.ext.ui.common.AiCompileDialog
 import at.cwiesner.android.visualtimer.ext.ui.sequences.SequenceEditorScreen
 import at.cwiesner.android.visualtimer.ext.ui.sequences.SequenceFocusScreen
 import kotlinx.coroutines.flow.flowOf
@@ -120,6 +121,9 @@ fun PanelsScreen(
     var showNewTimer by remember { mutableStateOf(false) }
     var showDeadline by remember { mutableStateOf(false) }
     var showPanelManager by remember { mutableStateOf(false) }
+
+    // Compiler：碎片念头 → 若干计时器
+    var showCompileDialog by remember { mutableStateOf(false) }
     var focusTimerId by remember { mutableStateOf<Long?>(null) }
 
     // 长按卡片后弹出「面板操作」抽屉
@@ -655,6 +659,16 @@ fun PanelsScreen(
                         modifier = Modifier.fillMaxWidth(),
                     ) { Text("面板管理") }
 
+                    // Compiler：一堆碎片念头 → 归类成若干计时器，直接放进当前面板
+                    TextButton(
+                        onClick = {
+                            showPanelActions = false
+                            longPressEntry = null
+                            showCompileDialog = true
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("🧠 整理念头") }
+
                     // DDL 一律没有编辑入口：它的时间由截止时刻决定
                     if (pressedTimer != null && !pressedTimer.locked) {
                         TextButton(
@@ -782,6 +796,48 @@ fun PanelsScreen(
                     )
                     selectedPanel = panels.size
                     toast("面板「$name」已创建")
+                }
+            },
+        )
+    }
+
+    if (showCompileDialog) {
+        // Compiler：把一堆零散想法归类成若干计时器，逐个放进当前面板。
+        //
+        // 只建计时器、不建序列 —— 序列有"每步等确认"的语义，
+        // 而整理念头产出的通常是互不相关的小事，做成独立计时器更符合直觉。
+        AiCompileDialog(
+            onDismiss = { showCompileDialog = false },
+            onApply = { groups ->
+                showCompileDialog = false
+                scope.launch {
+                    val pid = currentPanel?.id ?: run {
+                        toast("先选一个面板")
+                        return@launch
+                    }
+                    val existingRefs = runCatching { db.panelDao().refsOf(pid) }.getOrDefault(emptyList())
+                    var order = (existingRefs.maxOfOrNull { it.order } ?: -1) + 1
+                    val newRefs = mutableListOf<PanelTimerRef>()
+                    var added = 0
+                    groups.forEach { g ->
+                        g.items.forEach { item ->
+                            // 标题带上组名，网格里一眼能看出归属
+                            val label = "${g.name}·${item.title}"
+                            val timerId = db.timerDao().upsert(
+                                TimerItem(
+                                    label = label,
+                                    durationMillis = item.minutes * 60_000L,
+                                ),
+                            )
+                            newRefs += PanelTimerRef(panelId = pid, timerId = timerId, order = order)
+                            order++
+                            added++
+                        }
+                    }
+                    if (newRefs.isNotEmpty()) {
+                        db.panelDao().upsertRefs(newRefs)
+                    }
+                    toast("已加入 $added 个计时器")
                 }
             },
         )
