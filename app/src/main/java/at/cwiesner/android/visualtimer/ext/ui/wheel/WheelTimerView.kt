@@ -454,10 +454,21 @@ internal fun pickColor(
 
         at.cwiesner.android.visualtimer.ext.settings.ColorMode.Fraction -> {
             // 表盘按剩余比例分成 N 份，每份一个颜色，第 0 份取绿。
-            // 用「已走过第几份」而不是「剩余第几份」，
-            // 这样位置和颜色在整条时间轴上是同一个方向。
-            val divisions = fractionDivisions.coerceIn(2, 12)
-            val usedStep = (((1f - frac) * divisions).toInt()).coerceIn(0, divisions - 1)
+            //
+            // 范围常量与 SettingsRepo / 设置页色带共用，三处必须一致：
+            // 曾经一处写 2..8、另一处写 2..12，值在中间被静默夹过一次，
+            // 表现出来就是「设置里 n 份、盘面按 n-1 份上色」。
+            val divisions = fractionDivisions.coerceIn(
+                at.cwiesner.android.visualtimer.ext.settings.SettingsRepo.MIN_FRACTION_DIVISIONS,
+                at.cwiesner.android.visualtimer.ext.settings.SettingsRepo.MAX_FRACTION_DIVISIONS,
+            )
+            // 档位用**向下取整**（已走完几份），严格小于 divisions，不需要再夹上限。
+            //
+            // 关键：设置页的 PaletteStrip 第 i 格画的正是 trafficStepColor(i, divisions)，
+            // 所以盘面此刻取的那个色一定能在色带上找到对应的一格 ——
+            // 预览即所得，不会再出现「设置里看到一套色、盘面是另一套」。
+            val usedStep = ((1f - frac) * divisions).toInt()
+                .coerceIn(0, divisions - 1)
             ExtColors.trafficStepColor(usedStep, divisions)
         }
     }

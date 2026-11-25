@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 
@@ -164,9 +165,17 @@ class SettingsRepo(
         prefs[KEY_INTERVAL_MINUTES]?.toLongOrNull()?.takeIf { it > 0 } ?: 5L
     }
 
-    /** 比例模式把表盘分成几份。 */
+    /**
+     * 比例模式把表盘分成几份。
+     *
+     * 读写两端、以及盘面 `WheelTimerView.pickColor()` 都夹在 [MIN_FRACTION_DIVISIONS]
+     * .. [MAX_FRACTION_DIVISIONS]。三处范围必须一致 —— 范围不一致时，
+     * 值会在某一处被静默改写，界面上就看到「滚到 n 份，实际按 n-1 份上色」。
+     */
     val fractionDivisions: Flow<Int> = prefs.map { prefs ->
-        prefs[KEY_FRACTION_DIVISIONS]?.toIntOrNull()?.coerceIn(2, 12) ?: 4
+        prefs[KEY_FRACTION_DIVISIONS]?.trim()?.toIntOrNull()
+            ?.coerceIn(MIN_FRACTION_DIVISIONS, MAX_FRACTION_DIVISIONS)
+            ?: DEFAULT_FRACTION_DIVISIONS
     }
 
     /** 圆盘上是否显示中央文字。 */
@@ -282,6 +291,26 @@ class SettingsRepo(
         store.edit { it[KEY_AI_TIMEOUT] = sec.coerceIn(MIN_AI_TIMEOUT, MAX_AI_TIMEOUT).toString() }
     }
 
+    // ---------------- 未提交的输入草稿 ----------------
+    //
+    // 「整理念头」对话框里用户写了一堆念头，点「取消」或按返回就全没了 ——
+    // 而这些念头往往是当场想到的，重打一遍很痛苦。
+    // 所以把没点「整理」就关掉的输入**留一份草稿**，下次打开原样恢复。
+    //
+    // 按 key 区分场景（例如 "compile:<panelId>"），不同面板/不同功能互不覆盖。
+    // 清空 = 传空串（DataStore 里删掉这一项）。
+
+    private fun draftKey(key: String) = stringPreferencesKey("draft_$key")
+
+    suspend fun draftOf(key: String): String =
+        prefs.first()[draftKey(key)] ?: ""
+
+    suspend fun setDraft(key: String, text: String) {
+        store.edit { prefs ->
+            if (text.isBlank()) prefs.remove(draftKey(key)) else prefs[draftKey(key)] = text
+        }
+    }
+
     suspend fun setTheme(mode: ThemeMode) {
         store.edit { it[KEY_THEME] = mode.name }
     }
@@ -303,7 +332,10 @@ class SettingsRepo(
     }
 
     suspend fun setFractionDivisions(divisions: Int) {
-        store.edit { it[KEY_FRACTION_DIVISIONS] = divisions.coerceIn(2, 12).toString() }
+        store.edit {
+            it[KEY_FRACTION_DIVISIONS] =
+                divisions.coerceIn(MIN_FRACTION_DIVISIONS, MAX_FRACTION_DIVISIONS).toString()
+        }
     }
 
     suspend fun setShowCenterText(enabled: Boolean) {
@@ -398,6 +430,17 @@ class SettingsRepo(
 
         /** 默认：60 分钟起主色，10 分钟琥珀，3 分钟橙，1 分钟红。 */
         const val DEFAULT_THRESHOLDS = "60:0,10:1,3:2,1:3"
+
+        /**
+         * 表盘比例份数的可调范围与默认值。
+         *
+         * 唯一真源：SettingsRepo 读写、SettingsScreen 的滚轮与文案、
+         * WheelTimerView.pickColor() 都必须引用这三个常量，
+         * 不要在各处另写 2 / 12 / 4 字面量（曾经因为范围不一致导致「n 份」显示成「n-1 份」）。
+         */
+        const val MIN_FRACTION_DIVISIONS = 2
+        const val MAX_FRACTION_DIVISIONS = 12
+        const val DEFAULT_FRACTION_DIVISIONS = 4
 
         fun parseThresholds(raw: String): List<ColorThreshold> =
             raw.split(",")

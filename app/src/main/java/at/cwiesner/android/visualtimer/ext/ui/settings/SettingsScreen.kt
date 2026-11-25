@@ -50,6 +50,7 @@ import androidx.compose.ui.unit.sp
 import at.cwiesner.android.visualtimer.ext.ExtApplication
 import at.cwiesner.android.visualtimer.ext.io.BackupManager
 import at.cwiesner.android.visualtimer.ext.service.TimerOverlayService
+import at.cwiesner.android.visualtimer.ext.settings.SettingsRepo
 import at.cwiesner.android.visualtimer.ext.ui.wheel.NumberWheel
 import at.cwiesner.android.visualtimer.ext.ui.wheel.PaletteStrip
 import at.cwiesner.android.visualtimer.ext.settings.ColorMode
@@ -58,6 +59,20 @@ import at.cwiesner.android.visualtimer.ext.settings.ThemeMode
 import at.cwiesner.android.visualtimer.ext.ui.ExtColors
 import kotlinx.coroutines.launch
 import at.cwiesner.android.visualtimer.ext.ui.common.describeMinutes
+
+/**
+ * 表盘比例可选份数。
+ *
+ * **唯一来源**：滚轮的可选值、文案里的显示值、色带的格数全都从这个列表来。
+ *
+ * 之前滚轮写的是 `(2..8)`、SettingsRepo 允许 `2..12`、WheelTimerView 按 `2..12` 取色，
+ * 三处范围各不相同。份数一旦超出某个范围，那一处就会静默夹一下，
+ * 界面上就会看到"说的是一个数、画的是另一个数"。
+ * 这里统一成一处，边界常量直接取自 SettingsRepo 的伴生对象。
+ */
+private val FractionDivisionValues: List<Int> = (
+    SettingsRepo.MIN_FRACTION_DIVISIONS..SettingsRepo.MAX_FRACTION_DIVISIONS
+    ).toList()
 
 /**
  * 设置页。
@@ -155,9 +170,13 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
         }
 
         SettingsCard(title = "变色模式") {
+            // 说明文案必须和盘面实际用的色带一致。
+            // 以前这里写的是 PaletteNames（绿/黄绿/黄/橙/红/蓝紫/天蓝/紫 8 色），
+            // 但三种模式的盘面取色全都走 trafficStepColor（绿 → 黄 → 红 三锚点插值），
+            // 文案在误导用户：让人以为"分 4 份 = 绿/黄绿/黄/橙"。
             Text(
-                "决定圆盘颜色随剩余时间怎么变。配色自动取自 8 色梯度：" +
-                    ExtColors.PaletteNames.joinToString(" → ") + "。",
+                "决定圆盘颜色随剩余时间怎么变。三种模式统一走同一条红绿灯色带：" +
+                    "绿 → 黄 → 红，按档位插值取色。",
                 fontSize = 12.sp,
                 color = ExtColors.TextDim,
             )
@@ -231,8 +250,9 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                 }
 
                 ColorMode.Interval -> {
+                    // 等间隔模式盘面走 trafficStepColor（绿→黄→红），文案同步
                     Text(
-                        "每 ${describeMinutes(intervalMinutes)} 换一种颜色，按调色板顺序循环",
+                        "每 ${describeMinutes(intervalMinutes)} 换一种颜色，按红绿灯色带推进",
                         fontSize = 13.sp,
                         color = ExtColors.TextPrimary,
                     )
@@ -246,19 +266,30 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                 }
 
                 ColorMode.Fraction -> {
+                    // 文案和滚轮用**同一个**夹取表达式，边界取自 SettingsRepo。
+                    //
+                    // 之前文案直接写 ${fractionDivisions}，滚轮却用
+                    // fractionDivisions.coerceIn(2, 8)，两处范围不同：
+                    // 数据里一旦出现 >8 的值，滚轮显示的是一回事、文案说的是另一回事。
+                    // 现在两者都夹到同一区间，且区间与盘面（2..12）一致。
+                    val shownDivisions = fractionDivisions.coerceIn(
+                        SettingsRepo.MIN_FRACTION_DIVISIONS,
+                        SettingsRepo.MAX_FRACTION_DIVISIONS,
+                    )
                     Text(
-                        "表盘按剩余比例分成 ${fractionDivisions} 份，每份一种颜色",
+                        "表盘按剩余比例分成 $shownDivisions 份，每份一种颜色",
                         fontSize = 13.sp,
                         color = ExtColors.TextPrimary,
                     )
                     NumberWheel(
-                        values = remember { (2..8).toList() },
-                        selected = fractionDivisions.coerceIn(2, 8),
+                        values = FractionDivisionValues,
+                        selected = shownDivisions,
                         onSelect = { scope.launch { settings.setFractionDivisions(it) } },
                         modifier = Modifier.fillMaxWidth(),
                         suffix = " 份",
                     )
-                    PaletteStrip(divisions = fractionDivisions)
+                    // 色带与盘面同源取色，见 PaletteStrip 的注释
+                    PaletteStrip(divisions = shownDivisions)
                 }
             }
         }

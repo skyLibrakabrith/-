@@ -73,6 +73,14 @@ fun <T> AiPromptDialog(
     showTuning: Boolean = false,
     /** 输入框预填内容（例如从已有计时器拆解时把它当前的名字带进来）。 */
     initialInput: String = "",
+    /**
+     * 草稿键。非空时：打开对话框会恢复上次没提交的内容，
+     * 取消/返回会把当前输入存起来。
+     *
+     * 为什么需要：这些输入往往是当场想到的一堆念头，
+     * 点「取消」就全没了、要重打一遍非常痛苦。
+     */
+    draftKey: String? = null,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -85,6 +93,35 @@ fun <T> AiPromptDialog(
     var result by remember { mutableStateOf<T?>(null) }
     var tuning by remember { mutableStateOf(AiTuning()) }
 
+    // 打开时恢复草稿。
+    // 放在 LaunchedEffect 里而不是同步读：DataStore 是磁盘读取，只能 suspend。
+    // 首帧 input 是 initialInput（可能为空），读到草稿后会替换 —— 这一帧的闪动可以接受，
+    // 因为对话框刚弹出、用户还没开始打字。
+    LaunchedEffect(draftKey) {
+        if (draftKey == null) return@LaunchedEffect
+        val saved = runCatching { settings.draftOf(draftKey) }.getOrDefault("")
+        // 只有草稿非空、且用户还没开始输入时才覆盖 —— 避免把用户刚敲的字冲掉
+        if (saved.isNotBlank() && input.isBlank()) input = saved
+    }
+
+    /**
+     * 关闭并保存草稿。
+     *
+     * 三种关闭路径（点外面、点取消、按返回）都走这里，
+     * 保证"没提交的输入"一律能留下来。
+     */
+    fun dismissWithDraft() {
+        if (loading) return
+        if (draftKey != null) {
+            val text = input
+            scope.launch {
+                // 已经产生结果说明用户走完了流程，草稿不再需要
+                runCatching { settings.setDraft(draftKey, if (result != null) "" else text) }
+            }
+        }
+        onDismiss()
+    }
+
     // 用 collectAsState 而不是 LaunchedEffect+局部 state：
     // 后者首帧是默认值、协程结束后才变真值 —— 会让内容"先少一块再补上"。
     // settings 底层是应用级预热的 StateFlow，这里同步读到缓存。
@@ -92,7 +129,7 @@ fun <T> AiPromptDialog(
     val aiOff = aiMode == AiMode.Off
 
     AlertDialog(
-        onDismissRequest = { if (!loading) onDismiss() },
+        onDismissRequest = { dismissWithDraft() },
         title = { Text(title) },
         text = {
             Column(
@@ -189,7 +226,7 @@ fun <T> AiPromptDialog(
             ) { Text(if (hasResult) "采用" else actionLabel) }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss, enabled = !loading) { Text("取消") }
+            TextButton(onClick = { dismissWithDraft() }, enabled = !loading) { Text("取消") }
         },
     )
 }
@@ -320,11 +357,20 @@ fun AiSplitDialog(
 fun AiCompileDialog(
     onDismiss: () -> Unit,
     onApply: (List<at.cwiesner.android.visualtimer.ext.llm.TodoGroup>) -> Unit,
+    /**
+     * 草稿隔离键（通常传当前面板 id）。
+     *
+     * 按面板分开存，而不是全局一个草稿：用户在 A 面板写了一半的念头，
+     * 切到 B 面板再打开对话框，不该看到 A 的内容。
+     */
+    panelId: Long? = null,
 ) {
     AiPromptDialog(
         title = "🧠 整理念头",
         hint = "每行一个念头",
         actionLabel = "整理",
+        // 没点「整理」就退出时保存输入，下次打开原样恢复
+        draftKey = "compile:${panelId ?: 0L}",
         // 这里**不给任何旋钮**：用户此刻手里是一堆混乱念头，
         // 逼他先回答"这堆有多难/拆多细"是过早固化。
         // 难度和背景由模型拆完之后**逐条**给出，用户在下一步的排序界面里改。
