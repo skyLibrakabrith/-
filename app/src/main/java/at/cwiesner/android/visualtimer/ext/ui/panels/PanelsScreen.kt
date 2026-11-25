@@ -858,7 +858,7 @@ fun PanelsScreen(
         AiCompileDialog(
             onDismiss = { showCompileDialog = false },
             // 草稿按面板分开存：没点「整理」就退出，下次打开原样恢复
-            panelId = currentPanel?.id
+            panelId = currentPanel?.id,
             onApply = { groups ->
                 showCompileDialog = false
                 val pid = currentPanel?.id ?: run {
