@@ -1,4 +1,4 @@
-# Visual Timer Ext
+﻿# Visual Timer Ext
 
 Visual Timer 的功能扩展版。独立应用，包名 `at.cwiesner.android.visualtimer.ext`，
 可与原版 Visual Timer 共存安装、互不干扰。
