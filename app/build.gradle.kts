@@ -70,4 +70,9 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
 
     implementation(libs.androidx.datastore.preferences)
+
+    // 单元测试：纯 JVM，跑在 CI 里（本机没有 JDK）。
+    // 这些测试是这台机器上唯一能"真跑"的验证手段 —— 手势/界面只能装机试。
+    testImplementation(libs.junit)
+    testImplementation(libs.kotlinx.coroutines.test)
 }

@@ -25,6 +25,21 @@ jobs:
       - name: Build debug APK
         run: gradle :app:assembleDebug --no-daemon --stacktrace
 
+      # 单元测试。开发机没有 JDK，这是唯一能"真跑"验证逻辑的环节 ——
+      # 别把它并进 assembleDebug，失败时要能一眼分清是编译挂了还是测试挂了。
+      - name: Run unit tests
+        run: gradle :app:testDebugUnitTest --no-daemon --stacktrace
+
+      - name: Upload test reports on failure
+        if: failure()
+        uses: actions/upload-artifact@v5
+        with:
+          name: test-report
+          path: |
+            app/build/reports/tests/**
+            app/build/test-results/**
+          if-no-files-found: ignore
+
       - name: Upload APK artifact
         uses: actions/upload-artifact@v5
         with:
