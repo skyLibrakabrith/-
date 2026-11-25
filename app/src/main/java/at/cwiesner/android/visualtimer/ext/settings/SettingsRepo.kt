@@ -52,6 +52,23 @@ data class ColorThreshold(
 )
 
 /**
+ * AI 模式。
+ *
+ * 刻意做成三档而不是一个开关：本地 ollama 和云端 API 各有各的失败方式，
+ * 用户需要能明确说"就走云端别回退"或"只用本地别联网"。
+ */
+enum class AiMode(val label: String) {
+    /** 默认：完全不联网，三个入口都不出现。 */
+    Off("关闭"),
+
+    /** 云端优先，失败/超时自动回退到本地 ollama。 */
+    CloudFirst("云端优先（失败回退本地）"),
+
+    /** 只用本地 ollama，不发出任何外网请求。 */
+    LocalOnly("仅本地 ollama"),
+}
+
+/**
  * 应用设置。
  *
  * 用 DataStore 存，避免自己处理 SharedPreferences 的异步问题。
@@ -125,6 +142,81 @@ class SettingsRepo(private val context: Context) {
     val flashIntervalMillis: Flow<Long> = store.data.map {
         (it[KEY_FLASH_INTERVAL]?.toLongOrNull() ?: DEFAULT_FLASH_INTERVAL)
             .coerceIn(MIN_FLASH_INTERVAL, MAX_FLASH_INTERVAL)
+    }
+
+    // ---------------- AI（任务拆解 / 估时 / 念头整理） ----------------
+
+    /**
+     * AI 模式。
+     *
+     * 默认 [AiMode.Off]：**默认关闭**，不联网、不产生任何请求。
+     * 用户必须主动在设置里配好端点才会启用。
+     */
+    val aiMode: Flow<AiMode> = store.data.map { prefs ->
+        AiMode.entries.firstOrNull { it.name == prefs[KEY_AI_MODE] } ?: AiMode.Off
+    }
+
+    /** 云端 OpenAI 兼容端点，默认 DeepSeek。 */
+    val aiCloudBaseUrl: Flow<String> = store.data.map {
+        it[KEY_AI_CLOUD_BASE]?.takeIf { u -> u.isNotBlank() } ?: DEFAULT_AI_CLOUD_BASE_URL
+    }
+
+    val aiCloudModel: Flow<String> = store.data.map {
+        it[KEY_AI_CLOUD_MODEL]?.takeIf { m -> m.isNotBlank() } ?: DEFAULT_AI_CLOUD_MODEL
+    }
+
+    /**
+     * 云端 API key。
+     *
+     * 只存在本机 DataStore（明文，普通 App 读不到）。
+     * **不会**写进导出备份，也不进日志。设置页会明确提示这一点。
+     */
+    val aiCloudKey: Flow<String> = store.data.map { it[KEY_AI_CLOUD_KEY] ?: "" }
+
+    /** 本地 ollama 地址，例如 http://100.77.176.63:19931（Tailscale）。 */
+    val aiLocalBaseUrl: Flow<String> = store.data.map {
+        it[KEY_AI_LOCAL_BASE]?.takeIf { u -> u.isNotBlank() } ?: DEFAULT_AI_LOCAL_BASE_URL
+    }
+
+    val aiLocalModel: Flow<String> = store.data.map {
+        it[KEY_AI_LOCAL_MODEL]?.takeIf { m -> m.isNotBlank() } ?: DEFAULT_AI_LOCAL_MODEL
+    }
+
+    /** 单次请求超时（秒）。云端慢、本地快，但统一一个上限够用。 */
+    val aiTimeoutSeconds: Flow<Int> = store.data.map {
+        (it[KEY_AI_TIMEOUT]?.toIntOrNull() ?: DEFAULT_AI_TIMEOUT_SECONDS)
+            .coerceIn(MIN_AI_TIMEOUT, MAX_AI_TIMEOUT)
+    }
+
+    suspend fun setAiMode(mode: AiMode) {
+        store.edit { it[KEY_AI_MODE] = mode.name }
+    }
+
+    suspend fun setAiCloudBaseUrl(url: String) {
+        store.edit { it[KEY_AI_CLOUD_BASE] = url.trim() }
+    }
+
+    suspend fun setAiCloudModel(model: String) {
+        store.edit { it[KEY_AI_CLOUD_MODEL] = model.trim() }
+    }
+
+    suspend fun setAiCloudKey(key: String) {
+        store.edit { prefs ->
+            val k = key.trim()
+            if (k.isEmpty()) prefs.remove(KEY_AI_CLOUD_KEY) else prefs[KEY_AI_CLOUD_KEY] = k
+        }
+    }
+
+    suspend fun setAiLocalBaseUrl(url: String) {
+        store.edit { it[KEY_AI_LOCAL_BASE] = url.trim() }
+    }
+
+    suspend fun setAiLocalModel(model: String) {
+        store.edit { it[KEY_AI_LOCAL_MODEL] = model.trim() }
+    }
+
+    suspend fun setAiTimeoutSeconds(sec: Int) {
+        store.edit { it[KEY_AI_TIMEOUT] = sec.coerceIn(MIN_AI_TIMEOUT, MAX_AI_TIMEOUT).toString() }
     }
 
     suspend fun setTheme(mode: ThemeMode) {
@@ -207,6 +299,31 @@ class SettingsRepo(private val context: Context) {
         private val KEY_KEEP_SCREEN_ON = booleanPreferencesKey("keep_screen_on")
         private val KEY_GRID_COLUMNS = stringPreferencesKey("grid_columns")
         private val KEY_FLASH_INTERVAL = stringPreferencesKey("flash_interval_millis")
+
+        // AI
+        private val KEY_AI_MODE = stringPreferencesKey("ai_mode")
+        private val KEY_AI_CLOUD_BASE = stringPreferencesKey("ai_cloud_base_url")
+        private val KEY_AI_CLOUD_MODEL = stringPreferencesKey("ai_cloud_model")
+        private val KEY_AI_CLOUD_KEY = stringPreferencesKey("ai_cloud_key")
+        private val KEY_AI_LOCAL_BASE = stringPreferencesKey("ai_local_base_url")
+        private val KEY_AI_LOCAL_MODEL = stringPreferencesKey("ai_local_model")
+        private val KEY_AI_TIMEOUT = stringPreferencesKey("ai_timeout_seconds")
+
+        /**
+         * AI 默认值。
+         *
+         * 本机 ollama 实际跑在 19931 —— 不是默认的 11434。
+         * 原因是 Windows 的动态端口范围保留到 15000，而 11434 落在
+         * netsh 排除段 11419-11518 里，环回和通配都绑不上。
+         * 见机器记忆 AGENTS.md「端口」一节。
+         */
+        const val DEFAULT_AI_CLOUD_BASE_URL = "https://api.deepseek.com"
+        const val DEFAULT_AI_CLOUD_MODEL = "deepseek-flash"
+        const val DEFAULT_AI_LOCAL_BASE_URL = "http://100.77.176.63:19931"
+        const val DEFAULT_AI_LOCAL_MODEL = "qwen3.5:4b"
+        const val DEFAULT_AI_TIMEOUT_SECONDS = 20
+        const val MIN_AI_TIMEOUT = 5
+        const val MAX_AI_TIMEOUT = 120
 
         /** 亮起时长固定：再短就看不出来，再长就成了常亮。 */
         const val FLASH_ON_MILLIS: Long = 220L

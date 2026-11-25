@@ -28,27 +28,49 @@ import json
 import os
 import subprocess
 import sys
+import urllib.error
 import urllib.request
 
 REPO = "skyLibrakabrith/-"
 BRANCH = "main"
 
 
-def api(method, path, body=None, token=None):
-    data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(
-        "https://api.github.com" + path,
-        data=data,
-        method=method,
-        headers={
-            "User-Agent": "dsh",
-            "Authorization": "Bearer " + token,
-            "Accept": "application/vnd.github+json",
-            "Content-Type": "application/json",
-        },
-    )
-    with urllib.request.urlopen(req, timeout=120) as r:
-        return json.load(r)
+def api(method, path, body=None, token=None, tries=5):
+    """调一次 API，对 5xx / 504 这类网关错误做退避重试。
+
+    GitHub 会在建 tree 时偶发 504 Gateway Timeout（实测上传 100+ blob 那次遇到）。
+    它是瞬时错误，重试通常就好了；不重试的话整轮推送白做。
+    """
+    import time
+
+    last = None
+    for attempt in range(tries):
+        data = json.dumps(body).encode() if body is not None else None
+        req = urllib.request.Request(
+            "https://api.github.com" + path,
+            data=data,
+            method=method,
+            headers={
+                "User-Agent": "dsh",
+                "Authorization": "Bearer " + token,
+                "Accept": "application/vnd.github+json",
+                "Content-Type": "application/json",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=120) as r:
+                return json.load(r)
+        except urllib.error.HTTPError as e:
+            last = e
+            # 4xx 是我们的错，重试没意义
+            if 400 <= e.code < 500:
+                raise
+            print(f"  API {e.code} on {path}, retry {attempt + 1}/{tries}")
+        except Exception as e:
+            last = e
+            print(f"  API error on {path}: {type(e).__name__}, retry {attempt + 1}/{tries}")
+        time.sleep(2 ** attempt)
+    raise SystemExit(f"API 持续失败: {path} -> {last}")
 
 
 def git(*args, cwd="."):
@@ -97,18 +119,40 @@ def main():
         print("[dry-run] 将上传以上文件并新建 commit，实际未执行。")
         return
 
+    # 增量：远端已有的同内容 blob 直接复用，不再上传。
+    # 104 个文件里通常只有几个变了，省掉大量请求也降低 504 概率。
+    remote_entries = {}
+    tree = api(
+        "GET",
+        f"/repos/{REPO}/git/trees/{remote['commit']['tree']['sha']}?recursive=1",
+        token=token,
+    )
+    for e in tree.get("tree", []):
+        if e["type"] == "blob":
+            remote_entries[e["path"]] = e["sha"]
+
     blobs = {}
+    uploaded = reused = 0
     for f in files:
         p = os.path.join(cwd, f.replace("/", os.sep))
         with open(p, "rb") as fh:
             content = fh.read()
+        # 先算本地 git blob sha，和远端比。
+        # --no-filters 很关键：不加的话会走 CRLF 转换，算出的 sha 和工作区实际字节对不上，
+        # 于是"内容没变"的文件也会被当成变了重新上传（这个仓库在 exFAT 上，换行尤其容易踩）。
+        local_blob = git("hash-object", "--no-filters", p, cwd=cwd)
+        if remote_entries.get(f) == local_blob:
+            blobs[f] = local_blob
+            reused += 1
+            continue
         # 二进制判定：前 8KB 出现 NUL 就当 base64 传
         if b"\0" in content[:8000]:
             body = {"content": base64.b64encode(content).decode(), "encoding": "base64"}
         else:
             body = {"content": content.decode("utf-8"), "encoding": "utf-8"}
         blobs[f] = api("POST", f"/repos/{REPO}/git/blobs", body, token=token)["sha"]
-    print(f"blob 上传完成: {len(blobs)}")
+        uploaded += 1
+    print(f"blob: 上传 {uploaded} 个，复用 {reused} 个")
 
     def make_tree(prefix):
         """自底向上建树：返回 prefix 目录的 tree sha。

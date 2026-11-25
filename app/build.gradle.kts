@@ -42,6 +42,16 @@ android {
         compose = true
     }
 
+    /**
+     * 单元测试时 `android.util.Log` 等 Android API 默认会抛
+     * `RuntimeException: Method ... not mocked`。
+     * 我们的 llm/ 层用了 Log 记日志，测试只要碰到就会炸。
+     * 返回默认值（Log 变成空操作）最省事，也不会让测试验证到日志内容。
+     */
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
+
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
