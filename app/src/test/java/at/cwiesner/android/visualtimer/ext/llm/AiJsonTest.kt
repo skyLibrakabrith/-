@@ -185,10 +185,31 @@ class AiJsonTest {
         assertEquals(45, AiJson.parseMinutes("""{"estimate":45}"""))
     }
 
-    /** 有些模型只回一个数字。 */
+    /** 有些模型只回一个数字。
+     *
+     * 回归：这条曾经因为 parseMinutes 一开始就 `extractJsonObject(raw) ?: return null`
+     * 而失败 —— 裸数字没有花括号，被当成解析失败（CI #79 抓到）。
+     */
     @Test
     fun `估时容忍纯数字`() {
         assertEquals(25, AiJson.parseMinutes("25"))
+    }
+
+    @Test
+    fun `估时容忍带单位的数字`() {
+        assertEquals(25, AiJson.parseMinutes("约 25 分钟"))
+    }
+
+    /**
+     * 拿不到时长必须返回 null。
+     *
+     * 和拆解场景不同：拆解里某步没给时长给默认 15 分（不能丢步骤），
+     * 但单独估时如果返回 15，等于编了个假结果给用户。
+     */
+    @Test
+    fun `估时拿不到时长返回 null`() {
+        assertNull(AiJson.parseMinutes("我不知道"))
+        assertNull(AiJson.parseMinutes("""{"foo":1}"""))
     }
 
     @Test

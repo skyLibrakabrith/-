@@ -33,6 +33,9 @@ object AiJson {
     private const val MIN_MINUTES = 5
     private const val MAX_MINUTES = 180
 
+    /** 拆解/整理时，某步没给时长就用这个值（而不是丢掉这一步）。 */
+    private const val DEFAULT_MINUTES = 15
+
     private val TITLE_KEYS = listOf("title", "label", "text", "name", "task", "step", "content")
     private val MINUTES_KEYS = listOf("minutes", "min", "mins", "duration", "estimate", "time")
 
@@ -122,15 +125,30 @@ object AiJson {
         return groups.ifEmpty { null }
     }
 
-    /** 解析单个估时。 */
+    /** 解析单个估时。
+     *
+     * 注意这里**不能**在 extractJsonObject 返回 null 时立刻 return null：
+     * 模型有时只回一个裸数字（"25"），根本没有花括号。
+     * 之前写成 `?: return null` 就导致这类回复被当成解析失败（CI #79 抓到）。
+     */
     fun parseMinutes(raw: String): Int? {
-        val body = extractJsonObject(raw) ?: return null
-        val obj = runCatching { json.parseToJsonElement(body).jsonObject }.getOrNull()
-        if (obj != null) {
-            pickMinutes(obj)?.let { return it }
+        val body = extractJsonObject(raw)
+        if (body != null) {
+            val obj = runCatching { json.parseToJsonElement(body).jsonObject }.getOrNull()
+            if (obj != null) {
+                // 是 JSON 对象就以它为准：用 findMinutes（找不到返回 null）而不是
+                // pickMinutes（有默认值 15）。单独估时没有"这条没给时间"这种语义，
+                // 拿不到就是失败，不能编一个 15 分钟出来。
+                //
+                // 也**不能**在这里退回去扫原文的裸数字：对 {"foo":1} 扫原文会抠出 1，
+                // 再把 1 夹成 5 分钟，等于凭空编了个结果。
+                return findMinutes(obj)
+            }
         }
-        // 有些模型只回一个数字
-        return raw.trim().toIntOrNull()?.let { clampMinutes(it) }
+        // 走到这里说明模型压根没给 JSON，那才退回到"只回了一个数字"的兜底
+        Regex("""(\d+)""").find(raw)?.groupValues?.get(1)?.toIntOrNull()
+            ?.let { return clampMinutes(it) }
+        return null
     }
 
     private fun pickString(o: JsonObject, keys: List<String>): String? {
@@ -142,7 +160,15 @@ object AiJson {
         return null
     }
 
-    private fun pickMinutes(o: JsonObject): Int {
+    /**
+     * 找时长；**找不到返回 null**。
+     *
+     * 和 [pickMinutes] 的区别很重要：
+     * - 拆解/整理里，某条步骤没给时长 → 用默认值 15，别把这条丢掉（[pickMinutes]）
+     * - 单独估时里，拿不到时长 → 必须返回 null 让调用方报失败（[findMinutes]）
+     * 把两者混成一个函数会让"估时失败"变成"估出 15 分钟"这种假结果。
+     */
+    private fun findMinutes(o: JsonObject): Int? {
         for (k in MINUTES_KEYS) {
             val v = o[k] ?: continue
             val n = runCatching { v.jsonPrimitive }.getOrNull() ?: continue
@@ -152,9 +178,11 @@ object AiJson {
             Regex("""(\d+)""").find(text)?.groupValues?.get(1)?.toIntOrNull()
                 ?.let { return clampMinutes(it) }
         }
-        // 没给时长就用默认值，而不是丢弃这个步骤
-        return 15
+        return null
     }
+
+    /** 没给时长就用默认值，而不是丢弃这个步骤。 */
+    private fun pickMinutes(o: JsonObject): Int = findMinutes(o) ?: DEFAULT_MINUTES
 
     private fun clampMinutes(m: Int): Int = m.coerceIn(MIN_MINUTES, MAX_MINUTES)
 }
