@@ -4,6 +4,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
@@ -24,9 +25,9 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.layout
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import at.cwiesner.android.visualtimer.ext.ui.ExtColors
@@ -129,12 +130,20 @@ fun PieTimerView(
     // 直径取父容器宽高里较小的那个。之前 fillParent=true 时用 fillMaxSize，
     // Box 撑成竖长矩形，Canvas 内部按 minDimension 画圆 → 圆是正的，
     // 但中央文字、内盘控件和外面的标签各按不同基准对齐，看起来就是错位的。
-    Box(
+    //
+    // 用 BoxWithConstraints 而不是 Box：中央文字的字号要按表盘直径算，
+    // 而 diameter 是 DrawScope 里的局部量，在 Canvas 外面拿不到
+    // （上一版就是这么写崩的，CI 报 Unresolved reference 'diameter'）。
+    // maxWidth 就是这块正方形区域的边长 = 表盘直径。
+    BoxWithConstraints(
         modifier = modifier
             .fillMaxSize()
             .asSquareInside(),
         contentAlignment = Alignment.Center,
     ) {
+        // 表盘直径（dp）。BoxWithConstraints 保证宽高相等，取 maxWidth 即可。
+        val dialSizeDp: Dp = maxWidth
+
         Canvas(
             modifier = Modifier
                 .aspectRatio(1f)
@@ -337,8 +346,7 @@ fun PieTimerView(
             // 注意：这里**不能**用 Text 的 autoSize / TextAutoSize 参数 ——
             // 那是 compose-ui 1.8.0 才有的 API，本项目 BOM 2024.12.01 对应 1.7.5，
             // 用了会直接编译失败。所以靠「按直径算字号 + maxLines=1 + 限宽」来兜。
-            val diameterDp = with(LocalDensity.current) { diameter.toDp() }
-            val adaptiveFont = (diameterDp.value * 0.13f)
+            val adaptiveFont = (dialSizeDp.value * 0.13f)
                 .coerceIn(centerFontSize * 0.55f, centerFontSize)
 
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -356,7 +364,7 @@ fun PieTimerView(
                     softWrap = false,
                     modifier = Modifier
                         // 内盘直径的 82%，留出圆周的呼吸空间
-                        .widthIn(max = (diameterDp * 0.82f).coerceAtLeast(8.dp))
+                        .widthIn(max = (dialSizeDp * 0.82f).coerceAtLeast(8.dp))
                         .padding(horizontal = 1.dp),
                 )
                 if (centerLabel != null) {
