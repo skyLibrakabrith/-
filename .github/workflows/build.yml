@@ -27,7 +27,12 @@ jobs:
 
       # 单元测试。开发机没有 JDK，这是唯一能"真跑"验证逻辑的环节 ——
       # 别把它并进 assembleDebug，失败时要能一眼分清是编译挂了还是测试挂了。
+      #
+      # timeout-minutes：曾经有一次测试用了普通 runTest scope + 引擎的无限 tick 循环，
+      # CI 上表现为这一步**永远 in_progress**（不是报错），要等 6 小时才超时。
+      # 加一个硬上限，让"挂住"变成一次快速的失败。
       - name: Run unit tests
+        timeout-minutes: 10
         run: gradle :app:testDebugUnitTest --no-daemon --stacktrace
 
       - name: Upload test reports on failure

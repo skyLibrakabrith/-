@@ -40,8 +40,19 @@ class StepSequenceEngineTest {
             Step(id = (i + 1).toLong(), sequenceId = 1L, durationMillis = d, label = "第${i + 1}步", order = i)
         }
 
+    /**
+     * 把引擎建在 [TestScope.backgroundScope] 上。
+     *
+     * 这一点是必须的，不是风格问题：`StepSequenceEngine.runStep` 的第二阶段是
+     * `while (isActive) { delay(...) }` **无限循环**，只有 `stop()` 或取消 scope 才停。
+     * 如果建在普通 `runTest` scope 上，测试体结束后 `runTest` 会等待该协程完成 ——
+     * 而它永远不会完成，于是整个测试挂死（CI 上表现为 unit test 步骤永远 in_progress，
+     * 而不是失败报错，非常难查）。
+     *
+     * `backgroundScope` 在测试体结束时会被自动取消，正好对应"引擎还挂着但我们不管了"。
+     */
     private fun TestScope.newEngine(onFinished: suspend (Step) -> Unit = {}) =
-        StepSequenceEngine(scope = this, onStepFinished = onFinished)
+        StepSequenceEngine(scope = backgroundScope, onStepFinished = onFinished)
 
     // ---------------- 基本流转 ----------------
 
