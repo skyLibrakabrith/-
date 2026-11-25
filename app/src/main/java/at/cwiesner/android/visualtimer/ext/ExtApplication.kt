@@ -26,6 +26,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -110,6 +111,21 @@ class ExtApplication : Application() {
         sequenceEngine.confirm()
     }
 
+    /**
+     * 序列悬浮窗要显示的快照。
+     *
+     * 为什么要缓存：`SequenceOverlayService` 是**纯 View 代码、没有协程作用域**
+     * （照 `TimerOverlayService` / `AlertOverlayService` 的既定做法），
+     * 它没法 `collect` `sequenceEngine.phase`。所以这里由应用级作用域订阅一次，
+     * 把需要显示的字段算好、放在这个不可变快照里，服务端每 300ms 直接读。
+     *
+     * 只在 [at.cwiesner.android.visualtimer.ext.domain.StepSequenceEngine.Phase.Running] /
+     * `AwaitingConfirm` 时非空，Idle 与 Finished 一律置 null（服务端看到 null 就把卡片收起）。
+     */
+    @Volatile
+    var seqOverlayInfo: SequenceOverlayInfo? = null
+        private set
+
     /** 用户处理了提醒：停掉可能还在播的声音。 */
     fun stopAlertSound() {
         logCatching("stopAlertSound") { headphoneSound.stop() }
@@ -150,11 +166,158 @@ class ExtApplication : Application() {
         panelRunner.startTicking()
         observeAlerts()
         observeFlashSetting()
+        observeSequenceOverlay()
     }
 
     private fun observeFlashSetting() {
         appScope.launch {
             settings.flashIntervalMillis.collect { flashIntervalMillis = it }
+        }
+    }
+
+    // ---------------- 序列悬浮窗 ----------------
+
+    /**
+     * 把 [StepSequenceEngine.phase] 同步到 [seqOverlayInfo]，并据此起停 [SequenceOverlayService]。
+     *
+     * 用的是 200ms 轮询而不是直接 `collect(phase)`：引擎每 100ms 就发一次新状态，
+     * 但悬浮窗这里**只关心三件事** —— 有没有活动序列、处于哪个大阶段、
+     * 序列名 / 阶段名 / 总时长。把它们抽出来比一比，值没变就整轮跳过，
+     * 值变了才写缓存（也就不会每秒十几次地触发服务端刷新）。
+     *
+     * 起停规则：
+     * - 设置里「悬浮窗」关着 → 停；
+     * - 系统没给 SYSTEM_ALERT_WINDOW → 停（省掉一次注定失败的 startForegroundService）；
+     * - 否则 Idle / Finished → 停，Running / AwaitingConfirm → 起。
+     *
+     * 服务的 start/stop 本身是幂等的（重复 start 只是再走一次 onStartCommand），
+     * 所以这里可以放心每 200ms 判断一次。
+     */
+    private fun observeSequenceOverlay() {
+        appScope.launch {
+            var overlayEnabled = false
+            launch { settings.overlayEnabled.collect { overlayEnabled = it } }
+
+            while (true) {
+                val phase = sequenceEngine.phase.value
+                // 序列名要查库（异步），先按需发起，再取当前已知的名字拼快照
+                val activeId = sequenceEngine.activeSequenceId
+                requestSequenceName(activeId)
+                val info = buildSequenceOverlayInfo(phase)
+                if (info != seqOverlayInfo) {
+                    seqOverlayInfo = info
+                }
+
+                val shouldShow = overlayEnabled &&
+                    info != null &&
+                    logCatchingOr("seq-overlay-perm", false) {
+                        android.provider.Settings.canDrawOverlays(this@ExtApplication)
+                    }
+                if (shouldShow) {
+                    logCatching("seq-overlay-start") {
+                        at.cwiesner.android.visualtimer.ext.service.SequenceOverlayService
+                            .start(this@ExtApplication)
+                    }
+                } else if (!overlayEnabled) {
+                    // 设置已关：一定要停，用户点「关闭悬浮窗」要立刻生效
+                    logCatching("seq-overlay-stop-setting") {
+                        at.cwiesner.android.visualtimer.ext.service.SequenceOverlayService
+                            .stop(this@ExtApplication)
+                    }
+                } else if (info == null) {
+                    // 序列闲置 / 已结束
+                    logCatching("seq-overlay-stop-idle") {
+                        at.cwiesner.android.visualtimer.ext.service.SequenceOverlayService
+                            .stop(this@ExtApplication)
+                    }
+                }
+                // 剩下一种情况：有活动序列、设置开着，但没给系统权限 —— 什么都不做，
+                // 留给设置页去引导授权（悬浮窗本身也无法显示）。
+
+                kotlinx.coroutines.delay(SEQUENCE_OVERLAY_POLL_MILLIS)
+            }
+        }
+    }
+
+    /**
+     * 把引擎阶段折算成悬浮窗要显示的那几行字。
+     *
+     * 只读取 Phase.Running 的 `stepIndex` / `step` / `remainingMillis` / `totalMillis`，
+     * **刻意不读 `paused`** —— 那个字段由另一个任务在改，读了就耦合了。
+     */
+    private fun buildSequenceOverlayInfo(
+        phase: at.cwiesner.android.visualtimer.ext.domain.StepSequenceEngine.Phase,
+    ): SequenceOverlayInfo? = when (phase) {
+        is at.cwiesner.android.visualtimer.ext.domain.StepSequenceEngine.Phase.Running -> {
+            val step = phase.step
+            SequenceOverlayInfo(
+                sequenceId = sequenceEngine.activeSequenceId,
+                sequenceName = currentSequenceName,
+                stepCaption = "第 ${phase.stepIndex + 1} 阶段 · " +
+                    (step.label ?: DeadlineCalculator.formatRemaining(step.durationMillis)),
+                countdownText = DeadlineCalculator.formatRemaining(phase.remainingMillis),
+                awaitingConfirm = false,
+                elapsedMillis = 0L,
+                overtimeMillis = 0L,
+                timeoutRemainingMillis = 0L,
+                overdue = false,
+            )
+        }
+
+        is at.cwiesner.android.visualtimer.ext.domain.StepSequenceEngine.Phase.AwaitingConfirm -> {
+            val step = phase.finishedStep
+            val next = phase.nextStep?.label
+            SequenceOverlayInfo(
+                sequenceId = sequenceEngine.activeSequenceId,
+                sequenceName = currentSequenceName,
+                // 悬浮窗第二行固定显示「已完成，等你确认」，这里把「完成的是哪一步 / 下一步是什么」并进来
+                stepCaption = (step.label ?: "第 ${phase.finishedStepIndex + 1} 阶段") +
+                    if (next != null) " · 下一步：$next" else " · 最后一步",
+                countdownText = "",
+                awaitingConfirm = true,
+                elapsedMillis = phase.elapsedMillis,
+                overtimeMillis = phase.overtimeMillis,
+                timeoutRemainingMillis = phase.timeoutRemainingMillis,
+                overdue = phase.overdue,
+            )
+        }
+
+        else -> null
+    }
+
+    /**
+     * 当前活动序列的名字。
+     *
+     * 引擎只持有 [StepSequenceEngine.activeSequenceId]（id），**没有名字**，
+     * 所以得查一次 Room。`sequenceDao().get()` 是 suspend 的，不能在主线程直接调，
+     * 因此由协程在 id 变化时异步加载，结果放进 [currentSequenceName] 给主循环读。
+     *
+     * 名字晚一拍到不影响观感：卡片第一拍显示「序列」，一拍之后就是真名。
+     */
+    @Volatile
+    private var currentSequenceName: String = "序列"
+
+    /** 已经发起过查库的序列 id，避免同一个 id 被反复查询。 */
+    @Volatile
+    private var requestedSequenceNameId: Long? = null
+
+    private fun requestSequenceName(sequenceId: Long?) {
+        if (sequenceId == null) {
+            currentSequenceName = "序列"
+            requestedSequenceNameId = null
+            return
+        }
+        if (sequenceId == requestedSequenceNameId) return
+        requestedSequenceNameId = sequenceId
+        currentSequenceName = "序列"
+        appScope.launch {
+            val name = logCatching("seq-name-get") {
+                database.sequenceDao().get(sequenceId)?.name
+            }
+            // 加载期间用户可能已经换了序列，别把旧名字写回去
+            if (name != null && requestedSequenceNameId == sequenceId) {
+                currentSequenceName = name
+            }
         }
     }
 
@@ -213,16 +376,35 @@ class ExtApplication : Application() {
         }
 
         // 3) 迷你悬浮窗随运行中的计时器自动起停
+        //
+        // ⚠️ 这里必须 combine 两个 flow，不能只在 runtimes.collect 里读一次开关：
+        //
+        // 原来的写法是
+        //     panelRunner.runtimes.collect { map ->
+        //         val enabled = settings.overlayEnabled.first()
+        //         ...
+        //     }
+        // `first()` 是**一次性**取值，而这个 collect 只在 runtimes 变化时才跑。
+        // 于是「先启动计时器，再去设置里打开悬浮窗开关」这条最常见的顺序
+        // 永远不会生效 —— runtimes 没变，块不执行，开关等于白开。
+        // （用户实测："悬浮窗里没显示"。）
+        //
+        // combine 之后，两个来源任一变化都会重新判断：
+        //   · 开关打开时，若已有计时器在跑 -> 立刻显示
+        //   · 计时器全部停下 -> 隐藏
         appScope.launch {
-            panelRunner.runtimes.collect { map ->
-                val running = map.values.count { it.running }
-                val enabled = logCatchingOr("overlay-enabled", false) { settings.overlayEnabled.first() }
-                if (enabled && running > 0) {
-                    logCatching("overlay-start") { TimerOverlayService.start(this@ExtApplication) }
-                } else if (running == 0) {
-                    logCatching("overlay-stop") { TimerOverlayService.stop(this@ExtApplication) }
+            combine(
+                panelRunner.runtimes,
+                settings.overlayEnabled,
+            ) { map, enabled -> map.values.count { it.running } to enabled }
+                .collect { (running, enabled) ->
+                    if (enabled && running > 0) {
+                        logCatching("overlay-start") { TimerOverlayService.start(this@ExtApplication) }
+                    } else if (running == 0 || !enabled) {
+                        // 开关关掉也要立刻停 —— 用户点「关闭悬浮窗」期待马上消失
+                        logCatching("overlay-stop") { TimerOverlayService.stop(this@ExtApplication) }
+                    }
                 }
-            }
         }
     }
 
@@ -340,5 +522,42 @@ class ExtApplication : Application() {
     companion object {
         private const val TAG = "ExtApplication"
         private const val CHANNEL_ALERTS = "timer_alerts"
+
+        /**
+         * [observeSequenceOverlay] 的轮询间隔。
+         *
+         * 引擎每 100ms 发一次状态，但悬浮窗只需要显示到「秒」，
+         * 这里 200ms 一拍 + 快照去重，既跟得上又不至于每拍都重建快照。
+         */
+        private const val SEQUENCE_OVERLAY_POLL_MILLIS = 200L
     }
 }
+
+/**
+ * 序列悬浮窗要显示的**不可变快照**。
+ *
+ * 为什么要有这个类：[SequenceOverlayService] 是纯 View 代码、没有协程作用域，
+ * 没法自己 collect [at.cwiesner.android.visualtimer.ext.domain.StepSequenceEngine.phase]。
+ * 由 [ExtApplication.observeSequenceOverlay] 把要显示的字段算好放这里，
+ * 服务端每 300ms 读一次。（`internal` 是为了让 service 包能读到。）
+ */
+internal data class SequenceOverlayInfo(
+    /** 当前活动序列 id，仅用于排查/日志。 */
+    val sequenceId: Long?,
+    /** 序列名（第一行）。 */
+    val sequenceName: String,
+    /** 当前阶段说明（第二行）：`第 2 阶段 · 收集文献`，或确认态的 `收集文献 · 下一步：写作`。 */
+    val stepCaption: String,
+    /** 倒计时文本（第三行，仅 Running 用）：`4m05s`。 */
+    val countdownText: String,
+    /** 是否处于「等用户确认」态。 */
+    val awaitingConfirm: Boolean,
+    /** 阶段结束后已过去多久（正计时）。 */
+    val elapsedMillis: Long,
+    /** 超时之后又过了多久。 */
+    val overtimeMillis: Long,
+    /** 距离超时还剩多久；0 表示已超时或本来就没设超时。 */
+    val timeoutRemainingMillis: Long,
+    /** 是否已经超时（界面切强调色）。 */
+    val overdue: Boolean,
+)

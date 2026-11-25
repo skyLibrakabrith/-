@@ -230,6 +230,18 @@ internal fun TimerList(
     onBatchStart: () -> Unit,
     onSelectAll: () -> Unit,
     onClearSelection: () -> Unit,
+    /**
+     * 「拆解」按钮。
+     *
+     * 语义由调用方决定：
+     * - 没有选中任何计时器 -> 新建一个序列去拆解
+     * - 选中了**一个** -> 把这个计时器拆成序列（原计时器被替换）
+     *
+     * 为什么限制只选一个：拆解的产物是"一个序列"，
+     * 同时拆两个会得到两个序列，那就该分两次点 ——
+     * 一次一个让结果和意图一一对应，也避免"批量拆解"这种没人想得清楚的交互。
+     */
+    onSplit: (TimerItem?) -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
         Row(
@@ -250,6 +262,20 @@ internal fun TimerList(
             TextButton(
                 onClick = { if (allSelected) onClearSelection() else onSelectAll() },
             ) { Text(if (allSelected) "取消全选" else "全选") }
+
+            // 拆解：只在选中 0 个或 1 个时可用。
+            // 选了多个时不出现 —— 见 onSplit 的注释（拆解只能针对单件事）。
+            if (selectedIds.size <= 1) {
+                val target = if (selectedIds.size == 1) {
+                    timers.firstOrNull { it.id == selectedIds.first() }
+                } else {
+                    null
+                }
+                TextButton(onClick = { onSplit(target) }) {
+                    Text(if (target != null) "✨ 拆解这个" else "✨ 拆解")
+                }
+            }
+
             if (selectedIds.isNotEmpty()) {
                 TextButton(onClick = onBatchStart) { Text("开始") }
                 TextButton(onClick = onBatchDelete) { Text("删除") }

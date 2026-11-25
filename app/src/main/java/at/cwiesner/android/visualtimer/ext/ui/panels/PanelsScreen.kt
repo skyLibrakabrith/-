@@ -50,6 +50,7 @@ import at.cwiesner.android.visualtimer.ext.domain.StepSequenceEngine
 import at.cwiesner.android.visualtimer.ext.domain.TimerRuntime
 import at.cwiesner.android.visualtimer.ext.ui.ExtColors
 import at.cwiesner.android.visualtimer.ext.ui.common.AiCompileDialog
+import at.cwiesner.android.visualtimer.ext.ui.common.AiSplitDialog
 import at.cwiesner.android.visualtimer.ext.ui.common.CompileReviewDialog
 import at.cwiesner.android.visualtimer.ext.ui.sequences.SequenceEditorScreen
 import at.cwiesner.android.visualtimer.ext.ui.sequences.SequenceFocusScreen
@@ -146,6 +147,9 @@ fun PanelsScreen(
     var compileGroups by remember { mutableStateOf<List<at.cwiesner.android.visualtimer.ext.llm.TodoGroup>?>(null) }
     // 记住要建到哪个面板（用户可能在排序期间切了面板）
     var compilePanelId by remember { mutableStateOf<Long?>(null) }
+
+    // 列表视图里「拆解」：非 null 表示要拆的是这个已有计时器（拆完替换它）
+    var splitTargetTimer by remember { mutableStateOf<TimerItem?>(null) }
     var focusTimerId by remember { mutableStateOf<Long?>(null) }
 
     // 以前这里有一对 longPressEntry / showPanelActions，负责「长按卡片弹出面板操作框」。
@@ -529,7 +533,13 @@ fun PanelsScreen(
                     runtimeById = runtimeById,
                     selectedIds = selectedIds,
                     onToggle = { id ->
-                        selectedIds = if (id in selectedIds) selectedIds - id else selectedIds + id
+                        // 选中是**单选**语义（与"拆解只能针对一件事"保持一致）：
+                        // 点已选中的 -> 取消；点别的 -> 替换成它，而不是累加。
+                        //
+                        // 代价是失去了多选批量操作。但批量开始/删除本来就少用，
+                        // 而"选了一个又点另一个却变成选两个"在要单选拆解时很别扭。
+                        // 如果以后确实要批量，可以再加一个"多选模式"开关。
+                        selectedIds = if (id in selectedIds) emptySet() else setOf(id)
                     },
                     onBatchDelete = {
                         scope.launch {
@@ -545,7 +555,8 @@ fun PanelsScreen(
                     // DDL 没有编辑入口（不是「被拦住」，而是这类计时器本来就没有可编辑项）
                     onEdit = { t -> if (t.isEditable) editingTimerId = t.id },
                     alertProfiles = alertProfiles,
-                    onSelectAll = { selectedIds = timers.map { it.id }.toSet() },
+                    // 全选在多选被关掉之后就不成立了；保留成"没有操作"更诚实
+                    onSelectAll = { /* 单选模式下不支持全选 */ },
                     onClearSelection = { selectedIds = emptySet() },
                     onChangeAlert = { t -> alertPickerTimerId = t.id },
                     onBatchStart = {
@@ -553,6 +564,26 @@ fun PanelsScreen(
                             val chosen = timers.filter { it.id in selectedIds }
                             chosen.forEach { t -> runner.clear(t.id); runner.start(t) }
                             toast("已启动 ${chosen.size} 个计时器")
+                        }
+                    },
+                    onSplit = { target ->
+                        if (target == null) {
+                            // 未选中 -> 新建序列去拆解
+                            scope.launch {
+                                val pid = currentPanel?.id
+                                if (pid == null) {
+                                    toast("先选一个面板")
+                                    return@launch
+                                }
+                                val id = db.sequenceDao().upsert(
+                                    StepSequence(name = "新序列", panelId = pid),
+                                )
+                                selectedIds = emptySet()
+                                editingSequenceId = id
+                            }
+                        } else {
+                            // 选中了一个 -> 带着它的名字进拆解，拆完**替换**原计时器
+                            splitTargetTimer = target
                         }
                     },
                 )
@@ -850,6 +881,57 @@ fun PanelsScreen(
                     }
                     toast("已生成序列，共 ${orderedSteps.size} 步，可在这里调整顺序")
                     // 直接打开序列编辑器 —— 用户仍可能想再调
+                    editingSequenceId = seqId
+                }
+            },
+        )
+    }
+
+    // ---- 列表视图的「✨ 拆解」：把已有计时器拆成一个序列 ----
+    //
+    // 用户在列表里选中一个计时器后点拆解，走这条路径。
+    // 与序列编辑器里的「拆解」区别：那边是往现有序列里追加阶段，
+    // 这边是**把计时器本身换成序列**（原计时器被移除）。
+    val splitTarget = splitTargetTimer
+    if (splitTarget != null) {
+        AiSplitDialog(
+            onDismiss = { splitTargetTimer = null },
+            // 预填原计时器的名字，用户不用重打一遍
+            initialInput = splitTarget.label ?: "",
+            onApply = { steps ->
+                splitTargetTimer = null
+                scope.launch {
+                    val pid = currentPanel?.id
+                    if (pid == null) {
+                        toast("先选一个面板")
+                        return@launch
+                    }
+                    val seqId = db.sequenceDao().upsert(
+                        StepSequence(
+                            name = splitTarget.label ?: "拆解结果",
+                            panelId = pid,
+                            sortOrder = (panelSequences.maxOfOrNull { it.sortOrder } ?: -1) + 1,
+                        ),
+                    )
+                    steps.forEachIndexed { idx, s ->
+                        db.sequenceDao().upsertStep(
+                            Step(
+                                sequenceId = seqId,
+                                durationMillis = s.minutes * 60_000L,
+                                label = s.title.ifBlank { null },
+                                order = idx,
+                                difficulty = s.difficulty,
+                                context = s.context,
+                            ),
+                        )
+                    }
+                    // 原计时器被序列取代：停掉运行时并移出面板，再彻底删掉这一行。
+                    // 只 removeRef 会留下孤儿行（面板里看不到但仍在库里）。
+                    runner.clear(splitTarget.id)
+                    db.panelDao().removeRef(pid, splitTarget.id)
+                    db.timerDao().deleteById(splitTarget.id)
+                    selectedIds = emptySet()
+                    toast("已拆成 ${steps.size} 阶段的序列")
                     editingSequenceId = seqId
                 }
             },

@@ -25,6 +25,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -75,6 +76,25 @@ fun SequencesScreen(modifier: Modifier = Modifier) {
         } ?: emptyList()
         currentSteps = list
         stepCount = list.size
+    }
+
+    // 每个序列的阶段列表：列表项要显示「N 段 · 合计 X」，需要一个序列到步骤列表的映射。
+    // DAO 的 observeSteps 是 Flow（suspend 的 steps() 不能在 Composable 里直接调），
+    // 按序列 id 逐个 collect，任意阶段增删改都会重新发一次，合计时长随之刷新。
+    val stepsBySequence = remember { mutableStateMapOf<Long, List<Step>>() }
+    LaunchedEffect(sequences.map { it.id }) {
+        sequences.forEach { seq ->
+            launch {
+                db.sequenceDao().observeSteps(seq.id).collect { list ->
+                    stepsBySequence[seq.id] = list
+                }
+            }
+        }
+    }
+    // 已删除的序列要从映射里清掉，否则切走再切回来会闪一下旧的合计时长
+    LaunchedEffect(sequences) {
+        val liveIds = sequences.map { it.id }.toSet()
+        stepsBySequence.keys.retainAll(liveIds)
     }
 
     val editTarget = editing
@@ -194,6 +214,13 @@ fun SequencesScreen(modifier: Modifier = Modifier) {
                         ) {
                             Column(modifier = Modifier.padding(16.dp)) {
                                 Text(seq.name, style = MaterialTheme.typography.titleMedium)
+                                // 预计时间：阶段数 + 合计时长。空序列显示「还没有阶段」，
+                                // 不显示「0 段 · 合计 0s」那种看不懂的东西
+                                Text(
+                                    describeSequenceDuration(stepsBySequence[seq.id].orEmpty()),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
                                 Text(
                                     "超时 " + DeadlineCalculator.formatRemaining(seq.timeoutMillis) +
                                         " · 超时后开始正计时，需手动进入下一阶段",

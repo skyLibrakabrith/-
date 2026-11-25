@@ -87,6 +87,16 @@
                 android:value="timer-overlay" />
         </service>
 
+        <!-- 序列悬浮窗：显示当前序列名 / 阶段名 / 阶段剩余时间 -->
+        <service
+            android:name=".service.SequenceOverlayService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="sequence-overlay" />
+        </service>
+
         <receiver
             android:name=".service.SequenceAlarmReceiver"
             android:exported="false" />

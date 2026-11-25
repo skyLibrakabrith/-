@@ -136,7 +136,16 @@ fun SequenceEditorScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text("阶段（${draft.size} 个）", style = MaterialTheme.typography.titleSmall)
+            Column {
+                Text("阶段（${draft.size} 个）", style = MaterialTheme.typography.titleSmall)
+                // 预计总时长：增删阶段 / 拆解追加后立刻重算，用户能马上看到总时长变化。
+                // 草稿为空时显示「合计 —」，而不是「合计 0s」
+                Text(
+                    describeDraftTotal(draft),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 // Magic ToDo：把一段话拆成有序阶段，直接追加到草稿里
                 TextButton(onClick = { showSplitDialog = true }) {
