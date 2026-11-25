@@ -44,6 +44,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -273,23 +274,43 @@ private fun MainScaffold(onPreviewFlash: () -> Unit = {}) {
                 .fillMaxSize()
                 .padding(inner),
         ) {
-            when (dests[selected]) {
-                Dest.Home -> HomeScreen()
-                Dest.Panels -> PanelsScreen(
-                    toggleViewSignal = panelViewToggleTick,
-                    listModeState = panelListModeState,
-                    actionsSignal = panelActionsTick,
-                    pendingAction = pendingPanelAction,
-                    // 消费掉动作：否则 PanelsScreen 重新组合（从别的标签切回来）
-                    // 时会把旧动作再执行一遍，表现为「自己弹出面板管理窗口」。
-                    onActionConsumed = { pendingPanelAction = null },
-                )
-                Dest.Alerts -> AlertsScreen(
-                    onPreviewFlash = onPreviewFlash,
-                    toggleModeSignal = alertsModeToggleTick,
-                    onModeChanged = { showsSound -> alertsShowsSound = showsSound },
-                )
-                Dest.Settings -> SettingsScreen()
+            // ---- 页面状态保留 ----
+            //
+            // 原来直接写 `when (dests[selected]) { ... }`：条件组合在换标签时会把
+            // 旧页面整个从组合中移除，remember 全部丢失，新页面从零组合 ——
+            // 表现为「每次打开一个界面会先渲染一下」：
+            // collectAsState 先画出默认值，等 DataStore 的 Flow 发射后才跳到真实值。
+            //
+            // 这**不是**为了省内存（销毁重建反而更慢）。
+            //
+            // 现在用 SaveableStateHolder 按页面 key 保存状态：
+            // 离开标签时把 saveable 状态存起来，回来时原样恢复，
+            // 于是不再有「先默认值再跳真实值」的闪动。
+            //
+            // 注意：它只保留 rememberSaveable 的状态。普通 remember 仍然会丢 ——
+            // 那些本来就该丢（属于一次性 UI 状态），需要跨标签保留的请改用
+            // rememberSaveable，或者像 listModeState 那样提到导航层。
+            val stateHolder = rememberSaveableStateHolder()
+            val current = dests[selected]
+            stateHolder.SaveableStateProvider(key = current.name) {
+                when (current) {
+                    Dest.Home -> HomeScreen()
+                    Dest.Panels -> PanelsScreen(
+                        toggleViewSignal = panelViewToggleTick,
+                        listModeState = panelListModeState,
+                        actionsSignal = panelActionsTick,
+                        pendingAction = pendingPanelAction,
+                        // 消费掉动作：否则 PanelsScreen 重新组合（从别的标签切回来）
+                        // 时会把旧动作再执行一遍，表现为「自己弹出面板管理窗口」。
+                        onActionConsumed = { pendingPanelAction = null },
+                    )
+                    Dest.Alerts -> AlertsScreen(
+                        onPreviewFlash = onPreviewFlash,
+                        toggleModeSignal = alertsModeToggleTick,
+                        onModeChanged = { showsSound -> alertsShowsSound = showsSound },
+                    )
+                    Dest.Settings -> SettingsScreen()
+                }
             }
         }
     }
