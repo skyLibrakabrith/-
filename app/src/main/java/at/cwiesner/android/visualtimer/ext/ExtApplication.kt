@@ -121,9 +121,13 @@ class ExtApplication : Application() {
      *
      * 只在 [at.cwiesner.android.visualtimer.ext.domain.StepSequenceEngine.Phase.Running] /
      * `AwaitingConfirm` 时非空，Idle 与 Finished 一律置 null（服务端看到 null 就把卡片收起）。
+     *
+     * 声明成 `internal` 而不是 public：它暴露的类型 `SequenceOverlayInfo` 是 internal 的，
+     * 而 public 属性不能暴露 internal 类型（编译错误：Property 'public' exposes its
+     * 'internal' type）。这个字段本来也只给 service 包读，internal 更准确。
      */
     @Volatile
-    var seqOverlayInfo: SequenceOverlayInfo? = null
+    internal var seqOverlayInfo: SequenceOverlayInfo? = null
         private set
 
     /** 用户处理了提醒：停掉可能还在播的声音。 */
