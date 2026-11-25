@@ -120,7 +120,14 @@ fun DeadlineLeadTimeDialog(
                 Text(if (selected.isEmpty()) "不用提醒" else "确定")
             }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("跳过") } },
+        // 「跳过」必须等同于「不用提醒」：两者都是**创建 DDL 但不设提前提醒**。
+        //
+        // 原来这里调的是 onDismiss —— 而 onDismiss 在调用方是"取消整个创建"，
+        // 于是用户点「跳过」时以为 DDL 已经建好了，实际什么都没建。
+        // 点对话框外面才是取消。
+        dismissButton = {
+            TextButton(onClick = { onConfirm(emptyList()) }) { Text("跳过") }
+        },
     )
 }
 

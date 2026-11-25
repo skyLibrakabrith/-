@@ -15,6 +15,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -73,6 +77,17 @@ fun NumberWheel(
     )
     val fling = rememberSnapFlingBehavior(state)
 
+    // ---- 用户滚动 vs 外部改值：必须能区分，否则会互相拽 ----
+    //
+    // 症状（用户实测）：往下滑两个值只切一个，往上滑一个却切两个。
+    // 这是典型的"回弹 + 过量"：读完位置写回 selected，selected 变化又触发
+    // scrollToItem 把位置拽回去，两股力叠加就出现方向不对称的跳变。
+    //
+    // 用一个"刚才是不是用户滚的"时间戳做守卫：
+    //   · 用户滚动导致 selected 变化 -> 200ms 内不再 scrollToItem
+    //   · 只有真正来自外部的改值（换设置、重置）才需要把滚轮滚过去
+    val recentUserScroll = remember { mutableLongStateOf(0L) }
+
     // 滚动停止后把「高亮条里的那一项」写回去。
     LaunchedEffect(state.isScrollInProgress) {
         if (!state.isScrollInProgress) {
@@ -83,38 +98,34 @@ fun NumberWheel(
             // 半格以上就算滚到下一项（四舍五入到最近的格）
             val rounded = if (offset * 2 >= itemHeight) firstIndex + 1 else firstIndex
             val v = values.getOrNull(valueIndex(rounded)) ?: return@LaunchedEffect
-            if (v != selected) onSelect(v)
+            if (v != selected) {
+                // 先打时间戳再回调：回调会让 selected 变化并触发下面那个 effect
+                recentUserScroll.longValue = System.currentTimeMillis()
+                onSelect(v)
+            }
         }
     }
 
     // 外部改了 selected 时，把滚轮滚过去。
     //
-    // ⚠️ 这里是「滚动卡顿」的元凶，改的时候务必读完：
-    //
-    // 用户滚动的时序是
-    //   手指抬起 → isScrollInProgress: true→false → 吸附动画还在跑
-    //   → 60ms 后读到位置 → onSelect(v) → DataStore → selected 变成 v
-    //   → **这个 effect 重跑** → 此时吸附动画可能还没结束、firstVisibleItemIndex
-    //      仍停在中间值 → 判定「不等于 target」→ scrollToItem 强行拽回去
-    //
-    // 结果就是每滚一格都被自己拽一下，表现为一顿一顿。
-    //
-    // 修法：
-    //   · 只有**不是**由这次滚动引起的变化才需要滚（用 isScrollInProgress 挡住）
-    //   · 再加一层防抖：不在滚动刚结束的 250ms 内强行 scrollToItem，
-    //     给吸附动画留出 settle 的时间
+    // 关键守卫：如果这次 selected 变化是**用户刚才滚动引起的**（200ms 内），
+    // 就绝对不要再 scrollToItem —— 那样会把吸附后的位置强行拽回旧目标，
+    // 表现为"滑一下跳两格 / 有时又只跳一格"这种方向不对称的错乱。
     LaunchedEffect(selected) {
+        // 用户滚动引发的改值：位置本来就已经对了，什么都不用做
+        if (System.currentTimeMillis() - recentUserScroll.longValue < 200L) return@LaunchedEffect
         if (state.isScrollInProgress) return@LaunchedEffect
-        // 等吸附动画收尾（与上面读位置用的 60ms 拉开距离，避免抢同一个窗口）
-        kotlinx.coroutines.delay(250)
+
+        kotlinx.coroutines.delay(150)
+        // 延时期间用户可能又开始滚了，再确认一次
+        if (state.isScrollInProgress) return@LaunchedEffect
+        if (System.currentTimeMillis() - recentUserScroll.longValue < 200L) return@LaunchedEffect
+
         val target = values.indexOf(selected).coerceAtLeast(0)
-        // 只在**明显**偏离时才滚（差一整格以上）。
-        // 用 offset 一起判断：位置已经对了但还带点偏移属于正常吸附范围，
-        // 这时候去 scrollToItem 反而是打断。
         val cur = state.firstVisibleItemIndex
         val off = state.firstVisibleItemScrollOffset
-        val aligned = cur == target && off == 0
-        if (!aligned && (cur != target || off > itemHeight / 2)) {
+        // 已经基本对齐就不动（offset 在半格内属于正常吸附范围）
+        if (cur != target || off > itemHeight / 2) {
             state.scrollToItem(target)
         }
     }

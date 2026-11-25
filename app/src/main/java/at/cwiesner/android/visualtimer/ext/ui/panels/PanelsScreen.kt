@@ -1,5 +1,6 @@
 package at.cwiesner.android.visualtimer.ext.ui.panels
 
+import android.util.Log
 import android.widget.Toast
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -494,7 +495,7 @@ fun PanelsScreen(
                     fractionDivisions = fractionDivisions,
                     thresholdMinutes = thresholdMinutes,
                     thresholdColors = thresholdColors,
-                    locked = focused.locked,
+                    locked = !focused.isEditable,
                     onDurationCommit = { d ->
                         scope.launch { db.timerDao().upsert(focused.copy(durationMillis = d)) }
                     },
@@ -542,7 +543,7 @@ fun PanelsScreen(
                         }
                     },
                     // DDL 没有编辑入口（不是「被拦住」，而是这类计时器本来就没有可编辑项）
-                    onEdit = { t -> if (!t.locked) editingTimerId = t.id },
+                    onEdit = { t -> if (t.isEditable) editingTimerId = t.id },
                     alertProfiles = alertProfiles,
                     onSelectAll = { selectedIds = timers.map { it.id }.toSet() },
                     onClearSelection = { selectedIds = emptySet() },
@@ -590,7 +591,7 @@ fun PanelsScreen(
                             if (entry.kind != EntryKind.Timer) return@DraggableGrid
                             val t = timers.firstOrNull { it.id == entry.refId }
                                 ?: return@DraggableGrid
-                            if (t.locked) return@DraggableGrid
+                            if (!t.isEditable) return@DraggableGrid
                             scope.launch {
                                 val cur = runner.snapshot().firstOrNull { it.timerId == t.id }
                                 when {
@@ -652,7 +653,7 @@ fun PanelsScreen(
                                         colorMode = colorMode,
                                         intervalMinutes = intervalMinutes,
                                         fractionDivisions = fractionDivisions,
-                                        locked = t.locked,
+                                        locked = !t.isEditable,
                                         onReset = {
                                             scope.launch { runner.reset(t.id) }
                                         },
@@ -1099,7 +1100,23 @@ fun PanelsScreen(
                 ),
             )
             // 自动开始：DDL 建好就该在跑，用户不需要再点一下
-            db.timerDao().get(timerId)?.let { runner.startUntil(it, deadlineAt, startAt) }
+            val started = db.timerDao().get(timerId)
+            if (started == null) {
+                Log.w(TAG, "DDL upsert 后立刻 get($timerId) 返回 null，无法 startUntil")
+            } else {
+                runner.startUntil(started, deadlineAt, startAt)
+            }
+            // 打完卡立刻回读运行时状态。用户报过"建出来是停着的"，
+            // 这段日志是为了让那种情况在 logcat 里一眼看出来是：
+            //   · startUntil 没执行（上一条 Log.w）
+            //   · 执行了但 running 仍为 false
+            //   · running 为 true（那就是界面侧读错，不是运行时的问题）
+            val rt = runner.get(timerId)
+            Log.i(
+                TAG,
+                "DDL created: id=$timerId locked=true remain=${remain / 1000}s " +
+                    "runtime=" + if (rt == null) "null" else "running=${rt.running} rem=${rt.remainingMillis}",
+            )
 
             // 提前提醒落库 + 同步到运行时
             db.deadlineReminderDao().clearTimer(timerId)
@@ -1148,6 +1165,9 @@ fun PanelsScreen(
         )
     }
 }
+
+/** 本文件的日志标签。DDL 创建流程有诊断日志，出问题时按这个 tag 过滤 logcat。 */
+private const val TAG = "PanelsScreen"
 
 /**
  * DDL 两步创建的中间状态：已经选好截止时刻，正在问提前提醒档位。

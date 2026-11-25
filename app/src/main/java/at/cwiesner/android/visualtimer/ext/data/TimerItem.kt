@@ -30,7 +30,23 @@ data class TimerItem(
      * 避免用户把倒计时改成与实际截止时间不符的值。
      */
     val locked: Boolean = false,
-)
+) {
+    /**
+     * **界面上是否应该禁掉编辑**。
+     *
+     * 判断条件里带上 `kind == Deadline` 是刻意的双保险：
+     * `locked` 这个字段是 v6 才加的（`ADD COLUMN locked ... DEFAULT 0`），
+     * 升级到 v6 之前就存在的老 DDL 全是 false。虽然 v6→v7 迁移里补了回填，
+     * 但凡是"靠一个可空回填字段决定行为"的做法，一旦漏了就静默退回可编辑。
+     *
+     * 而 `kind` 从 DDL 一诞生就是 Deadline，它才是**语义上的事实**：
+     * 截止时刻固定的计时器，时长天然不可改。
+     *
+     * 所以对外统一用这个属性，不要直接读 `locked`。
+     */
+    val isEditable: Boolean
+        get() = !locked && kind != TimerKind.Deadline
+}
 
 /**
  * 多面板：一个面板 = 一组可同时或依次运行的计时器。

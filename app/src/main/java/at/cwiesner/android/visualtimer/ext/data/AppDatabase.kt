@@ -282,16 +282,27 @@ abstract class AppDatabase : RoomDatabase() {
         }
 
         /**
-         * v6 → v7：步骤增加 difficulty（困难程度）与 context（背景/理由）两列。
+         * v6 → v7：步骤增加 difficulty（困难程度）与 context（背景/理由）两列；
+         * 顺带**回填历史 DDL 的 locked 标记**。
          *
-         * 都可空且默认 NULL：「没标注」本身就等于 null，语义正确，
-         * 不需要回填任何猜测值。两条 ALTER 放在同一个迁移里，
-         * 避免为同一张表连开两个版本。
+         * difficulty / context 都可空且默认 NULL：「没标注」本身就等于 null，
+         * 语义正确，不需要回填猜测值。
+         *
+         * 关于 locked 回填：`MIGRATION_5_6` 当初只是
+         * `ADD COLUMN locked INTEGER NOT NULL DEFAULT 0` —— 升级到 v6 **之前**
+         * 就已存在的 DDL 计时器，locked 全部落成了 0。
+         * 于是这些老 DDL 至今仍可被编辑（用户实测确认「DDL 还是可以编辑」）。
+         * 这里按 kind 补一次，让历史数据和新规则一致。
+         *
+         * kind 是枚举存成字符串（TimerKindConverter），所以比较 'Deadline'。
          */
         private val MIGRATION_6_7 = object : androidx.room.migration.Migration(6, 7) {
             override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE steps ADD COLUMN difficulty INTEGER")
                 db.execSQL("ALTER TABLE steps ADD COLUMN context TEXT")
+
+                // 历史 DDL 回填：DDL 的时间由截止时刻决定，本来就不该可编辑
+                db.execSQL("UPDATE timers SET locked = 1 WHERE kind = 'Deadline' AND locked = 0")
             }
         }
 
