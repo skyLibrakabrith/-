@@ -1,0 +1,23 @@
+# 统一换行：仓库内一律 LF。
+#
+# 为什么需要这个文件：
+#   开发机是 Windows，且工作区在 exFAT 上。git 默认 core.autocrlf=true 会把
+#   LF 检出成 CRLF、提交时再转回 LF，导致「没有任何改动」也显示成所有文件都改了。
+#   这里显式指定 text=LF，让工作区与仓库字节一致，diff 才可信。
+#
+#   注意：不要给 .kt / .kts 加 BOM（Gradle 脚本带 BOM 可能解析失败）。
+
+* text=auto eol=lf
+
+# 二进制，别做任何换行转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.jar binary
+*.apk binary
+*.keystore binary
+*.jks binary
+
+# Gradle wrapper 的 jar 是二进制
+gradle/wrapper/*.jar binary
