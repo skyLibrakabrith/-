@@ -30,6 +30,18 @@ data class TimerItem(
      * 避免用户把倒计时改成与实际截止时间不符的值。
      */
     val locked: Boolean = false,
+    /**
+     * 是否固定在面板上。
+     *
+     * 未固定的计时器到点后会自动从面板移除（移走前先写入 [TimerSession] 归档），
+     * 面板因此只留下「还想继续用」的那几个。
+     *
+     * 默认 true：本字段出现之前的老数据一律视为已固定 ——
+     * 升级之后不能让用户在不知情的情况下被自动销毁计时器。
+     * 也因此 v8→v9 的 DDL `ADD COLUMN pinned ... DEFAULT 1` 本身就是正确语义，
+     * 不需要额外回填（与 v6 那次 `locked` 的 `DEFAULT 0` 是两回事）。
+     */
+    val pinned: Boolean = true,
 ) {
     /**
      * **界面上是否应该禁掉编辑**。

@@ -48,6 +48,7 @@ class BackupManager(
                     "alertProfiles" to backup.alertProfiles.size,
                     "groups" to backup.groups.size,
                     "deadlineReminders" to backup.deadlineReminders.size,
+                    "sessions" to backup.sessions.size,
                 ),
             )
         }.getOrElse { Result.Failed(it.message ?: it::class.java.simpleName) }
@@ -62,6 +63,7 @@ class BackupManager(
         val alerts = mutableListOf<AlertProfileDto>()
         val groups = mutableListOf<TimerGroupDto>()
         val reminders = mutableListOf<DeadlineReminderDto>()
+        val sessions = mutableListOf<TimerSessionDto>()
 
         // 警报配置：主键即 ref
         db.alertProfileDao().observeAllOnce().forEach { p ->
@@ -106,6 +108,12 @@ class BackupManager(
             reminders += r.toDto("t${r.timerId}")
         }
 
+        // 归档历史：全量带走。它没有 ref、也没有外键，
+        // 和计时器行是脱钩的（行删了历史还在），所以照原样一条条存。
+        db.timerSessionDao().allOnce().forEach { s ->
+            sessions += s.toDto()
+        }
+
         return BackupFile(
             timers = timers,
             panels = panels,
@@ -115,6 +123,7 @@ class BackupManager(
             alertProfiles = alerts,
             groups = groups,
             deadlineReminders = reminders,
+            sessions = sessions,
         )
     }
 
@@ -212,6 +221,12 @@ class BackupManager(
                 }
                 if (reminders.isNotEmpty()) db.deadlineReminderDao().upsertAll(reminders)
 
+                // 归档历史：表本身是「只追加」，重复导入只会多出几份同样的历史，
+                // 不会覆盖或删掉别的记录，代价可以接受。
+                backup.sessions.forEach { dto ->
+                    db.timerSessionDao().insert(dto.toEntity())
+                }
+
                 Result.Ok(
                     mapOf(
                         "timers" to backup.timers.size,
@@ -221,6 +236,7 @@ class BackupManager(
                         "alertProfiles" to backup.alertProfiles.size,
                         "groups" to backup.groups.size,
                         "deadlineReminders" to backup.deadlineReminders.size,
+                        "sessions" to backup.sessions.size,
                     ),
                 )
             }.getOrElse { Result.Failed(it.message ?: it::class.java.simpleName) }

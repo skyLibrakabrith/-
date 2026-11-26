@@ -71,6 +71,26 @@ fun <T> DraggableGrid(
     onClick: (T) -> Unit,
     onDoubleClick: ((T) -> Unit)? = null,
     onLongClick: ((T) -> Unit)? = null,
+    /**
+     * 是否由**网格层**统一挂点按手势。
+     *
+     * - `true`（默认）：网格层给整个格子挂 `combinedClickable`。
+     *   适合"整张卡片都可以点"的场景（序列卡、组卡、列表视图）。
+     * - `false`：网格层**不挂**点按手势，由 `itemContent` 自己在卡片内部
+     *   某块区域里挂。适合"只有卡片的一部分可点"的场景。
+     *
+     * ## 为什么要这个开关
+     *
+     * 计时器卡片要求：**只有圆盘可点**（暂停/继续、双击进全屏），
+     * 而左上角的图钉另有用途（切换固定）。如果网格层给整卡挂点击，
+     * 图钉就落在点击区里 —— 点图钉会同时触发暂停，两个动作打架。
+     *
+     * 让卡片自己挂的好处是：可以把点击区精确限定在圆盘那个 Box 上，
+     * 图钉在圆盘之外、完全不重叠。而拖拽仍然由网格层全区域接管，
+     * 因为 `detectDragGesturesAfterLongPress` 本来就不消费按下事件
+     * （见本文件 LazyVerticalGrid 那段注释）。
+     */
+    gridHandlesTaps: Boolean = true,
     /** 拖拽松手时回调：新顺序要在这里落库。 */
     onDragEnd: (() -> Unit)? = null,
     itemContent: @Composable (item: T, dragging: Boolean) -> Unit,
@@ -182,10 +202,20 @@ fun <T> DraggableGrid(
                     // （只有 enabled/onClickLabel/role/onLongClickLabel/
                     //  onLongClick/onDoubleClick/onClick），
                     // 双击窗口用框架默认值 ~300ms，不能在这里调。
-                    .combinedClickable(
-                        onClick = { curOnClick(item) },
-                        onDoubleClick = curOnDouble?.let { d -> { d(item) } },
-                        onLongClick = curOnLong?.let { l -> { l(item) } },
+                    //
+                    // gridHandlesTaps = false 时这一层不挂：
+                    // 计时器卡片要把点按收窄到圆盘，由卡片自己在圆盘上挂，
+                    // 这样左上角图钉（切换固定）不会和暂停/继续打架。
+                    .then(
+                        if (gridHandlesTaps) {
+                            Modifier.combinedClickable(
+                                onClick = { curOnClick(item) },
+                                onDoubleClick = curOnDouble?.let { d -> { d(item) } },
+                                onLongClick = curOnLong?.let { l -> { l(item) } },
+                            )
+                        } else {
+                            Modifier
+                        },
                     )
                     .zIndex(if (dragging) 1f else 0f)
                     .graphicsLayer {

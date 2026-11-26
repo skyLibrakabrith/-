@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.room.Dao
 import androidx.room.Database
 import androidx.room.Delete
+import androidx.room.Insert
 import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
@@ -191,6 +192,36 @@ interface DeadlineReminderDao {
     suspend fun markFired(id: Long)
 }
 
+/**
+ * 归档历史（[TimerSession]）。
+ *
+ * 只有追加和按范围读：历史是既成事实，不提供改。
+ * 「某一天的记录」按 `startedAt` 的时间窗口取，
+ * 所以范围查询统一用左闭右开 [from, to)，跨天时按天切窗口不会重复也不会漏。
+ */
+@Dao
+interface TimerSessionDao {
+    @Insert
+    suspend fun insert(s: TimerSession): Long
+
+    /** 导出用的一次性快照：Flow 版拿不到当下的值。 */
+    @Query("SELECT * FROM timer_sessions ORDER BY startedAt ASC, id ASC")
+    suspend fun allOnce(): List<TimerSession>
+
+    @Query("SELECT * FROM timer_sessions WHERE startedAt >= :from AND startedAt < :to ORDER BY startedAt ASC")
+    fun observeBetween(from: Long, to: Long): Flow<List<TimerSession>>
+
+    @Query("SELECT * FROM timer_sessions WHERE startedAt >= :from AND startedAt < :to ORDER BY startedAt ASC")
+    suspend fun between(from: Long, to: Long): List<TimerSession>
+
+    /** 最早一条记录的时刻；表为空时返回 null（历史页据此决定「还能往回翻到哪」）。 */
+    @Query("SELECT MIN(startedAt) FROM timer_sessions")
+    suspend fun earliest(): Long?
+
+    @Query("DELETE FROM timer_sessions WHERE id = :id")
+    suspend fun deleteById(id: Long)
+}
+
 @androidx.room.TypeConverters(Converters::class, TimerKindConverter::class)
 @Database(
     entities = [
@@ -203,8 +234,9 @@ interface DeadlineReminderDao {
         TimerGroup::class,
         GroupMember::class,
         DeadlineReminder::class,
+        TimerSession::class,
     ],
-    version = 8,
+    version = 9,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -214,6 +246,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun alertProfileDao(): AlertProfileDao
     abstract fun groupDao(): GroupDao
     abstract fun deadlineReminderDao(): DeadlineReminderDao
+    abstract fun timerSessionDao(): TimerSessionDao
 
     companion object {
         @Volatile
@@ -331,6 +364,38 @@ abstract class AppDatabase : RoomDatabase() {
         }
 
         /**
+         * v8 → v9：新增归档历史表 `timer_sessions`，并给计时器加 `pinned` 列。
+         *
+         * 两张都是纯加法，不动已有数据。
+         *
+         * 关于 `pinned` 为什么不回填 —— 本次与 v6 加 `locked` 那次**不是**同一类坑：
+         * - v6 那次写的是 `DEFAULT 0`，而 0（未锁定）对「升级前就存在的老 DDL」是**错的语义**，
+         *   所以 v6→v7 才不得不补一条 `UPDATE timers SET locked = 1 WHERE kind = 'Deadline'` 去纠偏。
+         * - 这次写的是 `DEFAULT 1`，而 1（已固定）对老数据**本身就是正确语义**：
+         *   用户升级后，原有的计时器都还该好好待在面板上。
+         * 既然 DDL 的默认值已经等于想要的值，再补一条 UPDATE 是多余动作，故不写。
+         *
+         * 以后凡是 `ADD COLUMN ... DEFAULT x`，判断标准都是同一个：
+         * **x 对老数据的语义是否正确**，而不是「有没有回填」这个动作本身。
+         */
+        private val MIGRATION_8_9 = object : androidx.room.migration.Migration(8, 9) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `timer_sessions` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`label` TEXT, " +
+                        "`startedAt` INTEGER NOT NULL, " +
+                        "`endedAt` INTEGER NOT NULL, " +
+                        "`plannedMillis` INTEGER NOT NULL, " +
+                        "`kind` TEXT NOT NULL, " +
+                        "`completed` INTEGER NOT NULL)",
+                )
+                // DEFAULT 1 = 已固定：老数据升级后不被自动销毁，见上面的说明
+                db.execSQL("ALTER TABLE timers ADD COLUMN pinned INTEGER NOT NULL DEFAULT 1")
+            }
+        }
+
+        /**
          * 打开数据库。
          *
          * **刻意不用 `fallbackToDestructiveMigration()`**：那个兜底会在迁移写错、
@@ -357,6 +422,7 @@ abstract class AppDatabase : RoomDatabase() {
                     MIGRATION_5_6,
                     MIGRATION_6_7,
                     MIGRATION_7_8,
+                    MIGRATION_8_9,
                 )
                     .fallbackToDestructiveMigrationOnDowngrade()
                     .build()

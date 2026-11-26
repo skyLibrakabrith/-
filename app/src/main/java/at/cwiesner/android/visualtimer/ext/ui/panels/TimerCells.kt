@@ -22,6 +22,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Icon
@@ -30,7 +32,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextAlign
@@ -65,7 +69,23 @@ internal fun TimerCell(
     fractionDivisions: Int,
     /** DDL：时间由截止时刻决定，不提供重置入口。 */
     locked: Boolean = false,
-    // 点按（单击/双击/长按）由 DraggableGrid 统一处理，卡片不再需要这两个回调
+    /**
+     * 圆盘上的点按。null = 由网格层接管整卡点击（默认）。
+     *
+     * 非 null 时（卡片视图），点按**只**在圆盘上生效：
+     * - 单击 → 暂停 / 继续
+     * - 双击 → 进全屏
+     *
+     * 为什么要把点击收窄到圆盘：左上角有个图钉按钮用来切换「固定」，
+     * 如果整卡都能点，点图钉会顺带触发暂停，两个动作打架。
+     * 圆盘与图钉在布局上完全不重叠，收窄后互不干扰。
+     *
+     * 长按**不**在这里处理：长按要留给网格层的拖拽排序。
+     */
+    onDialTap: (() -> Unit)? = null,
+    onDialDoubleTap: (() -> Unit)? = null,
+    /** 切换「固定」。null = 不显示图钉（列表视图不需要）。 */
+    onTogglePin: (() -> Unit)? = null,
     onReset: () -> Unit,
     onDelete: () -> Unit,
 ) {
@@ -101,7 +121,31 @@ internal fun TimerCell(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .weight(1f),
+                        .weight(1f)
+                        // 点击区就是这个 Box 的范围。盘面本身是居中的正方形，
+                        // 所以这里也约束成正方形（aspectRatio(1f) + 居中），
+                        // 让"可点区域"和"看得见的圆盘"尽量重合 ——
+                        // 否则会出现"点在圆盘旁边的空白处也算点击"的错觉。
+                        //
+                        // 用 pointerInput + detectTapGestures 而不是 combinedClickable：
+                        //   ① 不需要长按（长按要留给网格层拖拽），combinedClickable
+                        //      的 onLongClick 传 null 时理论上也行，但显式只用
+                        //      单击/双击更清楚表达意图；
+                        //   ② 这个版本 Compose 的 combinedClickable 没有
+                        //      doubleClickTimeoutMillis，detectTapGestures 同样没有，
+                        //      但语义边界更明确。
+                        .then(
+                            if (onDialTap != null) {
+                                Modifier.pointerInput(timer.id) {
+                                    detectTapGestures(
+                                        onTap = { onDialTap() },
+                                        onDoubleTap = onDialDoubleTap?.let { { it() } },
+                                    )
+                                }
+                            } else {
+                                Modifier
+                            },
+                        ),
                     contentAlignment = Alignment.Center,
                 ) {
                     PieTimerView(
@@ -195,22 +239,32 @@ internal fun TimerCell(
                     modifier = Modifier.size(16.dp),
                 )
             }
-            // 运行状态点
-            Box(
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(10.dp)
-                    .size(7.dp)
-                    .clip(RoundedCornerShape(4.dp))
-                    .background(
-                        when {
-                            !running -> ExtColors.TextDim
-                            frac > 0.5f -> ExtColors.Primary
-                            frac > 0.2f -> ExtColors.Amber
-                            else -> ExtColors.Red
-                        },
-                    ),
-            )
+            // 固定开关（原来是"运行状态点"）。
+            //
+            // 那个小圆点原先用颜色表达"剩余紧迫度"，但这份信息盘面本来就有
+            // （整个圆盘的填充色就是按剩余比例变的），等于重复。
+            // 把它改成一个**有实际功能**的控件更划算：切换是否固定在面板上。
+            //
+            // 未固定（pinned = false）的计时器到点后会自动从面板移除，
+            // 只留一条记录在归档页。适合"一次性"的计时（比如"泡面 3 分钟"）。
+            //
+            // 位置在圆盘之外（左上角），与圆盘的点击区完全不重叠 ——
+            // 这正是把点击收窄到圆盘的目的。
+            if (onTogglePin != null) {
+                IconButton(
+                    onClick = onTogglePin,
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .size(32.dp),
+                ) {
+                    Icon(
+                        imageVector = if (timer.pinned) Icons.Filled.PushPin else Icons.Outlined.PushPin,
+                        contentDescription = if (timer.pinned) "取消固定" else "固定到面板",
+                        tint = if (timer.pinned) ExtColors.Primary else ExtColors.TextDim,
+                        modifier = Modifier.size(16.dp),
+                    )
+                }
+            }
         }
     }
 }

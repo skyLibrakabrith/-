@@ -9,6 +9,7 @@ import at.cwiesner.android.visualtimer.ext.data.StepSequence
 import at.cwiesner.android.visualtimer.ext.data.TimerGroup
 import at.cwiesner.android.visualtimer.ext.data.TimerItem
 import at.cwiesner.android.visualtimer.ext.data.TimerKind
+import at.cwiesner.android.visualtimer.ext.data.TimerSession
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
@@ -32,16 +33,26 @@ data class BackupFile(
     val groups: List<TimerGroupDto> = emptyList(),
     /** DDL 的提前提醒档位。v2 起导出。 */
     val deadlineReminders: List<DeadlineReminderDto> = emptyList(),
+    /**
+     * 计时会话的归档历史。v3 起导出。
+     *
+     * 历史**没有** `ref`：它不被别的实体引用，导入时也不需要重映射，
+     * 直接按行追加即可。
+     */
+    val sessions: List<TimerSessionDto> = emptyList(),
 ) {
     companion object {
         /**
          * v1 → v2：补齐组、DDL 提前提醒，以及计时器的类型 / 截止时刻 / 锁定状态，
          * 序列补上所属面板。
          *
-         * 新字段全部带默认值，所以 **v1 的旧备份文件仍然能导入**，
+         * v2 → v3：计时器补 `pinned`（是否固定在面板上），并新增归档历史 [sessions]；
+         * 历史里的 `kind` 存字符串，导入按原样回写。
+         *
+         * 新字段全部带默认值，所以 **v1 / v2 的旧备份文件仍然能导入**，
          * 只是那部分信息本来就缺失，导入后按默认值处理。
          */
-        const val CURRENT_SCHEMA = 2
+        const val CURRENT_SCHEMA = 3
         const val APP_TAG = "visual-timer-extended"
     }
 }
@@ -64,6 +75,13 @@ data class TimerItemDto(
     val kind: String = "Countdown",
     val deadlineEpochMillis: Long? = null,
     val locked: Boolean = false,
+    /**
+     * 是否固定在面板上。v3 起导出。
+     *
+     * 默认 true 与实体一致：v1 / v2 的旧备份没有这个字段，
+     * 导入后一律视为已固定，不会被当成「到点就自动移除」。
+     */
+    val pinned: Boolean = true,
 )
 
 @Serializable
@@ -150,7 +168,25 @@ data class DeadlineReminderDto(
     val fired: Boolean = false,
 )
 
-/** 序列化器配置：忽略未知字段，容忍未来版本多出的键。 */val BackupJson: Json = Json {
+/**
+ * 一次计时会话的归档记录。
+ *
+ * 没有 `ref`：历史不被别的实体引用，导入时也不需要主键重映射，直接按行追加。
+ * `kind` 用字符串而不是 [TimerKind] 枚举，原因同实体 [TimerSession]：
+ * 归档是历史数据，不该被将来的枚举变更牵连。
+ */
+@Serializable
+data class TimerSessionDto(
+    val label: String? = null,
+    val startedAt: Long,
+    val endedAt: Long,
+    val plannedMillis: Long,
+    val kind: String = "Countdown",
+    val completed: Boolean = false,
+)
+
+/** 序列化器配置：忽略未知字段，容忍未来版本多出的键。 */
+val BackupJson: Json = Json {
     prettyPrint = true
     ignoreUnknownKeys = true
     encodeDefaults = true
@@ -186,6 +222,8 @@ fun TimerItem.toDto(ref: String, alertRef: String?) = TimerItemDto(
     kind = kind.name,
     deadlineEpochMillis = deadlineEpochMillis,
     locked = locked,
+    // 导出漏这一行 → 导入后 pin 状态静默丢光（面板上被固定的全变成「到点自动移除」）
+    pinned = pinned,
 )
 
 fun TimerItemDto.toEntity(alertId: Long?) = TimerItem(
@@ -196,6 +234,8 @@ fun TimerItemDto.toEntity(alertId: Long?) = TimerItem(
     kind = TimerKind.fromKey(kind),
     deadlineEpochMillis = deadlineEpochMillis,
     locked = locked,
+    // 导入漏这一行 → 同上：v3 备份里的 pin 状态读进来又被默认值 true 覆盖
+    pinned = pinned,
 )
 
 fun Panel.toDto(ref: String) = PanelDto(
@@ -261,4 +301,28 @@ fun DeadlineReminder.toDto(timerRef: String) = DeadlineReminderDto(
     timerRef = timerRef,
     leadMinutes = leadMinutes,
     fired = fired,
+)
+
+fun TimerSession.toDto() = TimerSessionDto(
+    label = label,
+    startedAt = startedAt,
+    endedAt = endedAt,
+    plannedMillis = plannedMillis,
+    kind = kind,
+    completed = completed,
+)
+
+/**
+ * 历史归档导入时**原样回写**（不自增 id，主键交给数据库重新分配）。
+ *
+ * `kind` 是字符串，这里不做 [TimerKind.fromKey] 这类归一化：
+ * 归一化会把「将来才认识的值」静默改写成 Countdown，历史就不是事实了。
+ */
+fun TimerSessionDto.toEntity() = TimerSession(
+    label = label,
+    startedAt = startedAt,
+    endedAt = endedAt,
+    plannedMillis = plannedMillis,
+    kind = kind,
+    completed = completed,
 )

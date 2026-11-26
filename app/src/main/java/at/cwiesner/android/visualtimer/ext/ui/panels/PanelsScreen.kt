@@ -841,25 +841,23 @@ fun PanelsScreen(
                                 orderOverride = null
                             }
                         },
+                        gridHandlesTaps = false,
                         onClick = { entry ->
-                            // 单击：暂停 / 继续。
-                            // DDL 完全跳过 —— 它没有暂停/继续的语义，点了不该有反应。
-                            if (entry.kind != EntryKind.Timer) return@DraggableGrid
-                            val t = timers.firstOrNull { it.id == entry.refId }
-                                ?: return@DraggableGrid
-                            if (!t.isEditable) return@DraggableGrid
-                            scope.launch {
-                                val cur = runner.snapshot().firstOrNull { it.timerId == t.id }
-                                when {
-                                    cur == null -> runner.start(t)
-                                    cur.running -> runner.stop(t.id)
-                                    else -> runner.resume(t.id)
-                                }
+                            // gridHandlesTaps = false 之后，计时器卡片的点按
+                            // 已经由圆盘自己处理（见 TimerCell 的 onDialTap），
+                            // 但序列卡和组卡**没有**自己的点击层，仍然需要走这里。
+                            //
+                            // 序列卡：双击进全屏（见 onDoubleClick）；单击不做动作。
+                            // 组卡：单击打开组编辑。
+                            when (entry.kind) {
+                                EntryKind.Timer -> Unit
+                                EntryKind.Sequence -> Unit
+                                EntryKind.Group -> editingGroupId = entry.refId
                             }
                         },
                         onDoubleClick = { entry ->
-                            // 双击：进全屏
                             when (entry.kind) {
+                                // 计时器由圆盘接管；写上以防将来 gridHandlesTaps 变回来
                                 EntryKind.Timer -> focusTimerId = entry.refId
                                 EntryKind.Sequence -> focusSequenceId = entry.refId
                                 EntryKind.Group -> editingGroupId = entry.refId
@@ -910,6 +908,40 @@ fun PanelsScreen(
                                         intervalMinutes = intervalMinutes,
                                         fractionDivisions = fractionDivisions,
                                         locked = !t.isEditable,
+                                        // 圆盘点击：暂停 / 继续
+                                        //
+                                        // 与上面 DraggableGrid.onClick 里原来那段逻辑**完全一致**，
+                                        // 只是触发区域从"整张卡片"收窄到"圆盘"。
+                                        // 收窄的原因：左上角新加了「固定」图钉，
+                                        // 整卡可点的话点图钉会顺带触发暂停。
+                                        //
+                                        // DDL 跳过：它没有暂停/继续语义（时长由截止时刻决定）。
+                                        onDialTap = if (!t.isEditable) {
+                                            null
+                                        } else {
+                                            {
+                                                scope.launch {
+                                                    val cur = runner.snapshot()
+                                                        .firstOrNull { it.timerId == t.id }
+                                                    when {
+                                                        cur == null -> runner.start(t)
+                                                        cur.running -> runner.stop(t.id)
+                                                        else -> runner.resume(t.id)
+                                                    }
+                                                }
+                                            }
+                                        },
+                                        onDialDoubleTap = { focusTimerId = t.id },
+                                        // 切换固定：只写库，不动运行时
+                                        // （固定与否只影响"到点后是否自动移除"）
+                                        onTogglePin = {
+                                            scope.launch {
+                                                runCatching {
+                                                    db.timerDao().upsert(t.copy(pinned = !t.pinned))
+                                                }
+                                                toast(if (t.pinned) "已取消固定" else "已固定到面板")
+                                            }
+                                        },
                                         onReset = {
                                             scope.launch { runner.reset(t.id) }
                                         },
