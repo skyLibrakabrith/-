@@ -67,10 +67,23 @@ object DeadlineCreator {
         val durationMillis = (deadlineAt - now).coerceAtLeast(MIN_DURATION_MILLIS)
         val reminders = leads.filter { it > 0L }.distinct().sorted()
         // 剩余分钟用整数除法，与 PanelRunner.markLeadsBaseline 的算法保持一致
-        // （那边是 `lead <= remainingMillis / 60_000L`）。
-        // 两处口径不同会导致「创建时判为未过、第一次 tick 却立刻触发」。
+        // （那边是 `remainingMillis / 60_000L`）。
         val remainMin = durationMillis / 60_000L
-        val alreadyPast = reminders.filter { it <= remainMin }.toSet()
+        // 判据必须是 `lead >= remainMin`，不能写成 `lead <= remainMin`。
+        //
+        // 为什么：tick 的触发条件是 `lead <= remainMin` 时**立即触发**。
+        // 也就是说「档位要求的提前量 >= 当前剩余的分钟数」的那一刻，
+        // 这一档就已经到了、或者早就错过了，必须现在就标基线把它压住。
+        //
+        // 举两个会当场翻车的例子：
+        //   · 距截止只剩 5 分钟，用户勾了「提前 10 分钟」——
+        //     10 >= 5，这一档已经错过。不标的话第一次 tick 立刻弹窗。
+        //   · 距截止正好 10 分钟，用户勾了「提前 10 分钟」——
+        //     10 >= 10，正好卡在触发点上，不标同样当场响。
+        //
+        // 反过来 `lead < remainMin`（还有富余）才是真正「将来要响」的，
+        // 不能标，否则用户永远收不到这档提醒。
+        val alreadyPast = reminders.filter { it >= remainMin }.toSet()
         return Plan(
             durationMillis = durationMillis,
             reminders = reminders,

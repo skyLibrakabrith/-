@@ -138,7 +138,8 @@ class DeadlineCreatorTest {
             leads = listOf(10L, 11L),
         )
         assertEquals(10 * min + 30_000L, plan.durationMillis)
-        // 10 <= 10 -> 已过；11 > 10 -> 未过
-        assertEquals(setOf(10L), plan.alreadyPastLeads)
+        // 按 `lead >= remainMin` 判据：10 >= 10 已过，11 >= 10 也已过
+        // （要求提前 11 分钟，可只剩 10 分 30 秒 —— 这档同样已经错过了）
+        assertEquals(setOf(10L, 11L), plan.alreadyPastLeads)
     }
 }
