@@ -186,6 +186,9 @@ fun SequencesScreen(modifier: Modifier = Modifier) {
         }
     }
 
+    // 保存进行中的标志，防止连点重复创建
+    var saving by remember { mutableStateOf(false) }
+
     val editTarget = editing
     if (editTarget != null) {
         SequenceEditorScreen(
@@ -193,8 +196,18 @@ fun SequencesScreen(modifier: Modifier = Modifier) {
             steps = editingSteps,
             onDismiss = { editing = null },
             onSave = { name, timeout, stepDrafts ->
-                scope.launch {
-                    try {
+                // 防重入：保存要跑一串数据库操作（可能几十毫秒），
+                // 期间按钮仍是可点的。用户连点两下就会同时跑两个协程：
+                //   · 两个都读到 editTarget.id == 0 -> 都走 INSERT -> 建出两条序列
+                //   · 或者一个先 upsert 改了 id，另一个拿着旧的 id 再写一遍
+                // 真机上确实出现过「点一次保存，多出 3 条同名空序列」。
+                //
+                // 用 if/else 包住而不是 `return@label`：onSave 是**参数名**，
+                // 不是可用的非局部返回标签，写错标签会编译失败。
+                if (!saving) {
+                    saving = true
+                    scope.launch {
+                        try {
                         // 新建时 editTarget.id == 0，@Upsert 会走 INSERT 并**返回自增 id**；
                         // 编辑已有序列时返回的就是它自己的 id。两种情况下都以下面这个 seqId 为准。
                         //
@@ -214,6 +227,16 @@ fun SequencesScreen(modifier: Modifier = Modifier) {
                                 sortOrder = keepSortOrder,
                             ),
                         )
+                        // @Upsert 在**不应该**返回负数的，但真机上抓到过 -1：
+                        //     steps: sequenceId = -1, label = 'step'
+                        // 于是这些步骤全成了谁都找不到的孤儿（列表里显示"还没有阶段"）。
+                        // 无论 -1 来自并发重复 upsert 还是别的原因，都不能拿它当外键继续写，
+                        // 否则数据静默损坏、而且看不出错。
+                        if (seqId <= 0L) {
+                            Log.e(TAG, "序列 upsert 返回了非法 id=$seqId，放弃写步骤")
+                            toastText("保存失败：数据库未返回有效 id，请重试")
+                            return@launch
+                        }
                         // 重建步骤：先删旧的再按新草稿写入。
                         // 必须用上面拿到的 seqId —— 用 editTarget.id 的话，新建时会往
                         // sequenceId = 0 写一批谁都找不到的孤儿步骤。
@@ -239,6 +262,10 @@ fun SequencesScreen(modifier: Modifier = Modifier) {
                     } catch (e: Exception) {
                         Log.e(TAG, "保存序列失败", e)
                         toastText("保存失败，请重试")
+                    } finally {
+                        // 无论成功失败都要放开，否则一次失败后按钮永久失效
+                        saving = false
+                    }
                     }
                 }
             },
