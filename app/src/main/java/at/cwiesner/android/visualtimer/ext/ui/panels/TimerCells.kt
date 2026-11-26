@@ -149,9 +149,18 @@ internal fun TimerCell(
                         maxLines = 1,
                         modifier = Modifier.weight(1f),
                     )
-                    // 仅「暂停 / 超时」时出现；运行时占位保持宽度稳定。
-                    // DDL 不显示：它不能暂停，也就永远不会有「暂停后需重置」的状态。
-                    if (!locked && runtime != null && (!running || runtime.isOverdue)) {
+                    // 出现条件分两种情况，**不能**用一个 `!locked` 一刀切：
+                    //
+                    //   ① 暂停后需重置 —— 只有普通计时器会有这种状态。
+                    //      DDL 没有暂停语义（时长由截止时刻决定），所以对它隐藏是对的。
+                    //   ② **超时后需重置 —— 所有类型都需要，DDL 也一样。**
+                    //
+                    // 之前写成 `if (!locked && ...)`，等于把整个重置入口对 DDL 关掉了。
+                    // 结果 DDL 到点后弹着提醒、界面里却没有任何办法把它按下去 ——
+                    // 用户只能等提醒自己消失，或者从悬浮窗上操作。
+                    val needsReset = runtime != null &&
+                        (runtime.isOverdue || (!running && !locked))
+                    if (needsReset) {
                         Box(
                             modifier = Modifier
                                 .height(20.dp)

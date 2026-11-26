@@ -77,7 +77,17 @@ class AlertOverlayService : Service() {
         showOverlay()
         startFlashing()
         startTickingTime()
-        return START_STICKY
+        // 不能用 START_STICKY。
+        //
+        // STICKY 的语义是「服务被杀后由系统重启」，而重启时 intent 是 null ——
+        // 于是服务会重新创建一个内容为默认值的提醒卡片（标题「计时结束」），
+        // 用户点「留在当前」stopSelf() 之后，卡片过一会儿又冒出来，
+        // 表现为「弹窗关不掉」。
+        //
+        // 提醒本身是**一次性**的：用户处理完就该结束。
+        // 真正需要保活的场景（还有计时器在跑）由 PanelRunner 的 tick 驱动，
+        // 到点时会重新 startService，不需要系统替我们重启这个已经过期的服务。
+        return START_NOT_STICKY
     }
 
     override fun onDestroy() {
@@ -138,20 +148,20 @@ class AlertOverlayService : Service() {
                 // 先确认提醒，震动才会停
                 app?.panelRunner?.acknowledge(timerId)
                 app?.advanceSequence()
-                stopSelf()
+                dismissAndStop()
             })
         }
 
         buttons.addView(button("回到应用", primary = sequenceId <= 0L) {
             (application as? ExtApplication)?.panelRunner?.acknowledge(timerId)
             openApp()
-            stopSelf()
+            dismissAndStop()
         })
         buttons.addView(button("留在当前", primary = false) {
             // 「留在当前」就是关闭提醒 —— 只是不把用户拽回应用。
             // 三个按钮都会 acknowledge，区别只在是否打开应用。
             (application as? ExtApplication)?.panelRunner?.acknowledge(timerId)
-            stopSelf()
+            dismissAndStop()
         })
 
         card.addView(buttons)
@@ -175,6 +185,26 @@ class AlertOverlayService : Service() {
 
         root = card
         runCatching { windowManager.addView(card, params) }
+    }
+
+    /**
+     * 用户按了按钮：立刻收起卡片 + 停掉服务。
+     *
+     * 为什么不用裸 `stopSelf()`：
+     *
+     * 1. **多条计时器同时到点时会 startService 多次**，`stopSelf()`（无参）
+     *    只保证「最后一次启动请求之后不再重启」，但当前这一份服务实例仍会继续
+     *    跑到系统决定回收为止 —— 期间卡片还挂在 WindowManager 上，
+     *    用户点了按钮却看到卡片还在，以为没响应。
+     * 2. `stopSelf()` 是异步的。如果此时 PanelRunner 的 alerting 还没清空，
+     *    ExtApplication 可能又把它拉起来。
+     *
+     * 所以这里做三件确定的事：**先 acknowledge（让震动/闪烁/看门狗都停）**、
+     * **立刻 removeView（卡片马上消失）**、**再 stopSelf()**。
+     */
+    private fun dismissAndStop() {
+        runCatching { removeOverlay() }
+        runCatching { stopSelf() }
     }
 
     private fun removeOverlay() {
