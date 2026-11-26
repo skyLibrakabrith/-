@@ -20,7 +20,6 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -372,9 +371,21 @@ fun PanelNameDialog(
     )
 }
 
-/** DDL 倒推对话框（独立入口，供菜单直接调用）。 */
+/**
+ * DDL 创建第一步：只选截止时刻。
+ *
+ * 为什么单独一个对话框，而不是复用 [TimerEditDialog] 的「截止时刻」模式：
+ * 用户从菜单点「新建截止时刻」时，DDL 是**唯一目标**，不该先让他面对
+ * 轮盘 / 精确 / 截止时刻三选一 —— 那是「加计时器」的通用入口。
+ * 两个入口共用第二步 [DeadlineLeadTimeDialog] 和同一套落库逻辑。
+ *
+ * **改名说明**：本函数原名 `DeadlineDialog`，它的 `onConfirm` 传出去只是
+ * 「选好的截止时刻」，真正落库发生在第二步之后。`showDeadline` 这个开关
+ * 曾经全工程零个 `= true`（入口是死代码），顺带把函数名改成语义更准确的
+ * `DeadlineEntryDialog`，避免下次又有人在里面找「创建」逻辑。
+ */
 @Composable
-fun DeadlineDialog(
+fun DeadlineEntryDialog(
     onDismiss: () -> Unit,
     onConfirm: (label: String, deadlineEpochMillis: Long) -> Unit,
 ) {

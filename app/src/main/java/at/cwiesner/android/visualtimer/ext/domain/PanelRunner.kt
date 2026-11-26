@@ -96,7 +96,7 @@ class PanelRunner(private val scope: CoroutineScope) {
      * 提前提醒事件的附带信息：这次是哪条 `deadline_reminders` 行触发的。
      *
      * `_leadAlerts` 的载荷只有 `(runtime, leadMinutes)`，**没有行 id** ——
-     * 而要把 `fired` 列写回库里 `避免重启后再响一遍`，就必须知道是哪一行。
+     * 而要把 `fired` 列写回库里（避免重启后再响一遍），就必须知道是哪一行。
      * 所以按「计时器 id → (提醒分钟 → 行 id)」再存一份映射。
      * 行 id 只可能来自 [setLeadMinutes] 的调用方（它握住 DAO），domain 层不碰数据库。
      */
@@ -360,6 +360,30 @@ class PanelRunner(private val scope: CoroutineScope) {
     }
 
     /**
+     * 截止时刻被用户改了（只可能发生在「未锁定的历史 DDL」上）。
+     *
+     * 为什么需要：DDL 的剩余量是 `deadlineEpochMillis - now` **现算**的
+     * （见 [tick]），运行时里那份 `deadlineEpochMillis` 才是真正的终点。
+     * 只改库不同步运行时，界面会继续按旧时刻走完 —— 「改了截止时间却不变」。
+     *
+     * 与 [replaceTotal] 一样换掉 firedLeads：旧截止时刻下算出的「已过档位」
+     * 对新截止时刻不成立，不清掉会挡住新时刻该响的提醒。
+     */
+    fun replaceDeadline(timerId: Long, deadlineEpochMillis: Long, now: Long) {
+        val r = _runtimes.value[timerId] ?: return
+        val remaining = (deadlineEpochMillis - now).coerceAtLeast(0L)
+        _runtimes.value = _runtimes.value + (
+            timerId to r.copy(
+                deadlineEpochMillis = deadlineEpochMillis,
+                totalMillis = remaining,
+                remainingMillis = remaining,
+                overdueMillis = 0L,
+                firedLeads = emptySet(),
+            )
+            )
+    }
+
+    /**
      * 重置到原始时长。
      *
      * 必须同时清掉 [TimerRuntime.overdueMillis] —— 否则「超时后重置」会把
@@ -379,8 +403,8 @@ class PanelRunner(private val scope: CoroutineScope) {
 
     fun clear(timerId: Long) {
         acknowledge(timerId)
-        // 运行时都没了，再留着 lead 登记只会在 id 被数据库复用（AUTOINCREMENT 不会，
-        // 但备份导入会按新 id 重写）时串到别的计时器上，所以一并清掉。
+        // 运行时都删了，提前提醒的登记（档位 + 行 id）也没有意义，
+        // 一起清掉，避免一个已删除的 id 残留映射
         leadMinutesOf.remove(timerId)
         leadRowIdsOf.remove(timerId)
         _runtimes.value = _runtimes.value - timerId

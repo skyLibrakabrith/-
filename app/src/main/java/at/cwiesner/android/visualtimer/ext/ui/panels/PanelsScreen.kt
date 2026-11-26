@@ -37,6 +37,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import at.cwiesner.android.visualtimer.ext.ExtApplication
 import at.cwiesner.android.visualtimer.ext.data.AlertProfile
+import at.cwiesner.android.visualtimer.ext.data.DeadlineReminder
 import at.cwiesner.android.visualtimer.ext.data.GroupMember
 import at.cwiesner.android.visualtimer.ext.data.Panel
 import at.cwiesner.android.visualtimer.ext.data.PanelTimerRef
@@ -46,6 +47,7 @@ import at.cwiesner.android.visualtimer.ext.data.TimerGroup
 import at.cwiesner.android.visualtimer.ext.data.TimerItem
 import at.cwiesner.android.visualtimer.ext.data.TimerKind
 import at.cwiesner.android.visualtimer.ext.domain.DeadlineCalculator
+import at.cwiesner.android.visualtimer.ext.domain.DeadlineRestore
 import at.cwiesner.android.visualtimer.ext.domain.StepSequenceEngine
 import at.cwiesner.android.visualtimer.ext.domain.TimerRuntime
 import at.cwiesner.android.visualtimer.ext.ui.ExtColors
@@ -147,10 +149,6 @@ fun PanelsScreen(
     // DDL 两步创建：第一步选截止时刻，第二步选提前提醒。
     // 两步都确认后才真正落库并开始计时，避免"先建好了才问要不要提醒"。
     var pendingDeadline by remember { mutableStateOf<PendingDeadline?>(null) }
-    // 两步创建里选定的「提前提醒」档位。
-    // 以前这条路径**不落库**（DeadlineReminder 只在没人调用的另一条路径里写），
-    // 于是提前提醒重启后就没了 —— 现在由下面的 LaunchedEffect 持久化。
-    var pendingLeads by remember { mutableStateOf<List<Long>>(emptyList()) }
     var showNewTimer by remember { mutableStateOf(false) }
     var showNewTimerDeadline by remember { mutableStateOf(false) }
     var showPanelManager by remember { mutableStateOf(false) }
@@ -350,6 +348,98 @@ fun PanelsScreen(
 
     var orderOverride by remember { mutableStateOf<List<PanelEntry>?>(null) }
     val displayEntries = orderOverride ?: gridEntries
+
+    /**
+     * 删除一个计时器：运行时 → 面板关联 → **自增删除计时器行本身**。
+     *
+     * 为什么必须有最后一步：Room 里刻意没有 `@ForeignKey`（避免清库时约束爆炸），
+     * 所以每条删除路径都得手工级联。列表「删除」和卡片垃圾桶原先只做了
+     * `clear` + `removeRef`，`timers` 行还在库里 —— 于是删掉的计时器
+     * 仍会被全量导出进备份，也会出现在面板编辑器的候选列表里。
+     * 拆解流程早就补了 `deleteById`（并留了注释），这里统一到同一路径。
+     *
+     * `GroupMember` / `DeadlineReminder` 没有外键，也要一起清，
+     * 否则它们指向一个不存在的计时器：前者会让计数虚高，后者会沉淀成永远
+     * `fired = 0` 的孤儿行、被冷启动恢复反复处理。
+     *
+     * suspend 而不是内部自己 launch：调用方（批量删除）要在循环结束后才 toast。
+     */
+    suspend fun deleteTimerRows(timerId: Long, removeRefPanelId: Long?) {
+        try {
+            runner.clear(timerId)
+            // removeRef 只针对本次可见的那个面板；同一条计时器可能被多个面板引用，
+            // 只删当前面板的关联是原有行为（别的面板仍显示它），这里不擅自扩大范围
+            removeRefPanelId?.let { db.panelDao().removeRef(it, timerId) }
+            // 组里也摘掉：`groupedTimerIds` 由 group_members 算出，
+            // 残留成员会让「已成组」的判定继续成立，而里面的计时器已经不存在
+            // （结果是这个 id 既不在网格里、也没有对应的组卡片，彻底消失）。
+            //
+            // 按「组」处理而不是按「成员」：一条计时器只会属于一个组（建组时保证），
+            // 但同一次删除里逐个成员重写整组容易把顺序写乱。这里对涉及的每个组
+            // 用**当前快照减去被删的那一个**重写一次，顺序保持原样。
+            val affectedGroups = allGroupMembers
+                .filter { it.timerId == timerId }
+                .map { it.groupId }
+                .distinct()
+            affectedGroups.forEach { gid ->
+                val remaining = allGroupMembers
+                    .filter { it.groupId == gid && it.timerId != timerId }
+                    .sortedBy { it.order }
+                    .mapIndexed { idx, m -> GroupMember(m.groupId, m.timerId, idx) }
+                db.groupDao().clearMembers(gid)
+                if (remaining.isNotEmpty()) db.groupDao().upsertMembers(remaining)
+            }
+            db.deadlineReminderDao().clearTimer(timerId)
+            db.timerDao().deleteById(timerId)
+            Log.i("PanelsScreen", "计时器已删除：id=" + timerId)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            Log.e("PanelsScreen", "删除计时器失败 id=" + timerId, e)
+            toast("删除失败，请重试")
+        }
+    }
+
+    /**
+     * 删除一个面板，并级联清掉它的全部从属行。
+     *
+     * **不级联的后果是计时器凭空消失**：`timer_groups.panelId` 指向一个已不存在的
+     * 面板时，`observeGroups(面板)` 查不到这些组，但 `allGroupMembers` 仍会返回它们
+     * 的成员；而网格渲染用 `timers.filter { it.id !in groupedTimerIds }` 把
+     * 「已成组」的计时器排除在外 —— 组没了、计时器又被当成组成员排除掉，两边都看不见。
+     *
+     * 同样要清的还有：本面板的 panel_timers 关联、组的成员行、以及
+     * `sequences.panelId`（否则序列挂在一个不存在的面板下，也再无入口可见）。
+     *
+     * 注意**不动** `timers` 表本身：面板是「视图」而不是计时器的所有者，
+     * 同一条计时器可以同时属于多个面板，随面板一起删掉会误删别处的计时器。
+     */
+    suspend fun deletePanelCascade(panelId: Long) {
+        try {
+            // 1) 本面板的组：先子（成员）后父（组）
+            val panelGroups = groups.filter { it.panelId == panelId }
+            panelGroups.forEach { g ->
+                db.groupDao().clearMembers(g.id)
+                db.groupDao().deleteGroup(g.id)
+            }
+            // 2) 本面板的序列：解除归属（删序列有独立的级联删除入口，这里只摘钩）
+            panelSequences.forEach { sq ->
+                db.sequenceDao().upsert(sq.copy(panelId = null))
+            }
+            // 3) 本面板与计时器的关联
+            db.panelDao().refsOf(panelId).forEach {
+                db.panelDao().removeRef(panelId, it.timerId)
+            }
+            // 4) 面板本身
+            db.panelDao().deleteById(panelId)
+            Log.i("PanelsScreen", "面板已删除（含级联）：id=" + panelId)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            Log.e("PanelsScreen", "删除面板失败 id=" + panelId, e)
+            toast("删除失败，请重试")
+        }
+    }
 
     /**
      * 把拖拽后的新顺序落库。
@@ -567,8 +657,14 @@ fun PanelsScreen(
                     onStart = {
                         scope.launch {
                             val cur = runner.snapshot().firstOrNull { it.timerId == focused.id }
-                            if (cur != null && !cur.running && !cur.expired) {
-                                // 有暂停状态 → 从暂停处继续
+                            // 「是否暂停过」用 `!cur.running` 判，**不要**掺 `expired`。
+                            // `expired`（到过点，历史事实）在暂停后仍为 true，而 `isOverdue`
+                            // （= expired && running）此时为 false —— 若要判「现在是否超时」
+                            // 只能用 isOverdue。这里的语义只是「有没有可以继续的进度」：
+                            // 暂停中的计时器（含已超时后又暂停的）一律 resume，
+                            // 只有从未开始时才 start。否则「已超时 → 暂停 → 点中央按钮」
+                            // 会落到 clear()+start() = 重置，和网格上的同一操作结论相反。
+                            if (cur != null && !cur.running) {
                                 runner.resume(focused.id)
                                 toast("继续计时")
                             } else {
@@ -884,7 +980,9 @@ fun PanelsScreen(
             },
             onDelete = { target ->
                 scope.launch {
-                    db.panelDao().deleteById(target.id)
+                    // 必须级联：只删 panels 行会残留 timer_groups / group_members /
+                    // panel_timers，让属于这些组的计时器从网格里凭空消失（见函数注释）
+                    deletePanelCascade(target.id)
                     selectedPanel = 0
                     toast("面板「" + target.name + "」已删除")
                 }
@@ -1017,9 +1115,7 @@ fun PanelsScreen(
                     }
                     // 原计时器被序列取代：停掉运行时并移出面板，再彻底删掉这一行。
                     // 只 removeRef 会留下孤儿行（面板里看不到但仍在库里）。
-                    runner.clear(splitTarget.id)
-                    db.panelDao().removeRef(pid, splitTarget.id)
-                    db.timerDao().deleteById(splitTarget.id)
+                    deleteTimerRows(splitTarget.id, removeRefPanelId = pid)
                     selectedIds = emptySet()
                     toast("已拆成 ${steps.size} 阶段的序列")
                     editingSequenceId = seqId
@@ -1058,7 +1154,8 @@ fun PanelsScreen(
             onDelete = {
                 showPanelEditor = false
                 scope.launch {
-                    db.panelDao().deleteById(currentPanel.id)
+                    // 与「面板管理」里的删除走同一条级联路径
+                    deletePanelCascade(currentPanel.id)
                     selectedPanel = 0
                     toast("面板已删除")
                 }
@@ -1174,10 +1271,38 @@ fun PanelsScreen(
                             locked = keepDeadline && editingTimer.locked,
                         ),
                     )
-                    // 时长变了：直接清掉运行时状态。
-                    // 用 reset 不行 —— 它把 remaining 设成**旧的** totalMillis，
-                    // 卡片会继续显示改之前时长。
-                    runner.clear(editingTimer.id)
+                    // 时长变了：不能直接 clear()。
+                    // 原来无条件 `runner.clear(id)` 把**整条运行时删掉**：
+                    // 正在跑的倒计时归零、正在响的提醒被 acknowledge ——
+                    // 用户只是改了个名字，计时器却被重置了。
+                    // 现在：
+                    // · 运行时不存在 → 什么都不用做（下次 start 会从库里取新值）
+                    // · 时长没变 → 只同步 label（悬浮窗/通知/卡片标题都读运行时）
+                    // · 时长真变了 → 换上新的 total 并作废「到点」结论，
+                    //   但保留 running，正在跑的继续跑
+                    val cur = runner.get(editingTimer.id)
+                    if (cur != null) {
+                        val newDeadline = editingTimer.deadlineEpochMillis
+                        val durationChanged = !keepDeadline && cur.totalMillis != duration
+                        if (keepDeadline && newDeadline != null) {
+                            // DDL：终点由截止时刻决定，运行时里那份 deadlineEpochMillis
+                            // 才是 tick 实际用的值，不同步就还是按旧时刻走
+                            if (cur.deadlineEpochMillis != newDeadline) {
+                                val nowMs = System.currentTimeMillis()
+                                runner.replaceDeadline(editingTimer.id, newDeadline, nowMs)
+                                runner.markLeadsBaseline(
+                                    editingTimer.id,
+                                    (newDeadline - nowMs).coerceAtLeast(0L),
+                                )
+                            }
+                        } else if (durationChanged) {
+                            runner.replaceTotal(editingTimer.id, duration)
+                            // 新的剩余时长下，已经过去的提前提醒档位要立刻标掉，
+                            // 否则第一次 tick 会把一串档位同时触发
+                            runner.markLeadsBaseline(editingTimer.id, duration)
+                        }
+                        runner.updateLabel(editingTimer.id, label.ifBlank { null })
+                    }
                     toast("已保存：" + label.ifBlank { "未命名" })
                 }
             },
@@ -1190,8 +1315,19 @@ fun PanelsScreen(
             onDismiss = { showNewTimer = false },
             onConfirm = { label, duration, deadlineEpoch, alertProfileId ->
                 showNewTimer = false
+                if (deadlineEpoch != null) {
+                    // 选了「截止时刻」= 用户在 DDL 两步流程的第一步，不能在这里按
+                    // 普通倒计时建掉 —— 否则 kind 落成 Countdown、deadlineEpochMillis
+                    // 不落库，重启后就是一个与截止时刻脱钩的「剩余 N 小时」。
+                    // 转交给第二步（选提前提醒），结构与菜单入口完全一致。
+                    pendingDeadline = PendingDeadline(
+                        label = label,
+                        deadlineEpochMillis = deadlineEpoch,
+                        alertProfileId = alertProfileId,
+                    )
+                    return@TimerEditDialog
+                }
                 scope.launch {
-                    val now = System.currentTimeMillis()
                     val timerId = db.timerDao().upsert(
                         TimerItem(
                             label = label.ifBlank { null },
@@ -1210,13 +1346,9 @@ fun PanelsScreen(
                             ),
                         ),
                     )
-                    db.timerDao().get(timerId)?.let { created ->
-                        if (deadlineEpoch != null) {
-                            runner.startUntil(created, deadlineEpoch, now)
-                        }
-                    }
                     toast("已添加：" + (label.ifBlank { "未命名" }) + " · " +
                         DeadlineCalculator.formatRemaining(duration))
+                    Log.d(TAG, "普通计时器已创建 id=" + timerId)
                 }
             },
         )
@@ -1265,6 +1397,7 @@ fun PanelsScreen(
             label: String,
             deadlineAt: Long,
             leads: List<Long>,
+            alertProfileId: Long?,
         ) {
             val startAt = System.currentTimeMillis()
             val remain = (deadlineAt - startAt).coerceAtLeast(1000L)
@@ -1277,6 +1410,9 @@ fun PanelsScreen(
                     // DDL 一旦创建就锁定：它的时间由截止时刻决定，不允许再改。
                     // 配合卡片上的 locked 判断，编辑入口对它不出现。
                     locked = true,
+                    // 从「加计时器 → 截止时刻」进来的用户已经在第一步选过提醒方式，
+                    // 不带过来就会静默退回默认配置
+                    alertProfileId = alertProfileId,
                 ),
             )
             val existing = runCatching { db.panelDao().refsOf(panelId) }.getOrDefault(emptyList())
@@ -1353,11 +1489,15 @@ fun PanelsScreen(
                     toast("先选一个面板")
                 } else {
                     scope.launch {
+                        // 两条入口（菜单「新建截止时刻」/「加计时器 → 截止时刻」）
+                        // 在这里汇流：落库与提前提醒写入都只发生在 commitDeadline 内部，
+                        // 所以提醒行一定带着正确的 timerId，不需要事后再靠内容匹配补写。
                         commitDeadline(
                             panelId = panelId,
                             label = pending.label,
                             deadlineAt = pending.deadlineEpochMillis,
                             leads = leads,
+                            alertProfileId = pending.alertProfileId,
                         )
                     }
                 }
@@ -1378,4 +1518,6 @@ private const val TAG = "PanelsScreen"
 private data class PendingDeadline(
     val label: String,
     val deadlineEpochMillis: Long,
+    /** 「加计时器 → 截止时刻」路径里第一步已选的提醒方式；菜单入口没有，为 null。 */
+    val alertProfileId: Long? = null,
 )

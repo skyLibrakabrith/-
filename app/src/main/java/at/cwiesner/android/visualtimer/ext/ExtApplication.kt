@@ -171,11 +171,15 @@ class ExtApplication : Application() {
         createAlertChannel()
         // 立刻开始走表，不依赖任何界面存在
         panelRunner.startTicking()
-        // 必须在 startTicking 之后：恢复会把运行时写进去，tick 才推得动它
-        restoreDeadlines()
+        // 订阅要先于恢复：`_alerts` / `_leadAlerts` 是没有 replay 的 SharedFlow，
+        // 没有订阅者时 tryEmit 的事件直接丢弃。恢复流程若先跑完，冷启动那一刻
+        // 本该响的提醒会被静默吞掉。
         observeAlerts()
         observeFlashSetting()
         observeSequenceOverlay()
+        // 恢复放在订阅之后，且要等那几个 launch 真正把 collect 挂上 ——
+        // 见 restoreDeadlines 里那句 yield()。
+        restoreDeadlines()
     }
 
     private fun observeFlashSetting() {
@@ -207,6 +211,15 @@ class ExtApplication : Application() {
      */
     private fun restoreDeadlines() {
         appScope.launch(Dispatchers.IO) {
+            // 让出一次，给 onCreate 里那几个 `appScope.launch`（订阅 alerts / leadAlerts）
+            // 真正把 collect 挂上去。
+            //
+            // 为什么需要：`_leadAlerts` 是 `extraBufferCapacity = 16` 但没有 replay 的
+            // MutableSharedFlow —— 连一个订阅者都没有时，`tryEmit` 返回 false 并**丢弃**事件。
+            // `observeAlerts()` 里的 launch 与这里的 launch 都在主线程排队，
+            // 不 yield 的话恢复可能先跑，冷启动那一刻该响的提前提醒就丢了。
+            // 订阅侧是 Main.immediate，这里 yield 回主线程，它们先执行。
+            kotlinx.coroutines.yield()
             val restored = logCatchingOr("restore-deadlines", 0) {
                 val db = database
                 val all = db.timerDao().observeAllOnce()
@@ -224,34 +237,52 @@ class ExtApplication : Application() {
                 }
 
                 var count = 0
-                all.filter { it.kind == TimerKind.Deadline && (it.deadlineEpochMillis ?: 0L) > now }
-                    .forEach { t ->
-                        val deadline = t.deadlineEpochMillis ?: return@forEach
-                        // 已经存在运行时说明它这次进程里已经跑着了，不要重建 ——
-                        // startUntil 会 acknowledge 掉正在响的提醒，等于把提醒静音
-                        if (panelRunner.get(t.id) != null) return@forEach
-
-                        panelRunner.startUntil(t, deadline, now)
-                        val reminders = db.deadlineReminderDao().forTimer(t.id)
-                        val plan = DeadlineRestore.plan(t, reminders, now)
-                        // 保留 fired 的行也挂上：tick 靠 firedLeads 去重，
-                        // 但它们已经响过，所以不计入「现在该挂的档位」
-                        val liveRowIds = DeadlineRestore.rowIdsOf(
-                            reminders.filter { it.leadMinutes in plan.liveLeads },
-                        )
-                        panelRunner.attachLeadMinutes(t.id, plan.liveLeads, liveRowIds)
-                        // 已经过去的档位：挂上之后立刻标成已触发，与建 DDL 时的做法一致
-                        panelRunner.markLeadsBaseline(
-                            t.id,
-                            (deadline - now).coerceAtLeast(0L),
-                        )
-                        plan.staleRowIds.forEach { rowId ->
-                            logCatching("restore-deadlines-stale") {
-                                db.deadlineReminderDao().markFired(rowId)
-                            }
+                all.filter { it.kind == TimerKind.Deadline }.forEach { t ->
+                    val deadline = t.deadlineEpochMillis
+                    if (deadline == null) {
+                        // 数据不自洽（kind=Deadline 却没有截止时刻）：恢复不出运行时，
+                        // 但它的提醒行不能永远停在 fired = 0，直接标掉
+                        logCatching("restore-deadlines-null") {
+                            db.deadlineReminderDao().forTimer(t.id).filter { !it.fired }
+                                .forEach { db.deadlineReminderDao().markFired(it.id) }
                         }
-                        count++
+                        return@forEach
                     }
+                    if (deadline <= now) {
+                        // 已经过期的 DDL：不再重建运行时（它已经没意义了），
+                        // 但提醒行必须标成已触发，否则会一直停在 fired = 0
+                        // 并被反复处理 / 随备份漂来漂去
+                        logCatching("restore-deadlines-past") {
+                            db.deadlineReminderDao().forTimer(t.id).filter { !it.fired }
+                                .forEach { db.deadlineReminderDao().markFired(it.id) }
+                        }
+                        return@forEach
+                    }
+                    // 已经存在运行时说明它这次进程里已经跑着了，不要重建 ——
+                    // startUntil 会 acknowledge 掉正在响的提醒，等于把提醒静音
+                    if (panelRunner.get(t.id) != null) return@forEach
+
+                    panelRunner.startUntil(t, deadline, now)
+                    val reminders = db.deadlineReminderDao().forTimer(t.id)
+                    val plan = DeadlineRestore.plan(t, reminders, now)
+                    // 只登记「还需要挂载」的档位到行 id 映射：
+                    // tick 触发时靠它找到要写 fired=1 的那一行
+                    val liveRowIds = DeadlineRestore.rowIdsOf(
+                        reminders.filter { it.leadMinutes in plan.liveLeads && !it.fired },
+                    )
+                    panelRunner.attachLeadMinutes(t.id, plan.liveLeads, liveRowIds)
+                    // 已经过去的档位：挂上之后立刻标成已触发，与建 DDL 时的做法一致
+                    panelRunner.markLeadsBaseline(
+                        t.id,
+                        (deadline - now).coerceAtLeast(0L),
+                    )
+                    plan.staleRowIds.forEach { rowId ->
+                        logCatching("restore-deadlines-stale") {
+                            db.deadlineReminderDao().markFired(rowId)
+                        }
+                    }
+                    count++
+                }
                 count
             }
             Log.i(TAG, "冷启动恢复 DDL 运行时：$restored 条")

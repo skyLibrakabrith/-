@@ -16,7 +16,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -260,6 +259,16 @@ private fun MainScaffold(onPreviewFlash: () -> Unit = {}) {
                                     text = { Text("🧠 整理念头") },
                                     onClick = {
                                         pendingPanelAction = PanelAction.Compile
+                                        panelActionsTick++
+                                    },
+                                )
+                                // DDL 两步创建（截止时刻 → 提前提醒）的唯一入口。
+                                // 没有这一项时，PanelsScreen 里那段 `if (showDeadline && …)`
+                                // 永远是死分支，用户点不到「新建截止时刻」。
+                                DropdownMenuItem(
+                                    text = { Text("新建截止时刻") },
+                                    onClick = {
+                                        pendingPanelAction = PanelAction.NewDeadline
                                         panelActionsTick++
                                     },
                                 )
