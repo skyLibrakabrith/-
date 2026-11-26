@@ -37,7 +37,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import at.cwiesner.android.visualtimer.ext.ExtApplication
 import at.cwiesner.android.visualtimer.ext.data.AlertProfile
-import at.cwiesner.android.visualtimer.ext.data.DeadlineReminder
 import at.cwiesner.android.visualtimer.ext.data.GroupMember
 import at.cwiesner.android.visualtimer.ext.data.Panel
 import at.cwiesner.android.visualtimer.ext.data.PanelTimerRef
@@ -47,7 +46,7 @@ import at.cwiesner.android.visualtimer.ext.data.TimerGroup
 import at.cwiesner.android.visualtimer.ext.data.TimerItem
 import at.cwiesner.android.visualtimer.ext.data.TimerKind
 import at.cwiesner.android.visualtimer.ext.domain.DeadlineCalculator
-import at.cwiesner.android.visualtimer.ext.domain.DeadlineRestore
+import at.cwiesner.android.visualtimer.ext.domain.DeadlineCreator
 import at.cwiesner.android.visualtimer.ext.domain.StepSequenceEngine
 import at.cwiesner.android.visualtimer.ext.domain.TimerRuntime
 import at.cwiesner.android.visualtimer.ext.ui.ExtColors
@@ -1391,6 +1390,20 @@ fun PanelsScreen(
          *
          * 参数全部显式传入（pid / 截止时刻 / 名称），不依赖捕获的 Composable 局部变量 ——
          * 这个 lambda 可能在下一次重组后执行，捕获到的 `currentPanel` 等值可能已经过期。
+         *
+         * ## 为什么改成委托
+         *
+         * 这个函数原来的实现体（写库 locked=true → upsertRefs → startUntil →
+         * clearTimer + upsertAll 提醒行 → 回读 forTimer → attachLeadMinutes →
+         * markLeadsBaseline）已被逐行搬到 `DeadlineCreator.createDeadline`。
+         * 原因：首页 `HomeScreen` 的「创建 DDL」按钮走的是另一套 `createTimer()`，
+         * 那套只写了 kind 和 deadlineEpochMillis，漏了 locked / startUntil /
+         * 提醒落库这三件事（后果分别是「DDL 可被编辑」「创建后不自动开始」
+         * 「永远不会有提醒」）。而首页是底部导航第一个 tab、默认落地页，
+         * 这条有缺陷的路径反而最常被走到。
+         *
+         * 抽成共享函数后两个入口共用同一份实现，就不会再各自分叉。
+         * 这里只保留本界面特有的部分：拿 `db` / `runner`、取 now、以及 toast 文案。
          */
         suspend fun commitDeadline(
             panelId: Long,
@@ -1399,78 +1412,17 @@ fun PanelsScreen(
             leads: List<Long>,
             alertProfileId: Long?,
         ) {
-            val startAt = System.currentTimeMillis()
-            val remain = (deadlineAt - startAt).coerceAtLeast(1000L)
-            val timerId = db.timerDao().upsert(
-                TimerItem(
-                    label = label.ifBlank { "到点倒计时" },
-                    durationMillis = remain,
-                    deadlineEpochMillis = deadlineAt,
-                    kind = TimerKind.Deadline,
-                    // DDL 一旦创建就锁定：它的时间由截止时刻决定，不允许再改。
-                    // 配合卡片上的 locked 判断，编辑入口对它不出现。
-                    locked = true,
-                    // 从「加计时器 → 截止时刻」进来的用户已经在第一步选过提醒方式，
-                    // 不带过来就会静默退回默认配置
-                    alertProfileId = alertProfileId,
-                ),
+            DeadlineCreator.createDeadline(
+                db = db,
+                runner = runner,
+                panelId = panelId,
+                label = label,
+                deadlineAt = deadlineAt,
+                leads = leads,
+                alertProfileId = alertProfileId,
+                now = System.currentTimeMillis(),
             )
-            val existing = runCatching { db.panelDao().refsOf(panelId) }.getOrDefault(emptyList())
-            db.panelDao().upsertRefs(
-                listOf(
-                    PanelTimerRef(
-                        panelId = panelId,
-                        timerId = timerId,
-                        order = (existing.maxOfOrNull { it.order } ?: -1) + 1,
-                    ),
-                ),
-            )
-            // 自动开始：DDL 建好就该在跑，用户不需要再点一下
-            val started = db.timerDao().get(timerId)
-            if (started == null) {
-                Log.w(TAG, "DDL upsert 后立刻 get($timerId) 返回 null，无法 startUntil")
-            } else {
-                runner.startUntil(started, deadlineAt, startAt)
-            }
-            // 打完卡立刻回读运行时状态。用户报过"建出来是停着的"，
-            // 这段日志是为了让那种情况在 logcat 里一眼看出来是：
-            //   · startUntil 没执行（上一条 Log.w）
-            //   · 执行了但 running 仍为 false
-            //   · running 为 true（那就是界面侧读错，不是运行时的问题）
-            val rt = runner.get(timerId)
-            Log.i(
-                TAG,
-                "DDL created: id=$timerId locked=true remain=${remain / 1000}s " +
-                    "runtime=" + if (rt == null) "null" else "running=${rt.running} rem=${rt.remainingMillis}",
-            )
-
-            // 提前提醒落库 + 同步到运行时
-            db.deadlineReminderDao().clearTimer(timerId)
-            if (leads.isNotEmpty()) {
-                db.deadlineReminderDao().upsertAll(
-                    leads.map { m ->
-                        DeadlineReminder(
-                            timerId = timerId,
-                            leadMinutes = m,
-                        )
-                    },
-                )
-            }
-            // 回读一次建立「档位 → 行 id」映射。
-            // 为什么非要回读：`upsertAll(List)` 不返回自增 id，而提前提醒触发后要把
-            // 那一行标成 fired = 1（否则冷启动恢复分不清响过的和没响过的，会重复响）。
-            // PanelRunner.attachLeadMinutes 内部复用 setLeadMinutes，不重复实现调度。
-            val savedRows = if (leads.isEmpty()) {
-                emptyList()
-            } else {
-                runCatching { db.deadlineReminderDao().forTimer(timerId) }
-                    .getOrDefault(emptyList())
-            }
-            runner.attachLeadMinutes(timerId, leads, DeadlineRestore.rowIdsOf(savedRows))
-            // 把「已经过去的档位」标记为已触发，
-            // 否则刚设完第一个 tick 会把所有档位一次性全部触发
-            runner.markLeadsBaseline(timerId, remain)
-
+            // 保留原来的 toast 文案：用户可见行为不变
             toast(
                 if (leads.isEmpty()) "DDL 已创建并开始计时（未设提前提醒）"
                 else "DDL 已创建并开始计时，${leads.size} 个提前提醒",
@@ -1506,7 +1458,13 @@ fun PanelsScreen(
     }
 }
 
-/** 本文件的日志标签。DDL 创建流程有诊断日志，出问题时按这个 tag 过滤 logcat。 */
+/**
+ * 本文件的日志标签。
+ *
+ * 注意：DDL 创建流程的诊断日志（Runtime 状态回读的那几条「建出来是停着的」排查日志）
+ * 已随实现体一起搬进 `DeadlineCreator`，那里用的是它自己的 tag。
+ * 本常量现在只剩「普通计时器已创建」一条 Log.d 在用，不要删。
+ */
 private const val TAG = "PanelsScreen"
 
 /**

@@ -122,7 +122,7 @@ class TimerOverlayService : Service() {
             y = (160 * dp).toInt()
         }
 
-        // 拖动
+        // 拖动 + 松手吸附
         container?.setOnTouchListener { view, event ->
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
@@ -138,6 +138,15 @@ class TimerOverlayService : Service() {
                     runCatching { windowManager.updateViewLayout(view, params) }
                     true
                 }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    // 松手吸附到左右边缘。
+                    //
+                    // 原来这里是 `else -> false`，ACTION_UP 被吞掉 ——
+                    // 悬浮窗停在手指松开的位置，贴着屏幕中间挡住内容，
+                    // 用户每次都得手动挪开。这是"悬浮窗没吸附"的直接原因。
+                    snapToNearestEdge(view, params)
+                    true
+                }
                 else -> false
             }
         }
@@ -149,6 +158,53 @@ class TimerOverlayService : Service() {
             rootView = null
             container = null
         }
+    }
+
+    /**
+     * 把悬浮窗吸附到**最近的左右边缘**。
+     *
+     * 为什么只吸左右不吸上下：这是个竖向较长的卡片，贴着屏幕左边或右边时
+     * 遮住的正文最少；吸到顶部/底部会和状态栏、导航栏重叠。
+     * 所以纵向位置**保持用户拖到的地方**，只调整横向。
+     *
+     * 用动画而不是瞬间跳过去：直接赋值会让悬浮窗"闪现"到边缘，
+     * 看起来像是被强制拽走。这里用 ValueAnimator 走 180ms，手感更自然。
+     */
+    private fun snapToNearestEdge(view: View, params: WindowManager.LayoutParams) {
+        val metrics = resources.displayMetrics
+        val screenWidth = metrics.widthPixels
+        val viewWidth = view.width.takeIf { it > 0 } ?: view.measuredWidth
+        // 边距：贴边但留一点呼吸空间，完全贴死会碰到屏幕圆角/曲面
+        val margin = (8 * metrics.density).toInt()
+
+        val maxX = (screenWidth - viewWidth - margin).coerceAtLeast(margin)
+        // 注：这里用「当前 x 更接近哪一边」来判断，而不是用中心点，
+        // 因为 x 是容器左上角坐标 —— 用左上角判断会让宽卡片总是吸左边。
+        val centerNow = params.x + viewWidth / 2
+        val targetX = if (centerNow < screenWidth / 2) margin else maxX
+
+        // 纵向做一次夹取，避免用户把卡片拖到屏幕外再也抓不回来
+        val screenHeight = metrics.heightPixels
+        val viewHeight = view.height.takeIf { it > 0 } ?: view.measuredHeight
+        val minY = (-(resources.displayMetrics.density * 40)).toInt()
+        val maxY = (screenHeight - viewHeight - margin).coerceAtLeast(minY)
+        val targetY = params.y.coerceIn(minY, maxY)
+
+        if (params.x == targetX && params.y == targetY) return
+
+        val fromX = params.x
+        val fromY = params.y
+        val anim = android.animation.ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 180L
+            interpolator = android.view.animation.DecelerateInterpolator()
+            addUpdateListener { a ->
+                val f = a.animatedValue as Float
+                params.x = (fromX + (targetX - fromX) * f).toInt()
+                params.y = (fromY + (targetY - fromY) * f).toInt()
+                runCatching { windowManager.updateViewLayout(view, params) }
+            }
+        }
+        anim.start()
     }
 
     private fun removeOverlay() {

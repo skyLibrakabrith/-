@@ -204,7 +204,7 @@ interface DeadlineReminderDao {
         GroupMember::class,
         DeadlineReminder::class,
     ],
-    version = 7,
+    version = 8,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -307,6 +307,30 @@ abstract class AppDatabase : RoomDatabase() {
         }
 
         /**
+         * v7 → v8：再补一次 DDL 的 locked 回填。
+         *
+         * 为什么不复用 [MIGRATION_6_7] 里那条 UPDATE —— 迁移**每个版本只跑一次**。
+         * v6→v7 那次只在「从 v6 升到 v7」时生效，对**之后**才产生的脏数据无能为力。
+         *
+         * 而 v7 之后确实又产生了脏数据：首页 `HomeScreen` 的「创建 DDL」按钮
+         * 走的是 `createTimer()`，那条路径**没写 `locked = true`**。
+         * 真机取证（adb 从手机拉的库）：
+         *     id=1 kind=Deadline locked=0
+         *     id=2 kind=Deadline locked=0
+         * 两条都是首页建的。
+         *
+         * 首页那条路径本身已改走 [at.cwiesner.android.visualtimer.ext.domain.DeadlineCreator]
+         * （会写 locked=true），这条迁移负责把**已存在的**脏数据修正过来。
+         *
+         * SQL 是幂等的：已经是 1 的行不会被改动。
+         */
+        private val MIGRATION_7_8 = object : androidx.room.migration.Migration(7, 8) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("UPDATE timers SET locked = 1 WHERE kind = 'Deadline' AND locked = 0")
+            }
+        }
+
+        /**
          * 打开数据库。
          *
          * **刻意不用 `fallbackToDestructiveMigration()`**：那个兜底会在迁移写错、
@@ -325,7 +349,15 @@ abstract class AppDatabase : RoomDatabase() {
                     context.applicationContext,
                     AppDatabase::class.java,
                     "visual-timer-ext.db",
-                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
+                ).addMigrations(
+                    MIGRATION_1_2,
+                    MIGRATION_2_3,
+                    MIGRATION_3_4,
+                    MIGRATION_4_5,
+                    MIGRATION_5_6,
+                    MIGRATION_6_7,
+                    MIGRATION_7_8,
+                )
                     .fallbackToDestructiveMigrationOnDowngrade()
                     .build()
                     .also { INSTANCE = it }
