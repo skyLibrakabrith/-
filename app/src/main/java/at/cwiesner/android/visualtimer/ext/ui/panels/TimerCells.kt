@@ -272,7 +272,11 @@ internal fun TimerList(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            val allSelected = timers.isNotEmpty() && selectedIds.size == timers.size
+            // allSelected 的判据用「当前面板的 id 是否全部被选中」，
+            // 而不是 size 相等 —— selectedIds 里可能残留别的面板的 id
+            // （切面板时清空了，但历史遗留/并发更新仍可能不干净）。
+            // 用 id 集合包含判断，切面板后不会出现"明明全选按钮写着取消全选，实际只选了一部分"。
+            val allSelected = timers.isNotEmpty() && timers.all { it.id in selectedIds }
             Text(
                 if (selectedIds.isEmpty()) "共 ${timers.size} 个"
                 else "已选 ${selectedIds.size}/${timers.size}",

@@ -241,6 +241,10 @@ private fun MainScaffold(onPreviewFlash: () -> Unit = {}) {
                             {
                                 // 菜单项：点了就发一个动作信号给 PanelsScreen。
                                 // 先保证当前就在面板页（长按时已切过去），再发信号。
+                                //
+                                // 只剩两项：「面板管理」移到顶栏右上角图标，
+                                // 「新建截止时刻」删掉（DDL 的主入口在首页「创建 DDL」，
+                                // 见 PanelAction 的注释）。
                                 DropdownMenuItem(
                                     text = { Text("新建序列") },
                                     onClick = {
@@ -249,26 +253,9 @@ private fun MainScaffold(onPreviewFlash: () -> Unit = {}) {
                                     },
                                 )
                                 DropdownMenuItem(
-                                    text = { Text("面板管理") },
-                                    onClick = {
-                                        pendingPanelAction = PanelAction.Manage
-                                        panelActionsTick++
-                                    },
-                                )
-                                DropdownMenuItem(
                                     text = { Text("🧠 整理念头") },
                                     onClick = {
                                         pendingPanelAction = PanelAction.Compile
-                                        panelActionsTick++
-                                    },
-                                )
-                                // DDL 两步创建（截止时刻 → 提前提醒）的唯一入口。
-                                // 没有这一项时，PanelsScreen 里那段 `if (showDeadline && …)`
-                                // 永远是死分支，用户点不到「新建截止时刻」。
-                                DropdownMenuItem(
-                                    text = { Text("新建截止时刻") },
-                                    onClick = {
-                                        pendingPanelAction = PanelAction.NewDeadline
                                         panelActionsTick++
                                     },
                                 )

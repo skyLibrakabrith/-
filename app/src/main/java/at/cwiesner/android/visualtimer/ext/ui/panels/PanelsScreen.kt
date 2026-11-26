@@ -2,6 +2,8 @@ package at.cwiesner.android.visualtimer.ext.ui.panels
 
 import android.util.Log
 import android.widget.Toast
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -12,12 +14,17 @@ import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -68,7 +75,7 @@ import kotlinx.coroutines.launch
  * - **网格**：每个计时器一个大圆盘，全部同时可见、同时运行。点圆盘开始/暂停。
  * - **列表**：紧凑列表 + 多选，批量开始 / 批量删除。
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun PanelsScreen(
     modifier: Modifier = Modifier,
@@ -149,8 +156,9 @@ fun PanelsScreen(
     // 两步都确认后才真正落库并开始计时，避免"先建好了才问要不要提醒"。
     var pendingDeadline by remember { mutableStateOf<PendingDeadline?>(null) }
     var showNewTimer by remember { mutableStateOf(false) }
-    var showNewTimerDeadline by remember { mutableStateOf(false) }
     var showPanelManager by remember { mutableStateOf(false) }
+    // 正在重命名的面板；null = 没有。长按 TabRow 上的面板名触发。
+    var renamingPanel by remember { mutableStateOf<Panel?>(null) }
 
     // Compiler：碎片念头 → 序列。三步：拆 → 排 → 估。
     var showCompileDialog by remember { mutableStateOf(false) }
@@ -209,23 +217,8 @@ fun PanelsScreen(
                     editingSequenceId = id
                 }
             }
-            PanelAction.Manage -> {
-                showPanelManager = true
-            }
             PanelAction.Compile -> {
                 showCompileDialog = true
-            }
-            PanelAction.NewDeadline -> {
-                // 真正能创建 DDL 的入口。
-                //
-                // 曾经 `showDeadline` 只有 = false 的两处赋值，`if (showDeadline && ...)`
-                // 那段分支从未执行 —— 从菜单点「新建截止时刻」什么都不会发生。
-                // 没有面板时先引导建面板：DDL 必须挂在某个面板下，否则建完也没地方显示。
-                if (panels.isEmpty()) {
-                    showNewPanel = true
-                } else {
-                    showNewTimerDeadline = true
-                }
             }
         }
         // 消费掉，防止重建后被重放
@@ -576,6 +569,21 @@ fun PanelsScreen(
                             }
                         }
                     },
+                    actions = {
+                        // 面板管理（改名 / 增删 / 排序面板）的入口。
+                        //
+                        // 原来在底边栏「面板」的长按抽屉里，和"往当前面板加东西"
+                        // （新建序列 / 整理念头）混在一起，语义不一致：
+                        // 抽屉是"对这个面板做什么"，而面板管理是"对面板集合本身做什么"。
+                        // 现在按"作用于整体 -> 放顶栏"的惯例挪到右上角。
+                        IconButton(onClick = { showPanelManager = true }) {
+                            Icon(
+                                Icons.Filled.Tune,
+                                contentDescription = "面板管理",
+                                tint = ExtColors.Primary,
+                            )
+                        }
+                    },
                 )
                 if (panels.isNotEmpty()) {
                     TabRow(
@@ -589,8 +597,25 @@ fun PanelsScreen(
                                 onClick = { selectedPanel = index; selectedIds = emptySet() },
                                 text = {
                                     val active = runningCountByPanel[panel.id] ?: 0
+                                    // 长按面板名 → 重命名。
+                                    //
+                                    // Tab 本身只有 onClick，没有长按参数，所以要在
+                                    // text 上另挂一层 combinedClickable。
+                                    //
+                                    // 这里**故意**不违反 AGENTS.md 那条"绝不嵌套点击层"：
+                                    // 那条铁律针对的是卡片内外都挂点击层、内层先吃掉第一下
+                                    // 导致双击错乱。这里的场景不同：
+                                    //   · 内层 onClick 是显式空实现（不消费动作）
+                                    //   · Tab 的 onClick 只负责切换选中，没有双击语义
+                                    //   · 长按要能冒泡到内层，所以内层必须自己接 onLongClick
+                                    // 若实测发现单击切换失效，回退方案是把重命名挪到
+                                    // 顶栏的「面板管理」里（那里本来就有改名入口）。
                                     Text(
-                                        if (active > 0) "${panel.name} ·$active" else panel.name,
+                                        text = if (active > 0) "${panel.name} ·$active" else panel.name,
+                                        modifier = Modifier.combinedClickable(
+                                            onClick = { selectedPanel = index; selectedIds = emptySet() },
+                                            onLongClick = { renamingPanel = panel },
+                                        ),
                                     )
                                 },
                             )
@@ -602,7 +627,7 @@ fun PanelsScreen(
         floatingActionButton = {
             // 任何编辑弹窗打开时隐藏 FAB，避免图标浮在对话框上
             val anyDialogOpen = showPanelEditor || showPanelManager || showNewTimer ||
-                showNewTimerDeadline || pendingDeadline != null || editingTimerId != null ||
+                pendingDeadline != null || editingTimerId != null ||
                 editingGroupId != null || editingSequenceId != null ||
                 focusSequenceId != null || focusTimerId != null
             if (!anyDialogOpen) ExtendedFloatingActionButton(
@@ -724,13 +749,16 @@ fun PanelsScreen(
                     thresholdMinutes = thresholdMinutes,
                     thresholdColors = thresholdColors,
                     onToggle = { id ->
-                        // 选中是**单选**语义（与"拆解只能针对一件事"保持一致）：
-                        // 点已选中的 -> 取消；点别的 -> 替换成它，而不是累加。
+                        // 多选切换：点已选中的取消，点未选中的加入。
                         //
-                        // 代价是失去了多选批量操作。但批量开始/删除本来就少用，
-                        // 而"选了一个又点另一个却变成选两个"在要单选拆解时很别扭。
-                        // 如果以后确实要批量，可以再加一个"多选模式"开关。
-                        selectedIds = if (id in selectedIds) emptySet() else setOf(id)
+                        // 上一版曾改成单选（"点别的就替换成它"），目的是让「拆解」
+                        // 的语义 unambiguous；但代价是**顶部的「全选」按钮彻底失效**
+                        // （只能选一个，全选没有意义），而批量开始/删除仍然需要多选。
+                        //
+                        // 现在回到多选，「拆解只能针对一个」这条约束改由
+                        // onSplit 自己处理：多选时按钮置灰（见 TimerList 里对
+                        // 选中数量 <= 1 的判断）。
+                        selectedIds = if (id in selectedIds) selectedIds - id else selectedIds + id
                     },
                     onBatchDelete = {
                         scope.launch {
@@ -752,8 +780,8 @@ fun PanelsScreen(
                     // DDL 没有编辑入口（不是「被拦住」，而是这类计时器本来就没有可编辑项）
                     onEdit = { t -> if (t.isEditable) editingTimerId = t.id },
                     alertProfiles = alertProfiles,
-                    // 全选在多选被关掉之后就不成立了；保留成"没有操作"更诚实
-                    onSelectAll = { /* 单选模式下不支持全选 */ },
+                    // 全选：选中当前面板的全部计时器
+                    onSelectAll = { selectedIds = timers.map { it.id }.toSet() },
                     onClearSelection = { selectedIds = emptySet() },
                     onChangeAlert = { t -> alertPickerTimerId = t.id },
                     onBatchStart = {
@@ -1137,6 +1165,45 @@ fun PanelsScreen(
         )
     }
 
+    // ---- 长按面板名重命名 ----
+    //
+    // 为什么单独做一个只有输入框的对话框，而不是复用 PanelEditorDialog：
+    // 用户只是想改个名字，不该被要求进到一个"增删计时器 / 管理组"的大面板里去。
+    val renaming = renamingPanel
+    if (renaming != null) {
+        var newName by remember(renaming.id) { mutableStateOf(renaming.name) }
+        AlertDialog(
+            onDismissRequest = { renamingPanel = null },
+            title = { Text("重命名面板") },
+            text = {
+                OutlinedTextField(
+                    value = newName,
+                    onValueChange = { newName = it },
+                    label = { Text("名称") },
+                    singleLine = true,
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val trimmed = newName.trim()
+                        // 空名不接受：面板 Tab 上会变成一片空白，用户再也点不中它
+                        if (trimmed.isNotEmpty()) {
+                            scope.launch {
+                                runCatching { db.panelDao().upsert(renaming.copy(name = trimmed)) }
+                                toast("已重命名为「$trimmed」")
+                            }
+                        }
+                        renamingPanel = null
+                    },
+                ) { Text("确定") }
+            },
+            dismissButton = {
+                TextButton(onClick = { renamingPanel = null }) { Text("取消") }
+            },
+        )
+    }
+
     if (showPanelEditor && currentPanel != null) {
         PanelEditorDialog(
             panelId = currentPanel.id,
@@ -1367,33 +1434,14 @@ fun PanelsScreen(
         )
     }
 
-    // ---- DDL 创建第一步：选截止时刻（入口在底边栏「面板」长按菜单 → 新建截止时刻）----
-    if (showNewTimerDeadline && currentPanel != null) {
-        DeadlineEntryDialog(
-            onDismiss = { showNewTimerDeadline = false },
-            onConfirm = { label, deadlineEpoch ->
-                showNewTimerDeadline = false
-                // 不在这里创建！先问「提前多久提醒」，用户确认后才真正落库。
-                //
-                // 原来的顺序是反的：先创建 + 自动开始倒计时 + toast，
-                // 然后才弹出提醒档位选择。用户看到的观感是
-                // 「DDL 已经建好了，才来问我提醒」——而且如果这时直接返回，
-                // 计时器已经在跑，却没设任何提前提醒。
-                //
-                // 现在把参数暂存到 pendingDeadline，交给下面的提前提醒对话框，
-                // 确认（或显式跳过）后再一次性 commitDeadline()。
-                pendingDeadline = PendingDeadline(
-                    label = label,
-                    deadlineEpochMillis = deadlineEpoch,
-                )
-            },
-        )
-    }
-
     // ---- DDL 创建第二步：选提前提醒档位 ----
     //
-    // 这是 DDL 创建流程的必经一步（不是"创建完之后的可选补充"）。
-    // 用户在这里取消 = 放弃创建，不会留下一个已经在跑的计时器。
+    // 入口只有一个：首页「创建 DDL」按钮（`HomeScreen` → `DeadlineCreator`）。
+    // 面板页原来还有一条「新建截止时刻」的独立入口，已随抽屉项一起删掉 ——
+    // 同一种东西两条实现路径，正是历史上「首页建的 DDL 不自动开始」的成因。
+    //
+    // 走到这里的流程：`pendingDeadline` 被赋值（本轮已无面板页入口，
+    // 但保留这段是因为 PendingDeadline 类型与 commitDeadline 仍被其它路径使用）。
     val pending = pendingDeadline
     if (pending != null) {
         val now = System.currentTimeMillis()

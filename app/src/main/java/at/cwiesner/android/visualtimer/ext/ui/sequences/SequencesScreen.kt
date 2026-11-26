@@ -161,14 +161,23 @@ fun SequencesScreen(modifier: Modifier = Modifier) {
      * 它们不再属于任何序列，界面看不到，却会一直占库、并且被导出进备份。
      * 所以这里手工级联，顺序固定（先子后父），和 [at.cwiesner.android.visualtimer.ext.ui.panels.PanelsScreen]
      * 里删组（先 clearMembers 再 deleteGroup）保持同一套约定。
+     *
+     * 这是序列删除的**唯一**实现：工具栏「删除」（长按选中）和卡片右侧的单条删除图标
+     * 都只负责把目标塞进 [deleteTarget]、由确认框调到这里。两处入口共用一套级联 +
+     * 状态清理 + toast，就不会出现"某条路径忘了停引擎"这种漂移
+     * （当初再加一个删除入口，正是 [at.cwiesner.android.visualtimer.ext.ui.common.ConfirmDeleteDialog]
+     * 注释里说的那个坑）。
      */
     fun deleteSequenceCascade(seq: StepSequence) {
         scope.launch {
             try {
+                // 先停引擎再删库：引擎握着这条序列的内存副本（steps/sequence），
+                // 如果边倒计时边删行，它还会照常 tick 并往一个已不存在的 id 上写状态，
+                // 用户看到的就是「删了却还在跑」。放在删库之前（而不是之后），
+                // 保证 deleted 的那一刻它已经不在跑了。
+                if (engine.activeSequenceId == seq.id) engine.stop()
                 db.sequenceDao().steps(seq.id).forEach { db.sequenceDao().deleteStep(it.id) }
                 db.sequenceDao().deleteById(seq.id)
-                // 正在跑的序列被删了：引擎还握着它的内存副本，不停止就会继续倒计时
-                if (engine.activeSequenceId == seq.id) engine.stop()
                 if (running?.id == seq.id) running = null
                 // 编辑器里的正是这条：不关掉的话，点保存会用旧 id 把它重新 upsert 回来
                 if (editing?.id == seq.id) editing = null
