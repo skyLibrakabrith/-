@@ -1,5 +1,6 @@
 package at.cwiesner.android.visualtimer.ext.domain
 
+import android.util.Log
 import at.cwiesner.android.visualtimer.ext.data.AppDatabase
 import at.cwiesner.android.visualtimer.ext.data.DeadlineReminder
 import at.cwiesner.android.visualtimer.ext.data.PanelTimerRef
@@ -127,9 +128,25 @@ object DeadlineCreator {
         // 这一句是「不自动开始」那个 bug 的核心：漏了它，卡片会一直显示一个
         // 静止的数字（看起来像在跑，其实永远不会变）。
         val started = db.timerDao().get(timerId)
-        if (started != null) {
+        if (started == null) {
+            // get 立刻返回 null 说明 upsert 与查询之间出了预期外的问题
+            // （事务边界、id 类型不符等）。不静默吞掉 —— 这类问题在真机上
+            // 表现就是"建出来了但不动"，没有日志的话只能靠猜。
+            Log.w(TAG, "DDL upsert 后立刻 get($timerId) 返回 null，无法 startUntil")
+        } else {
             runner.startUntil(started, deadlineAt, now)
         }
+        // 打完卡立刻回读运行时状态，让 logcat 一眼看出属于哪种情况：
+        //   · startUntil 没执行（上一条 Log.w）
+        //   · 执行了但 running 仍为 false
+        //   · running 为 true（那就是界面侧读错，不是运行时的问题）
+        val rt = runner.get(timerId)
+        Log.i(
+            TAG,
+            "DDL created: id=$timerId locked=true remain=${plan.durationMillis / 1000}s " +
+                "leads=$leads runtime=" +
+                if (rt == null) "null" else "running=${rt.running} rem=${rt.remainingMillis}",
+        )
 
         // ---- 提前提醒落库 ----
         // 先清后写：同一个 timerId 理论上不会有旧行（id 是新的），
@@ -161,4 +178,15 @@ object DeadlineCreator {
 
     /** 初始时长的下限。见 [Plan.durationMillis] 的说明。 */
     const val MIN_DURATION_MILLIS: Long = 1000L
+
+    /**
+     * 日志标签。
+     *
+     * 注意：`android.util.Log` 在纯 JVM 单测里会抛 "not mocked" 异常，
+     * 所以 [createDeadline]（会打日志的那部分）**不进单测** ——
+     * 单测只测纯净的 [planDeadline]，它不碰任何 Android 类。
+     * 这里 import android.util.Log 是安全的，因为单测根本不会加载
+     * createDeadline 那个函数体（JVM 只在调用时才解析）。
+     */
+    private const val TAG = "DeadlineCreator"
 }
