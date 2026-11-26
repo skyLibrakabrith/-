@@ -147,8 +147,12 @@ fun PanelsScreen(
     // DDL 两步创建：第一步选截止时刻，第二步选提前提醒。
     // 两步都确认后才真正落库并开始计时，避免"先建好了才问要不要提醒"。
     var pendingDeadline by remember { mutableStateOf<PendingDeadline?>(null) }
+    // 两步创建里选定的「提前提醒」档位。
+    // 以前这条路径**不落库**（DeadlineReminder 只在没人调用的另一条路径里写），
+    // 于是提前提醒重启后就没了 —— 现在由下面的 LaunchedEffect 持久化。
+    var pendingLeads by remember { mutableStateOf<List<Long>>(emptyList()) }
     var showNewTimer by remember { mutableStateOf(false) }
-    var showDeadline by remember { mutableStateOf(false) }
+    var showNewTimerDeadline by remember { mutableStateOf(false) }
     var showPanelManager by remember { mutableStateOf(false) }
 
     // Compiler：碎片念头 → 序列。三步：拆 → 排 → 估。
@@ -213,6 +217,18 @@ fun PanelsScreen(
             }
             PanelAction.Compile -> {
                 showCompileDialog = true
+            }
+            PanelAction.NewDeadline -> {
+                // 真正能创建 DDL 的入口。
+                //
+                // 曾经 `showDeadline` 只有 = false 的两处赋值，`if (showDeadline && ...)`
+                // 那段分支从未执行 —— 从菜单点「新建截止时刻」什么都不会发生。
+                // 没有面板时先引导建面板：DDL 必须挂在某个面板下，否则建完也没地方显示。
+                if (panels.isEmpty()) {
+                    showNewPanel = true
+                } else {
+                    showNewTimerDeadline = true
+                }
             }
         }
         // 消费掉，防止重建后被重放
@@ -483,7 +499,7 @@ fun PanelsScreen(
         floatingActionButton = {
             // 任何编辑弹窗打开时隐藏 FAB，避免图标浮在对话框上
             val anyDialogOpen = showPanelEditor || showPanelManager || showNewTimer ||
-                showDeadline || editingTimerId != null ||
+                showNewTimerDeadline || pendingDeadline != null || editingTimerId != null ||
                 editingGroupId != null || editingSequenceId != null ||
                 focusSequenceId != null || focusTimerId != null
             if (!anyDialogOpen) ExtendedFloatingActionButton(
@@ -611,8 +627,14 @@ fun PanelsScreen(
                         scope.launch {
                             val n = selectedIds.size
                             selectedIds.forEach { id ->
-                                runner.clear(id)
-                                currentPanel?.let { db.panelDao().removeRef(it.id, id) }
+                                // 必须真的删掉 timers 行，不能只 removeRef。
+                                // 只解除面板关联时：文案说「已删除」，但这行仍在库里 ——
+                                // 会被全量导出进备份，也会出现在「面板编辑器 → 添加计时器」
+                                // 的候选列表里（那个列表来自 allTimers），
+                                // 表现为「删掉的东西又冒出来」。
+                                // 与下面的拆解流程（runner.clear → removeRef → deleteById）
+                                // 保持同一条路径。
+                                deleteTimerRows(id, removeRefPanelId = currentPanel?.id)
                             }
                             selectedIds = emptySet()
                             toast("已删除 $n 个计时器")
@@ -756,10 +778,10 @@ fun PanelsScreen(
                                         },
                                         onDelete = {
                                             scope.launch {
-                                                runner.clear(t.id)
-                                                currentPanel?.let {
-                                                    db.panelDao().removeRef(it.id, t.id)
-                                                }
+                                                deleteTimerRows(
+                                                    t.id,
+                                                    removeRefPanelId = currentPanel?.id,
+                                                )
                                             }
                                         },
                                     )
@@ -1200,11 +1222,12 @@ fun PanelsScreen(
         )
     }
 
-    if (showDeadline && currentPanel != null) {
-        DeadlineDialog(
-            onDismiss = { showDeadline = false },
+    // ---- DDL 创建第一步：选截止时刻（入口在底边栏「面板」长按菜单 → 新建截止时刻）----
+    if (showNewTimerDeadline && currentPanel != null) {
+        DeadlineEntryDialog(
+            onDismiss = { showNewTimerDeadline = false },
             onConfirm = { label, deadlineEpoch ->
-                showDeadline = false
+                showNewTimerDeadline = false
                 // 不在这里创建！先问「提前多久提醒」，用户确认后才真正落库。
                 //
                 // 原来的顺序是反的：先创建 + 自动开始倒计时 + toast，
@@ -1213,7 +1236,7 @@ fun PanelsScreen(
                 // 计时器已经在跑，却没设任何提前提醒。
                 //
                 // 现在把参数暂存到 pendingDeadline，交给下面的提前提醒对话框，
-                // 确认（或显式跳过）后再一次性 createDeadlineTimer()。
+                // 确认（或显式跳过）后再一次性 commitDeadline()。
                 pendingDeadline = PendingDeadline(
                     label = label,
                     deadlineEpochMillis = deadlineEpoch,
@@ -1290,14 +1313,24 @@ fun PanelsScreen(
             if (leads.isNotEmpty()) {
                 db.deadlineReminderDao().upsertAll(
                     leads.map { m ->
-                        at.cwiesner.android.visualtimer.ext.data.DeadlineReminder(
+                        DeadlineReminder(
                             timerId = timerId,
                             leadMinutes = m,
                         )
                     },
                 )
             }
-            runner.setLeadMinutes(timerId, leads)
+            // 回读一次建立「档位 → 行 id」映射。
+            // 为什么非要回读：`upsertAll(List)` 不返回自增 id，而提前提醒触发后要把
+            // 那一行标成 fired = 1（否则冷启动恢复分不清响过的和没响过的，会重复响）。
+            // PanelRunner.attachLeadMinutes 内部复用 setLeadMinutes，不重复实现调度。
+            val savedRows = if (leads.isEmpty()) {
+                emptyList()
+            } else {
+                runCatching { db.deadlineReminderDao().forTimer(timerId) }
+                    .getOrDefault(emptyList())
+            }
+            runner.attachLeadMinutes(timerId, leads, DeadlineRestore.rowIdsOf(savedRows))
             // 把「已经过去的档位」标记为已触发，
             // 否则刚设完第一个 tick 会把所有档位一次性全部触发
             runner.markLeadsBaseline(timerId, remain)

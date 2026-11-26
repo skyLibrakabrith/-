@@ -92,12 +92,43 @@ class PanelRunner(private val scope: CoroutineScope) {
     val leadAlerts: kotlinx.coroutines.flow.SharedFlow<Pair<TimerRuntime, Long>> =
         _leadAlerts.asSharedFlow()
 
-    /** 计时器 id → 提前提醒分钟列表。由界面在创建/加载时写入。 */
+    /**
+     * 提前提醒事件的附带信息：这次是哪条 `deadline_reminders` 行触发的。
+     *
+     * `_leadAlerts` 的载荷只有 `(runtime, leadMinutes)`，**没有行 id** ——
+     * 而要把 `fired` 列写回库里 `避免重启后再响一遍`，就必须知道是哪一行。
+     * 所以按「计时器 id → (提醒分钟 → 行 id)」再存一份映射。
+     * 行 id 只可能来自 [setLeadMinutes] 的调用方（它握住 DAO），domain 层不碰数据库。
+     */
+    private val leadRowIdsOf = mutableMapOf<Long, Map<Long, Long>>()
+
+    /** 计时器 id → 提前提醒分钟列表。由调用方在创建 / 从库里恢复时写入。 */
     private val leadMinutesOf = mutableMapOf<Long, List<Long>>()
 
     fun setLeadMinutes(timerId: Long, minutes: List<Long>) {
         leadMinutesOf[timerId] = minutes.sortedDescending()
     }
+
+    /**
+     * 写入提前提醒档位，并登记每一档对应的 `deadline_reminders` 行 id。
+     *
+     * 与 [setLeadMinutes] 的区别：这个版本让 `_leadAlerts` 的订阅者
+     * （[at.cwiesner.android.visualtimer.ext.ExtApplication]）能把「已触发」写回库里。
+     * 调度逻辑完全复用 [setLeadMinutes]，不重复实现。
+     */
+    fun attachLeadMinutes(timerId: Long, minutes: List<Long>, rowIds: Map<Long, List<Long>>) {
+        setLeadMinutes(timerId, minutes)
+        // 同一条提醒行理论上可能有重复档位，取第一个稳定的 id 即可
+        leadRowIdsOf[timerId] = rowIds.mapValues { (_, ids) -> ids.first() }
+    }
+
+    /**
+     * 某一档提前提醒对应的库行 id；没有登记（比如刚建好还没回读）时为 null。
+     *
+     * `internal`：只给 `ExtApplication` 的 leadAlerts 订阅者用，不是公开 API。
+     */
+    internal fun leadRowIdOf(timerId: Long, leadMinutes: Long): Long? =
+        leadRowIdsOf[timerId]?.get(leadMinutes)
 
     /**
      * 设定提醒后立即把「已经过去的档位」标为已触发。
@@ -304,6 +335,31 @@ class PanelRunner(private val scope: CoroutineScope) {
     }
 
     /**
+     * 时长被用户改了：作废现有的「到点」结论与已触发的提前提醒，保留运行状态。
+     *
+     * 为什么不能简单 `clear()`（原来列表编辑就是这么干的）：
+     * `clear` 把整条运行时删掉，正在跑的倒计时**归零**，正在响的提醒也被 acknowledge ——
+     * 用户只是改了个名字，计时器却被重置了。
+     *
+     * 为什么不能只 `updateLabel`：`totalMillis` 是创建运行时那一刻的旧时长，
+     * 旧时长下已经跨过的提前提醒（`firedLeads`）会挡住新时长的提醒（见 [tick] 的
+     * `it !in r.firedLeads`），旧时长下已经判过的「到点」也会让 `overdueMillis` 继续累加。
+     * 所以：换上新时长、回落到「未开始」态、清空 firedLeads，
+     * 再由调用方按新的剩余时长调 [markLeadsBaseline] —— 用户刚改完不该马上被连响一串。
+     */
+    fun replaceTotal(timerId: Long, totalMillis: Long) {
+        val r = _runtimes.value[timerId] ?: return
+        _runtimes.value = _runtimes.value + (
+            timerId to r.copy(
+                totalMillis = totalMillis,
+                remainingMillis = totalMillis,
+                overdueMillis = 0L,
+                firedLeads = emptySet(),
+            )
+            )
+    }
+
+    /**
      * 重置到原始时长。
      *
      * 必须同时清掉 [TimerRuntime.overdueMillis] —— 否则「超时后重置」会把
@@ -323,11 +379,17 @@ class PanelRunner(private val scope: CoroutineScope) {
 
     fun clear(timerId: Long) {
         acknowledge(timerId)
+        // 运行时都没了，再留着 lead 登记只会在 id 被数据库复用（AUTOINCREMENT 不会，
+        // 但备份导入会按新 id 重写）时串到别的计时器上，所以一并清掉。
+        leadMinutesOf.remove(timerId)
+        leadRowIdsOf.remove(timerId)
         _runtimes.value = _runtimes.value - timerId
     }
 
     fun clearAll() {
         _alerting.value = emptySet()
+        leadMinutesOf.clear()
+        leadRowIdsOf.clear()
         _runtimes.value = emptyMap()
     }
 

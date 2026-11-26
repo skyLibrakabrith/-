@@ -25,8 +25,13 @@ node tools/checkbraces.js  # 花括号/圆括号平衡
 - CI：`.github/workflows/build.yml`，push 即触发；约 30 秒开始、**1–4 分钟**出结果。
 - 产物：Actions → Build APK → Artifacts → `visual-timer-ext-debug-apk`（`app-debug.apk`）。
 - **手势 / 悬浮窗 / 警报 / 闪烁**等真机行为**无法在无设备环境验证**，改完必须装机试。
-- **无单元测试**（`app/src/test` 不存在）。`PanelRunner` / `StepSequenceEngine` /
-  `DeadlineCalculator` 都是纯 Kotlin，最容易补——补测试等于获得唯一能"真跑"的验证。
+- **有单元测试**（`app/src/test`，65 个 `@Test`，覆盖 `AiJson` / `DeadlineCalculator` /
+  `StepSequenceEngine` / `SequenceDuration`）。CI 里 `testDebugUnitTest` 是独立一步，
+  **这是本机唯一能"真跑"的验证手段**，改纯逻辑务必补测试。
+- **APK 可以直接覆盖安装**（2026-11-26 起）：`versionCode` 取 CI 的 `GITHUB_RUN_NUMBER`
+  自动递增，且 CI 用仓库 secret `DEBUG_KEYSTORE_B64` 恢复固定 debug 证书。
+  在此之前每次都得先卸载——原因是 versionCode 恒为 1 且每次的 debug 证书都不同。
+  本地构建想指定版本号用 `-PversionCodeOverride=123`。
 
 推得碎比推得多重要得多：一次一类改动，CI 失败时一次只修一处。
 
@@ -41,11 +46,11 @@ app/src/main/java/at/cwiesner/android/visualtimer/ext/
 ├── service/              悬浮窗、告警悬浮窗、前台服务、开机恢复
 ├── io/                   导入导出（BackupFormat 定义 schema）
 ├── settings/SettingsRepo.kt  DataStore 设置项
-├── panels/PanelState.kt  面板页的数据订阅（已从 UI 抽出）
+├── panels/PanelState.kt  ⚠️ rememberPanelState() 零调用，内容被逐行复制在 PanelsScreen 里（死代码）
 └── ui/                   界面（panels/sequences/wheel/alerts/settings/home/duration/theme）
 ```
 
-规模：**61 个 Kotlin 文件 / 约 12,236 行**。
+规模：**75 个 Kotlin 文件 / 约 17,230 行**（含 app/src/test）。
 
 ### PanelRunner —— 倒计时为什么不会丢
 
@@ -97,8 +102,10 @@ app/src/main/java/at/cwiesner/android/visualtimer/ext/
 
 ### 数据与备份
 
-- Room 版本 **6**，9 个实体：`TimerItem` / `Panel` / `PanelTimerRef` / `Step` / `StepSequence` /
-  `AlertProfile` / `TimerGroup` / `GroupMember` / `DeadlineReminder`。迁移 v1→v6 全在 `AppDatabase.kt`。
+- Room 版本 **7**，9 个实体：`TimerItem` / `Panel` / `PanelTimerRef` / `Step` / `StepSequence` /
+  `AlertProfile` / `TimerGroup` / `GroupMember` / `DeadlineReminder`。迁移 v1→v7 全在 `AppDatabase.kt`。
+  **`ADD COLUMN ... DEFAULT` 之后要检查要不要回填**：v6 加 `locked` 时没回填，
+  升级前就存在的老 DDL 全都变成可编辑（v7 才补上 `UPDATE timers SET locked=1 WHERE kind='Deadline'`）。
 - 备份 `BackupFile.CURRENT_SCHEMA = 2`。v1 旧备份**仍可导入**——新字段一律带默认值。
 - 导入时主键会重映射，跨实体引用一律用 `ref` 字符串（`"t<id>"` / `"p<id>"` / `"a<id>"`），
   **不要用原始 id**。
@@ -146,8 +153,11 @@ app/src/main/java/at/cwiesner/android/visualtimer/ext/
 
 | # | 问题 | 位置 |
 |---|---|---|
-| 1 | `fallbackToDestructiveMigration()` 会在迁移写错时**静默清库** | `AppDatabase.kt` `get()` |
+| 1 | `fallbackToDestructiveMigrationOnDowngrade()` 会在**降级安装**时静默删库，且不抛异常 —— 上层那段提示接不住它 | `AppDatabase.kt:329` |
 | 2 | 拖拽排序**不支持边缘自动滚动**（格子超出屏幕后拖不到远处） | `DraggableGrid` |
 | 3 | 单击要等双击窗口（约 300ms）才响应；本版 Compose 的 `combinedClickable` **没有** `doubleClickTimeoutMillis` / `hasDoubleClick` 参数 | 手势 |
-| 4 | `PanelsScreen` 是 1039 行巨型 Composable（数据订阅已抽到 `PanelState.kt`，界面未拆） | `ui/panels/PanelsScreen.kt` |
-| 5 | 无单元测试 | `app/src/test` 不存在 |
+| 4 | `PanelsScreen` 是 **1348 行**巨型 Composable；`PanelState.kt` 的 `rememberPanelState()` 零调用（漂移中的副本） | `ui/panels/PanelsScreen.kt` |
+| 5 | `tools/unused2.js` 有 `if (unused.length > 1)` —— **只有 1 个未使用 import 的文件会静默通过** | `tools/unused2.js` |
+
+更完整的清单见 `docs/ENGINEERING_PITFALLS.md`（历史踩坑）与
+`docs/ARCHITECTURE_REVIEW.md`（23 条设计逻辑问题 + 7 条模块化问题）。

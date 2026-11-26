@@ -11,8 +11,10 @@ import androidx.core.app.NotificationCompat
 import at.cwiesner.android.visualtimer.ext.alarm.VibrationAlerter
 import at.cwiesner.android.visualtimer.ext.data.AlertProfile
 import at.cwiesner.android.visualtimer.ext.data.AppDatabase
+import at.cwiesner.android.visualtimer.ext.data.TimerKind
 import at.cwiesner.android.visualtimer.ext.data.VibrationPresets
 import at.cwiesner.android.visualtimer.ext.domain.DeadlineCalculator
+import at.cwiesner.android.visualtimer.ext.domain.DeadlineRestore
 import at.cwiesner.android.visualtimer.ext.domain.PanelRunner
 import at.cwiesner.android.visualtimer.ext.domain.TimerRuntime
 import at.cwiesner.android.visualtimer.ext.service.AlertOverlayService
@@ -30,6 +32,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * 应用入口。
@@ -168,6 +171,8 @@ class ExtApplication : Application() {
         createAlertChannel()
         // 立刻开始走表，不依赖任何界面存在
         panelRunner.startTicking()
+        // 必须在 startTicking 之后：恢复会把运行时写进去，tick 才推得动它
+        restoreDeadlines()
         observeAlerts()
         observeFlashSetting()
         observeSequenceOverlay()
@@ -176,6 +181,80 @@ class ExtApplication : Application() {
     private fun observeFlashSetting() {
         appScope.launch {
             settings.flashIntervalMillis.collect { flashIntervalMillis = it }
+        }
+    }
+
+    /**
+     * 冷启动恢复：把 `deadline_reminders` 读回运行时，并重建仍在未来到期的 DDL。
+     *
+     * **为什么必须做**：`PanelRunner` 的运行时（包括 `leadMinutesOf`）是纯内存的。
+     * 创建 DDL 时提醒写进了库、也塞给了运行时，但进程一死全丢；
+     * 而读取侧（`forTimer` / `pending` / `markFired`）此前**零调用** ——
+     * 于是「提前 30 分钟提醒」只在创建后当次进程里有效，重启后永远不会响。
+     * 同样地，`_runtimes` 也没有任何持久化，DDL 重启后就从卡片上消失（不再到点提醒）。
+     *
+     * 取舍：只恢复 **DDL**，不恢复普通倒计时。
+     * DDL 的语义是绝对时刻（「今晚 8 点前交」），重启后剩余时间照样算得出来；
+     * 普通倒计时没有这个锚点，README 的既定取舍就是进程内有效。
+     *
+     * 顺序要紧：
+     * 1. 先重建运行时（`startUntil` 会按「截止时刻 − 现在」重算，不依赖旧的时长）；
+     * 2. 再挂提前提醒，并用 `markLeadsBaseline` 把已经过去的档位标掉 ——
+     *    否则第一次 tick 会把所有已过的档位一次性全响；
+     * 3. 最后把不可能再触发 / 已经响过的行写回 `fired = 1`，避免下次重复。
+     *
+     * 放在 IO 线程：这是启动路径，不能为了几条 Room 查询阻塞主线程（ANR）。
+     */
+    private fun restoreDeadlines() {
+        appScope.launch(Dispatchers.IO) {
+            val restored = logCatchingOr("restore-deadlines", 0) {
+                val db = database
+                val all = db.timerDao().observeAllOnce()
+                val now = System.currentTimeMillis()
+
+                // 已经被删掉却还挂着提醒的孤儿行（历史 bug 的存量数据）先清掉，
+                // 否则它们会一直停在 fired = 0 并被导出进备份
+                val knownIds = all.map { it.id }.toSet()
+                db.deadlineReminderDao().allOnce().forEach { r ->
+                    if (r.timerId !in knownIds) {
+                        logCatching("restore-deadlines-orphan") {
+                            db.deadlineReminderDao().clearTimer(r.timerId)
+                        }
+                    }
+                }
+
+                var count = 0
+                all.filter { it.kind == TimerKind.Deadline && (it.deadlineEpochMillis ?: 0L) > now }
+                    .forEach { t ->
+                        val deadline = t.deadlineEpochMillis ?: return@forEach
+                        // 已经存在运行时说明它这次进程里已经跑着了，不要重建 ——
+                        // startUntil 会 acknowledge 掉正在响的提醒，等于把提醒静音
+                        if (panelRunner.get(t.id) != null) return@forEach
+
+                        panelRunner.startUntil(t, deadline, now)
+                        val reminders = db.deadlineReminderDao().forTimer(t.id)
+                        val plan = DeadlineRestore.plan(t, reminders, now)
+                        // 保留 fired 的行也挂上：tick 靠 firedLeads 去重，
+                        // 但它们已经响过，所以不计入「现在该挂的档位」
+                        val liveRowIds = DeadlineRestore.rowIdsOf(
+                            reminders.filter { it.leadMinutes in plan.liveLeads },
+                        )
+                        panelRunner.attachLeadMinutes(t.id, plan.liveLeads, liveRowIds)
+                        // 已经过去的档位：挂上之后立刻标成已触发，与建 DDL 时的做法一致
+                        panelRunner.markLeadsBaseline(
+                            t.id,
+                            (deadline - now).coerceAtLeast(0L),
+                        )
+                        plan.staleRowIds.forEach { rowId ->
+                            logCatching("restore-deadlines-stale") {
+                                db.deadlineReminderDao().markFired(rowId)
+                            }
+                        }
+                        count++
+                    }
+                count
+            }
+            Log.i(TAG, "冷启动恢复 DDL 运行时：$restored 条")
         }
     }
 
@@ -360,11 +439,25 @@ class ExtApplication : Application() {
         }
 
         // 1.8) 提前提醒：到点前的预警，走通知 + 震动 + 声音（不进入持续提醒态）
+        //
+        // 顺手把这一档写回 `deadline_reminders.fired = 1`。
+        // 为什么必须写：`fired` 列此前永远是 false（`markFired` 零调用），
+        // 于是冷启动恢复（restoreDeadlines）无法区分「已经响过的档位」和「还没响的」，
+        // 重启后会把同一档再响一遍。行 id 由 PanelRunner.attachLeadMinutes 登记，
+        // 这里查不到（null）说明是「刚建好、还没回读过 id」的那种，直接跳过即可。
         appScope.launch {
             panelRunner.leadAlerts.collect { (rt, lead) ->
                 logCatching("notify-lead") { postLeadNotification(rt, lead) }
                 logCatching("vibrate-lead") { vibration.play(longArrayOf(0L, 300L, 150L, 300L), repeatIndex = -1) }
                 logCatching("sound-play-lead") { headphoneSound.playIfHeadphone() }
+                val rowId = panelRunner.leadRowIdOf(rt.timerId, lead)
+                if (rowId != null) {
+                    logCatching("lead-fired-mark") {
+                        withContext(Dispatchers.IO) {
+                            database.deadlineReminderDao().markFired(rowId)
+                        }
+                    }
+                }
             }
         }
 

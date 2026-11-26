@@ -153,7 +153,7 @@ ext/
   应用内只看 `alerting` 集合非空（`ScreenFlashOverlay.kt:61-79`），
   后台只看 `canDrawOverlays`（`AlertOverlayService.kt:67`）。
 - `torchFlash` 可在 UI 修改（`AlertsScreen.kt:152-159`），但 `TorchAlerter.start()`
-  只在 `AlertDispatcher` 里被调（`alarm/AlertDispatcher.kt:53`），
+  只在 `AlertDispatcher` 里被调（`alarm/AlertDispatcher.kt:54`），
    而 `AlertDispatcher` **只在警报页预览时被 new**（`AlertsScreen.kt:85-86`）。
 - `soundEnabled` 同上，且 `AlertDispatcher.kt:56-57` 明写"本版本不实现音频播放"。
 
@@ -328,7 +328,7 @@ object DurationRange {
 | 文档语义（注释） | 0=主色 1=琥珀 2=橙 3=红 | `SettingsRepo.kt:55` |
 | 设置页色点 | **`ExtColors.Palette[idx]`**（8 色调色板） | `SettingsScreen.kt:222` |
 | 面板把阈值传给盘面 | **`ExtColors.Palette[idx]`**（同样 8 色） | `PanelsScreen.kt:340-344`、`PanelState.kt:111-115` |
-| 新阈值档位分配 | `thresholds.size.coerceIn(0, 3)`，**不校验重复** | `SettingsScreen.kt:468`、`SettingsRepo.kt:318-324` |
+| 新阈值档位分配 | `thresholds.size.coerceIn(0, 3)`，**不校验重复** | `SettingsScreen.kt:472-473`、`SettingsRepo.kt:318-324` |
 | 盘面实际取色 | 按"剩余落到第 i 档就用第 i 个颜色" | `WheelTimerView.kt:483-507` |
 
 **后果**：默认值 `DEFAULT_THRESHOLDS = "60:0,10:1,3:2,1:3"`（`SettingsRepo.kt:432`）在设置页画成
@@ -665,7 +665,7 @@ ui/panels/  （PanelEntry 与 ExtColors 的定义处）
 | `PanelsScreen.kt` | `data` 6 个 DAO、`settings` 5 个 Flow、`domain` 3 个类型 | `:107-119`、`:128`、`:366` |
 | `HomeScreen.kt` | `data` 2 个 DAO、`domain.PanelRunner/TimerKind`、直接写库 | `:57`、`:193`、`:209`、`:228-256` |
 | `SettingsScreen.kt` | `io.BackupManager`、`service.TimerOverlayService`、`android.provider.Settings` | `:51-52`、`:103`、`:376-380` |
-| `AlertsScreen.kt` | `alarm.AlertDispatcher`、`alarm.HeadphoneSoundAlerter`、`data.alertProfileDao` | `:37-38`、`:138` |
+| `AlertsScreen.kt` | `alarm.AlertDispatcher`、`alarm.HeadphoneSoundAlerter`、`data.alertProfileDao` | `:37-38`、`:138`、`:156` |
 
 其中 **UI 反向控制 service** 最该注意：`SettingsScreen.kt:376-380` 在 UI 里直接
 `TimerOverlayService.start/stop`，而 `ExtApplication.kt:399-412` 也在做同一件事。**两处都在启停同一个服务。**
