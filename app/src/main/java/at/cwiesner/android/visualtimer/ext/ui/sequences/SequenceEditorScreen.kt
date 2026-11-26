@@ -93,6 +93,10 @@ fun SequenceEditorScreen(
     }
     var showAddStep by remember { mutableStateOf(false) }
     var showSplitDialog by remember { mutableStateOf(false) }
+    // 要「再拆解」的那一条在 draft 里的下标；null = 没有正在拆的条目。
+    // 与 showSplitDialog（整体拆解、追加到末尾）分开两套状态，
+    // 因为两者语义不同：一个是"往序列里加东西"，一个是"把某一条换成几条"。
+    var splitTargetIndex by remember(sequence.id) { mutableStateOf<Int?>(null) }
 
     Column(
         modifier = modifier
@@ -206,6 +210,25 @@ fun SequenceEditorScreen(
                                     }
                                 }
 
+                                // 再拆解：把这一条再交给 AI 拆成几个更细的阶段。
+                                //
+                                // 为什么需要：Compiler 生成的条目是「模型认为的一步」，
+                                // 但用户看到之后常会发现某一条本身还是太大（例如
+                                // 「撰写实验报告初稿」其实包含查数据、画图、写正文）。
+                                // 之前只有一个全局「拆解」按钮，它只能往末尾**追加**，
+                                // 对"这一条太粗"无能为力 —— 用户得删掉它再手动重来。
+                                //
+                                // 这个按钮把**这一条**交给 AI，拆完用它产出的若干条
+                                // **替换**原条目（位置不变），顺序也就自然接上了。
+                                IconButton(
+                                    onClick = { splitTargetIndex = index },
+                                ) {
+                                    Icon(
+                                        Icons.Filled.AutoAwesome,
+                                        contentDescription = "再拆解这一步",
+                                        tint = MaterialTheme.colorScheme.primary,
+                                    )
+                                }
                                 // 上下移动：AI 给的顺序只是建议，用户调顺序是这条流程的关键一步。
                                 // 用两个小按钮而不是拖拽 —— 拖拽在这个列表里容易误触，
                                 // 而"上移一格"本来就更精确。
@@ -298,6 +321,42 @@ fun SequenceEditorScreen(
                 }
                 // 序列名还是空的就顺手填上，省一次输入
                 if (name.isBlank()) name = splitSteps.firstOrNull()?.title ?: name
+            },
+        )
+    }
+
+    // 再拆解某一条：拆完**替换**那一格，位置不变。
+    //
+    // 与上面 showSplitDialog 的区别：
+    //   · showSplitDialog（「拆解」按钮）：把新东西**追加**到末尾，用于"还想加几步"
+    //   · 这里（条目上的 ✨）：把**某一条换成几条**，用于"这条太粗了，再细一点"
+    // 两者的 onApply 语义完全不同，所以没有合并。
+    //
+    // 用下标而不是条目对象来标识目标：StepDraft 是 data class，两个内容完全相同的
+    // 条目会 equals，用它去找会删错行。
+    val splitIdx = splitTargetIndex
+    if (splitIdx != null && splitIdx in draft.indices) {
+        val target = draft[splitIdx]
+        AiSplitDialog(
+            onDismiss = { splitTargetIndex = null },
+            initialInput = target.label,
+            onApply = { subSteps ->
+                splitTargetIndex = null
+                if (subSteps.isEmpty()) return@AiSplitDialog
+                // 原条目的难度/背景作为兜底：模型没给就沿用父条目的
+                // （父条目的背景往往正是"这件事为什么难"的关键信息，丢掉可惜）
+                val replacements = subSteps.map {
+                    StepDraft(
+                        label = it.title,
+                        durationMillis = it.minutes * 60_000L,
+                        difficulty = it.difficulty ?: target.difficulty,
+                        context = it.context ?: target.context,
+                    )
+                }
+                draft = draft.toMutableList().also {
+                    it.removeAt(splitIdx)
+                    it.addAll(splitIdx, replacements)
+                }
             },
         )
     }

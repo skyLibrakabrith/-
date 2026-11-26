@@ -240,10 +240,24 @@ fun PanelsScreen(
     // 现在状态在导航层，默认卡片视图，只有用户主动再点一次底边栏才切换。
     var listMode by listModeState
     var selectedIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
+    // 已经消费到哪个 tick。
+    //
+    // ⚠️ 这里曾经是 `if (toggleViewSignal > 0) { 切换 }`，注释还写着
+    // 「首次进入不会触发」—— 但那句注释是错的：`panelViewToggleTick` 由导航层
+    // 用 `remember` 持有，只要用户切换过一次视图，它的值就**一直大于 0**。
+    // 于是每次从其他页点「面板」进来，PanelsScreen 重建、这个 LaunchedEffect
+    // 首次运行，看到 >0 就又翻一次视图 —— 表现为「每次进面板视图都变」。
+    //
+    // 正确做法：记住上次处理到哪个 tick，只对**新增量**做出反应。
+    //
+    // 用 rememberSaveable 而不是 remember：页面切走时会被销毁，重建后
+    // remember 会重置成「当前 tick」。虽然那样首次进入不会误翻转，
+    // 但用户在本页切过一次视图后切走再回来，记住的进度就丢了 ——
+    // 下次再进来又会把那次切换重放一遍。rememberSaveable 能扛过重建。
+    var lastHandledToggle by rememberSaveable { mutableIntStateOf(toggleViewSignal) }
     LaunchedEffect(toggleViewSignal) {
-        // toggleViewSignal 只在用户**再次点击**「面板」标签时自增，
-        // 首次进入不会触发，所以不会把默认视图切走
-        if (toggleViewSignal > 0) {
+        if (toggleViewSignal != lastHandledToggle) {
+            lastHandledToggle = toggleViewSignal
             listMode = !listMode
             selectedIds = emptySet()
         }
