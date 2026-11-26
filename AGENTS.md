@@ -3,12 +3,48 @@
 Android 计时器（Kotlin + Jetpack Compose），包名 `at.cwiesner.android.visualtimer.ext`，
 可与原版 Visual Timer 共存安装。仓库 `skyLibrakabrith/-`（仓库名就是一个减号），分支 `main`。
 
-**本机没有 JDK / Android SDK / adb / gradle** —— 所有编译验证都靠 GitHub Actions。
+**本机已可编译** —— JDK 17 + Android SDK + Gradle 8.11.1 都装好了，
+`C:\AndroidDev\build.ps1` 一条命令出包并装机（约 20-90 秒）。
+CI 仍可用作第二道验证，但**不再是唯一途径**。
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\AndroidDev\build.ps1            # 只编译
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\AndroidDev\build.ps1 -Install   # 编译+装机
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\AndroidDev\build.ps1 -Run       # 编译+装机+启动
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\AndroidDev\build.ps1 -Test      # 只跑单测
+```
+
+本机环境（不进版本库）：
+| 组件 | 路径 |
+|---|---|
+| JDK 17 | `C:\AndroidDev\jdk17` |
+| Android SDK | `C:\AndroidDev\sdk` |
+| Gradle 8.11.1 | `C:\AndroidDev\gradle-8.11.1` |
+| 固定 keystore | `C:\AndroidDev\keys\vte-debug.keystore` |
+| 手机自动化 | `C:\Users\天\.dsh\tools\phone.py`（`ui`/`tap`/`shot`/`db`/`wait`…） |
+
+**签名固定**：`local.properties` 里的 `vte.keystore.path` 指向固定 keystore，
+所以本地出的包签名永远一致，可以 `adb install -r` 直接覆盖，**不需要卸载**。
+
+### 本机构建的三个坑（都踩过）
+
+1. **F: 盘是 exFAT**，Gradle 的文件锁语义比 NTFS 弱，并行/增量构建会间歇性报
+   `manifest-merger-debug-report.txt 被另一进程使用`、
+   `dex-renamer-state.txt 找不到`、`Could not delete kotlin-classes`。
+   已通过 `gradle.properties` 的 `parallel=false` + 编译加 `--no-build-cache` 规避。
+2. **不要把 build 目录重定向到别的盘**。试过 `vte.buildDir=C:\...`，Room 的 KSP
+   处理器直接报 `IllegalArgumentException: this and base files have different roots`
+   —— 生成目录和源码必须在同一盘。`build.gradle.kts` 里那段逻辑保留着，
+   但 `local.properties` 不配置就不生效。
+3. **手机上装的是微信输入法**，`adb shell input text` 对它无效（文字进不去）。
+   自动化前先 `adb shell ime set com.android.inputmethod.latin/.LatinIME`，
+   用完再切回 `com.tencent.wetype/.plugin.hld.WxHldService`。
+
 `pwsh` 在本机不是独立程序，用 PowerShell **5.1**（不支持内联 `if` 表达式）。
 
 ## Running / verifying
 
-不能本地编译。验证 = 推到 `main` → 等 CI → 下载 artifact 装机。
+**首选本机编译**（20-90 秒）。CI 作为第二道验证。
 
 ```bash
 # 推送前必跑（无编译器时的兜底，三项都应全绿）
@@ -25,8 +61,7 @@ node tools/checkbraces.js  # 花括号/圆括号平衡
 - CI：`.github/workflows/build.yml`，push 即触发；约 30 秒开始、**1–4 分钟**出结果。
 - 产物：Actions → Build APK → Artifacts → `visual-timer-ext-debug-apk`（`app-debug.apk`）。
 - **手势 / 悬浮窗 / 警报 / 闪烁**等真机行为**无法在无设备环境验证**，改完必须装机试。
-- **有单元测试**（`app/src/test`，65 个 `@Test`，覆盖 `AiJson` / `DeadlineCalculator` /
-  `StepSequenceEngine` / `SequenceDuration`）。CI 里 `testDebugUnitTest` 是独立一步，
+- **有单元测试**（`app/src/test`，83 个 test，6 个 suite）。CI 里 `testDebugUnitTest` 是独立一步，
   **这是本机唯一能"真跑"的验证手段**，改纯逻辑务必补测试。
 - **APK 可以直接覆盖安装**（2026-11-26 起）：`versionCode` 取 CI 的 `GITHUB_RUN_NUMBER`
   自动递增，且 CI 用仓库 secret `DEBUG_KEYSTORE_B64` 恢复固定 debug 证书。
@@ -50,7 +85,7 @@ app/src/main/java/at/cwiesner/android/visualtimer/ext/
 └── ui/                   界面（panels/sequences/wheel/alerts/settings/home/duration/theme）
 ```
 
-规模：**75 个 Kotlin 文件 / 约 17,230 行**（含 app/src/test）。
+规模：**78 个 Kotlin 文件 / 约 18,000 行**（含 app/src/test）。
 
 ### PanelRunner —— 倒计时为什么不会丢
 
@@ -81,7 +116,14 @@ app/src/main/java/at/cwiesner/android/visualtimer/ext/
 
 1. **绝不能嵌套 `clickable` / `combinedClickable`**。卡片内部再挂一层，内层先消费第一下，
    外层事件序列残缺 → 双击错乱，表现是"点一下就直接进全屏"。
-   所以 `TimerCell` / `SequenceCell` / `TimerGroupCell` **没有**自己的点击层，点按全交给网格。
+   所以 `SequenceCell` / `TimerGroupCell` **没有**自己的点击层，点按全交给网格。
+
+   **例外（2026-11-27 起）：`TimerCell` 把点按收窄到了圆盘。**
+   卡片左上角多了个「固定」图钉；如果整卡可点，点图钉会顺带触发暂停。
+   做法是 `DraggableGrid(gridHandlesTaps = false)`，由卡片自己在**圆盘那个 Box** 上挂
+   `detectTapGestures(onTap, onDoubleTap)`，**不注册 onLongPress**（长按仍归网格拖拽）。
+   这不是"嵌套"而是"兄弟"关系：圆盘与图钉布局上不重叠，且圆盘内只有一层。
+   若将来再加可点区域，沿用同一原则：**同一像素上只能有一层点击**。
 2. 排序层**不消费**按下事件（不 `awaitFirstDown(requireUnconsumed = true)`）。
 3. 换位用**真实矩形做几何命中**（被拖卡片矩形是否覆盖目标格子中心），不要用"位移 ÷ 估算格高"。
 4. 回调闭包一律 `rememberUpdatedState`，否则 `pointerInput(Unit)` 里是过期 lambda。
@@ -102,11 +144,12 @@ app/src/main/java/at/cwiesner/android/visualtimer/ext/
 
 ### 数据与备份
 
-- Room 版本 **7**，9 个实体：`TimerItem` / `Panel` / `PanelTimerRef` / `Step` / `StepSequence` /
-  `AlertProfile` / `TimerGroup` / `GroupMember` / `DeadlineReminder`。迁移 v1→v7 全在 `AppDatabase.kt`。
+- Room 版本 **9**，10 个实体：`TimerItem` / `Panel` / `PanelTimerRef` / `Step` / `StepSequence` /
+  `AlertProfile` / `TimerGroup` / `GroupMember` / `DeadlineReminder` / `TimerSession`。迁移 v1→v9 全在 `AppDatabase.kt`。
   **`ADD COLUMN ... DEFAULT` 之后要检查要不要回填**：v6 加 `locked` 时没回填，
   升级前就存在的老 DDL 全都变成可编辑（v7 才补上 `UPDATE timers SET locked=1 WHERE kind='Deadline'`）。
-- 备份 `BackupFile.CURRENT_SCHEMA = 2`。v1 旧备份**仍可导入**——新字段一律带默认值。
+- 备份 `BackupFile.CURRENT_SCHEMA = 3`。旧备份**仍可导入**——新字段一律带默认值。
+  v3 新增 `sessions`（归档历史）与 `TimerItemDto.pinned`。
 - 导入时主键会重映射，跨实体引用一律用 `ref` 字符串（`"t<id>"` / `"p<id>"` / `"a<id>"`），
   **不要用原始 id**。
 - 导入导出走 SAF 文件选择器，**不需要任何存储权限**。

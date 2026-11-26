@@ -29,6 +29,7 @@ import androidx.compose.material.icons.filled.Checklist
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.PieChart
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -58,6 +59,7 @@ import at.cwiesner.android.visualtimer.ext.ExtApplication
 import at.cwiesner.android.visualtimer.ext.settings.SettingsRepo
 import at.cwiesner.android.visualtimer.ext.settings.ThemeMode
 import at.cwiesner.android.visualtimer.ext.ui.alerts.AlertsScreen
+import at.cwiesner.android.visualtimer.ext.ui.archive.ArchiveScreen
 import at.cwiesner.android.visualtimer.ext.ui.home.HomeScreen
 import at.cwiesner.android.visualtimer.ext.ui.panels.PanelAction
 import at.cwiesner.android.visualtimer.ext.ui.panels.PanelsScreen
@@ -165,6 +167,10 @@ private enum class Dest(
 ) {
     Home("时钟", Icons.Filled.AccessTime),
     Panels("面板", Icons.Filled.GridView),
+    // 归档夹在「面板」和「警报」之间：面板是「现在正在用的」，
+    // 归档是「已经发生过什么」，警报是「怎么提醒我」——
+    // 从"使用 → 回看 → 配置"这条动线走，比放到最后一个更顺手。
+    Archive("归档", Icons.Filled.PieChart),
     Alerts("警报", Icons.Filled.Notifications),
     Settings("设置", Icons.Filled.Settings),
 }
@@ -303,6 +309,7 @@ private fun MainScaffold(onPreviewFlash: () -> Unit = {}) {
                         // 时会把旧动作再执行一遍，表现为「自己弹出面板管理窗口」。
                         onActionConsumed = { pendingPanelAction = null },
                     )
+                    Dest.Archive -> ArchiveScreen()
                     Dest.Alerts -> AlertsScreen(
                         onPreviewFlash = onPreviewFlash,
                         toggleModeSignal = alertsModeToggleTick,
