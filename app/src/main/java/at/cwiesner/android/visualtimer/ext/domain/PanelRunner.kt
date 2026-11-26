@@ -33,6 +33,16 @@ data class TimerRuntime(
      * 这样用户能看到「已经超时多久」，而不是时间冻结在 00:00。
      */
     val overdueMillis: Long = 0L,
+    /**
+     * 这一轮计时的**开始时刻**（epoch millis）。0 表示未知（例如从旧状态恢复）。
+     *
+     * 只给归档用：到点时写一条 `TimerSession(startedAt, endedAt)`，
+     * 归档页据此画出"每天什么时候开始、什么时候结束"的 24 小时图。
+     *
+     * 暂停不清它 —— 归档记的是**墙钟区间**（含暂停时间），
+     * 因为用户问的是"那段时间我在做什么"，而不是"净计时多久"。
+     */
+    val startedAt: Long = 0L,
 ) {
     val progress: Float
         get() = if (totalMillis <= 0L) 0f
@@ -199,6 +209,8 @@ class PanelRunner(private val scope: CoroutineScope) {
                 running = true,
                 deadlineEpochMillis = null,
                 alertProfileId = timer.alertProfileId,
+                // 归档用：记录这一轮的起点
+                startedAt = System.currentTimeMillis(),
             )
             )
     }
@@ -220,6 +232,7 @@ class PanelRunner(private val scope: CoroutineScope) {
                 deadlineEpochMillis = null,
                 alertProfileId = timer.alertProfileId,
                 stopwatch = true,
+                startedAt = System.currentTimeMillis(),
             )
             )
     }
@@ -252,6 +265,8 @@ class PanelRunner(private val scope: CoroutineScope) {
                 running = true,
                 deadlineEpochMillis = deadlineEpochMillis,
                 alertProfileId = timer.alertProfileId,
+                // 归档用：DDL 的起点就是它创建/恢复的时刻
+                startedAt = now,
             )
             )
     }

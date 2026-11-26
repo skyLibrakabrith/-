@@ -12,6 +12,7 @@ import at.cwiesner.android.visualtimer.ext.alarm.VibrationAlerter
 import at.cwiesner.android.visualtimer.ext.data.AlertProfile
 import at.cwiesner.android.visualtimer.ext.data.AppDatabase
 import at.cwiesner.android.visualtimer.ext.data.TimerKind
+import at.cwiesner.android.visualtimer.ext.data.TimerSession
 import at.cwiesner.android.visualtimer.ext.data.VibrationPresets
 import at.cwiesner.android.visualtimer.ext.domain.DeadlineCalculator
 import at.cwiesner.android.visualtimer.ext.domain.DeadlineRestore
@@ -437,6 +438,88 @@ class ExtApplication : Application() {
 
     // ---------------- 到点提醒 ----------------
 
+    /**
+     * 计时器到点时：写一条归档记录；若是**未固定**的，再把它从面板上移除。
+     *
+     * ## 为什么所有计时器都写归档（不只是未固定的）
+     *
+     * 归档页的用途是"看每天什么时候开始/结束了什么"。
+     * 如果只记被自动销毁的那些，正常使用的历史就全丢了 ——
+     * 用户看到的归档会莫名其妙地稀疏。
+     *
+     * ## 为什么未固定的要移除
+     *
+     * `pinned = false` 表达的是"这是一次性的计时"（比如泡面 3 分钟）。
+     * 到点后它已经完成使命，留在面板上只是噪音。
+     * 移除时连带清掉：面板引用、组成员、提前提醒行、计时器行本身 ——
+     * 少清一样就会留下孤儿数据（`groupedTimerIds` 会让 id 既不在网格、
+     * 也没有组卡片，表现为"计时器凭空消失"）。
+     *
+     * ## 为什么手动删除/重置不写归档
+     *
+     * 用户主动删掉的东西说明他不在乎，不该污染历史。只有自然到点才算"发生过"。
+     */
+    private suspend fun archiveAndMaybeRemove(rt: TimerRuntime) {
+        val dao = database.timerSessionDao()
+        val timer = logCatching("archive-get-timer") { database.timerDao().get(rt.timerId) }
+
+        // 结束时刻：优先用「开始 + 总时长」推算，而不是 System.currentTimeMillis()。
+        // 原因：tick 是 200ms 一拍，到点被检测到时会比真实终点晚最多 ~200ms；
+        // 用推算值能让归档里的区间和盘面上显示的总时长严格一致。
+        val startedAt = rt.startedAt.takeIf { it > 0L } ?: System.currentTimeMillis()
+        val planned = if (rt.stopwatch) rt.remainingMillis else rt.totalMillis
+        val endedAt = (startedAt + planned).coerceAtLeast(startedAt)
+
+        logCatching("archive-insert") {
+            dao.insert(
+                TimerSession(
+                    label = rt.label ?: timer?.label,
+                    startedAt = startedAt,
+                    endedAt = endedAt,
+                    plannedMillis = rt.totalMillis,
+                    kind = timer?.kind?.name ?: TimerKind.Countdown.name,
+                    completed = true,
+                ),
+            )
+        }
+
+        // 未固定的才移除
+        if (timer != null && !timer.pinned) {
+            logCatching("archive-autoremove") {
+                panelRunner.clear(timer.id)
+
+                // 面板引用：所有面板都要解除（同一个计时器可能在多个面板里）。
+                // 用 `.first()` 取一次快照 —— DAO 只提供 Flow 版的全量引用查询，
+                // 这里是一次性清理，不需要持续订阅。
+                database.panelDao().observeAllRefs().first()
+                    .filter { it.timerId == timer.id }
+                    .forEach { database.panelDao().removeRef(it.panelId, it.timerId) }
+
+                // 组成员：GroupDao 没有 removeMember，按"组"重写成员列表。
+                // 必须按组操作（而不是删单条），否则会留下 order 空洞。
+                val allMembers = database.groupDao().allMembersOnce()
+                allMembers.filter { it.timerId == timer.id }
+                    .map { it.groupId }
+                    .distinct()
+                    .forEach { groupId ->
+                        val remaining = allMembers.filter { it.groupId == groupId && it.timerId != timer.id }
+                        if (remaining.isNotEmpty()) {
+                            database.groupDao().upsertMembers(remaining)
+                        }
+                        // 组变空了就整个删掉，否则会留一个没有成员的空组卡片
+                        if (remaining.isEmpty()) {
+                            database.groupDao().deleteGroup(groupId)
+                        }
+                    }
+
+                // 提前提醒行
+                database.deadlineReminderDao().clearTimer(timer.id)
+                // 计时器行本身
+                database.timerDao().deleteById(timer.id)
+            }
+        }
+    }
+
     private fun observeAlerts() {
         // 1) 新到点：发通知 + 拉起全屏闪烁悬浮窗
         appScope.launch {
@@ -451,6 +534,8 @@ class ExtApplication : Application() {
                         rt.timerId,
                     )
                 }
+                // 归档 + 未固定计时器的自动移除
+                logCatching("archive-session") { archiveAndMaybeRemove(rt) }
             }
         }
 
