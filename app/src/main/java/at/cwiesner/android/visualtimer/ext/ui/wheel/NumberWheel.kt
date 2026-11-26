@@ -15,16 +15,15 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import at.cwiesner.android.visualtimer.ext.settings.SettingsRepo
 import at.cwiesner.android.visualtimer.ext.ui.ExtColors
 import kotlin.math.roundToInt
 
@@ -36,34 +35,57 @@ import kotlin.math.roundToInt
  *
  * ## 坐标关系（改之前务必看这里）
  *
- * 列表结构：
+ * 列表结构（[LazyColumn] 无 `contentPadding`、无 `verticalArrangement.spacedBy`，
+ * 每一项高度严格等于 `itemHeight`）：
  * ```
- * index 0        顶部占位（itemHeight）
- * index 1..n     values[0]..values[n-1]
- * index n+1      底部占位（itemHeight）
+ * 列表下标 0        顶部占位（itemHeight）
+ * 列表下标 1..N     values[0]..values[N-1]
+ * 列表下标 N+1      底部占位（itemHeight）
  * ```
  * 视口高 `itemHeight * visibleCount`，高亮条在正中，占
  * `[itemHeight, 2*itemHeight)`，中心在 `1.5 * itemHeight`。
  *
- * **要让 values[i] 正好落在高亮条里，`firstVisibleItemIndex` 必须等于 `i`** ——
- * 不是 `i + 1`。因为 `firstVisibleItemIndex = i` 表示「第 i 项顶边对齐视口顶边」，
- * 那一刻第 i 项占据 y=0..itemHeight，第 i+1 项（= values[i]）正好占据
- * y=itemHeight..2*itemHeight，与高亮条重合。
+ * 项 j 的顶边 y = `-offset + (j - firstVisibleItemIndex) * itemHeight`。
+ * `values[k]` 在列表里的下标是 `k + 1`，让它占满 `[itemHeight, 2*itemHeight)`
+ * 需要 `firstVisibleItemIndex == k`（此时第 k 项占 `[0, itemHeight)`，
+ * 第 k+1 项 = `values[k]` 占 `[itemHeight, 2*itemHeight)`）。
+ * **所以 `firstVisibleItemIndex` 与 values 下标同号同值（停在整格上时）**，
+ * 而「高亮条里那一项的列表下标」等于 `firstVisibleItemIndex + 1`。
  *
- * 这段几何说明：**当 `firstVisibleItemScrollOffset == 0` 时，高亮条里就是 `values[firstVisibleItemIndex]`**。
- * 吸附停稳后 offset 基本为 0；但拖动过程中、或吸附恰好停在半格边界时 offset 不为 0，
- * 此时高亮条里的值要从 [wheelHighlightIndex] 算：
- * 第 0 项（顶部占位）顶边在 `-offset`，每项高 itemHeight，
- * 高亮条里那一项的列表下标 = `firstVisibleItemIndex + round(offset / itemHeight)`。
- * 取整用 **roundToInt（四舍五入）**，与"半格以上就跳"的观感一致。
+ * ## n-1 的真正根源（两轮才修对，务必读完再动）
  *
- * 历史教训（这就是「滚到 5 份却显示 4 份」的根源）：
- * 写回值时用的是 `rounded = if (offset*2 >= itemHeight) F+1 else F`，
- * 却在 offset 完全对齐（=0）时把 `F` 原样当成**列表下标**交给 `valueIndex()`，
- * 而 `valueIndex(F)` = `values[F-1]` —— 于是汇报值永远比高亮条里的值**小一格**。
- * 只有滚到第一个值（此时 clamp 兜住）时看起来才是对的。
- * 现在写回统一走 [wheelHighlightIndex]，并用 Node 按 LazyColumn 语义逐项模拟过：
- * 「高亮条里的值 == 汇报值」，280/280（含 offset 0..itemHeight-1 全区间）。
+ * 这个组件里同时存在**两套下标口径**：
+ *   · `firstVisibleItemIndex` / `scrollToItem` / 列表项 → **LazyColumn 下标**
+ *     （`values[k]` 是列表里的第 k+1 项）
+ *   · `values[...]` → **values 下标**（`values[k]` 就是 k）
+ *
+ * 两者差 1，这 1 来自顶部占位。历史上反复出错，都是因为把一套口径的结果
+ * 直接喂给了另一套：
+ *
+ * - **第一轮**：`initialFirstVisibleItemIndex = parseIndex + 1`
+ *   —— 把 values 下标当列表下标，高亮条显示的是**下一个**值。
+ * - **第二轮（c3f3af2）**：写回公式换成 `wheelHighlightIndex = F + round(offset/H)`，
+ *   但**漏了顶部占位造成的 `+1`**，紧接着又过了一遍
+ *   `valueIndex(li) = (li - 1).coerceIn(...)`。于是在吸附停稳（offset == 0，
+ *   用户真正停住的位置）：
+ *     F = values.indexOf(5) = 3  →  li = 3  →  valueIndex(3) = 2  →  values[2] = 4
+ *   屏上写着 5，写回 4。而高亮条里真正的列表项是 `F + 1 = 4`（= `values[3]` = 5），
+ *   所以正确写法是 `F + 1 + round(offset/H) = 4` —— `valueIndex(4) = 3`，取回 5。
+ *   上一轮改的是「用哪个函数」，没改这个函数**少了一项 +1**，
+ *   而且新式在 off == 0 处与旧式 `if (offset*2 >= H) F+1 else F` 输出**完全相同**，
+ *   因此在用户实际会停住的位置上，那一轮改动等于没改。
+ *
+ * 现在只有两个换算函数，一个方向一个，且都在下面写清了返回值口径：
+ *   `wheelHighlightListIndex(F, o, H)`  —— 几何量，返回 **LazyColumn 下标**（含顶部占位的 `+1`）
+ *   `listIndexToValueIndex(li, size)`   —— LazyColumn 下标 → **values 下标**（`li - 1`）
+ * 二者串联一次正好抵掉那个 1：`F + 1 → (F+1) - 1 = F`，而 `F == values 下标`
+ * （见上方「让它占满 `[itemHeight, 2*itemHeight)` 需要 `firstVisibleItemIndex == k`」）。
+ * 初始化 / `scrollToItem` 直接用 `values.indexOf(selected)`，**不要 +1**。
+ * **不要在调用处手写 `-1` / `+1`**，这正是前两轮错误的成因。
+ *
+ * 另：首次组合时静止回调也会跑一次，拿当前位置反算值。两条路径互逆之后，
+ * 算出的值恒等于 `selected`，`if (v != selected)` 不成立，不会产生任何写回 ——
+ * 于是也不会再出现「打开一趟设置页，5 就自己变成 4」。
  */
 @Composable
 fun NumberWheel(
@@ -78,22 +100,9 @@ fun NumberWheel(
     // 空列表直接不画：后面所有几何都假设至少有一项
     if (values.isEmpty()) return
 
-    /**
-     * LazyColumn 下标 → values 下标。
-     *
-     * `listIndex - 1` 就是 values 下标；顶部占位（listIndex=0）与底部占位
-     * 都会落到边界外，靠 coerceIn 夹回合法范围。
-     */
-    fun valueIndex(listIndexValue: Int): Int = (listIndexValue - 1).coerceIn(0, values.size - 1)
-
+    // 停位：让 values[k] 占满高亮条，需要 firstVisibleItemIndex == k（= values 下标）。
+    // 不要再 +1 —— 见文件头「两套口径」，这里的 F 与 values 下标同值。
     val state = rememberLazyListState(
-        // 要让 values[i] 落在高亮条里，firstVisibleItemIndex 要等于「该值在列表里的下标 - 1」，
-        // 也就是 values 下标本身。详见上方坐标关系说明。
-        //
-        // ⚠️ 初始化和下面滚动写回的 wheelHighlightIndex 是一对**必须配套**的算法：
-        // 按 LazyColumn 语义逐项模拟（判据：高亮条里的值 == 汇报值）验证过 ——
-        // 高亮条里显示的是 values[firstVisibleItemIndex + round(offset/H)]，
-        // 所以初始化停在这里、写回也按这个公式，两边才能对上。整体 +1 或 -1 都会错一格。
         initialFirstVisibleItemIndex = values.indexOf(selected).coerceAtLeast(0),
     )
     val fling = rememberSnapFlingBehavior(state)
@@ -114,12 +123,13 @@ fun NumberWheel(
         if (!state.isScrollInProgress) {
             // 等吸附动画真正停下再读，否则读到的是过渡中的旧位置
             kotlinx.coroutines.delay(60)
-            val centerListIndex = wheelHighlightIndex(
+            val centerListIndex = wheelHighlightListIndex(
                 firstVisibleItemIndex = state.firstVisibleItemIndex,
                 firstVisibleItemScrollOffset = state.firstVisibleItemScrollOffset,
                 itemHeight = itemHeight,
             )
-            val v = values.getOrNull(valueIndex(centerListIndex)) ?: return@LaunchedEffect
+            val v = values.getOrNull(listIndexToValueIndex(centerListIndex, values.size))
+                ?: return@LaunchedEffect
             if (v != selected) {
                 // 先打时间戳再回调：回调会让 selected 变化并触发下面那个 effect
                 recentUserScroll.longValue = System.currentTimeMillis()
@@ -145,9 +155,6 @@ fun NumberWheel(
 
         // 不在 values 里（例如 settings 被夹到别的区间）时不要滚到 0 ——
         // 那会把滚轮和文案显示的两套信息拉开，看上去像"值丢了"。
-        //
-        // 目标下标与上面的初始化用**同一个**表达式 values.indexOf(selected)，
-        // 保证「打开时停在哪一格」和「外部改值后滚到哪一格」完全一致。
         val target = values.indexOf(selected)
         if (target < 0) return@LaunchedEffect
         val cur = state.firstVisibleItemIndex
@@ -177,6 +184,8 @@ fun NumberWheel(
             flingBehavior = fling,
             modifier = Modifier.fillMaxWidth(),
         ) {
+            // 顶部占位：让第一个真实值能停在正中。**这一项的存在就是 listIndex 与
+            // valueIndex 相差 1 的唯一原因**，删掉它必须同时改两个换算函数。
             item { Box(Modifier.height(itemHeight.dp)) }
             itemsIndexed(values) { _, v ->
                 Box(
@@ -187,6 +196,9 @@ fun NumberWheel(
                 ) {
                     Text(
                         text = "$v$suffix",
+                        // 只做视觉强调，不参与「当前值」的判定 ——
+                        // 判定一律以高亮条几何为准（见上面的写回 effect），
+                        // 否则强化样式和实际选中值会来自两个来源、又能错开。
                         fontSize = 18.sp,
                         fontWeight = if (v == selected) FontWeight.Medium else FontWeight.Light,
                         color = if (v == selected) ExtColors.TextPrimary else ExtColors.TextDim,
@@ -194,33 +206,49 @@ fun NumberWheel(
                     )
                 }
             }
+            // 底部占位：让最后一个真实值也能停在正中
             item { Box(Modifier.height(itemHeight.dp)) }
         }
     }
 }
 
 /**
- * 由 LazyListState 的可见位置算出「此刻落在高亮条里的是第几个列表项」。
+ * LazyColumn 下标 -> values 下标。
  *
- * 几何：第 0 项（顶部占位）顶边在 `-offset`，每项高 `itemHeight`，
- * 所以列表项 j 顶边在 `-offset + (j - firstVisibleItemIndex) * itemHeight`。
- * 高亮条占 `[itemHeight, 2*itemHeight)`，要把某一项整格落在里面，
- * 列表下标就得是 `firstVisibleItemIndex + round(offset / itemHeight)`。
+ * 顶部占位占掉列表下标 0，所以 `values[k]` 在列表里是 `k + 1`，反过来减 1。
+ * 两端用 coerceIn 夹住：底部占位（`size + 1`）以及拖动越界时落回合法范围。
  *
- * 注意返回值是 **LazyColumn 下标**，还要再过 [NumberWheel] 里的 `valueIndex()`
- * （`-1` 并让占位项 clamp 到两端）才是 `values` 下标。
- *
- * 曾经写的是 `if (offset*2 >= itemHeight) F+1 else F`：offset=0 时给出 F，
- * 过 `valueIndex` 后变成 `values[F-1]`，**比高亮条里的值小一格** ——
- * 这就是「滚到 5 份、界面记成 4 份」的直接原因（模拟验证：旧式 160/280 正确，本式 280/280）。
+ * 这是**唯一**允许出现 `-1` 的地方。调用方不要自己再减。
  */
-internal fun wheelHighlightIndex(
+internal fun listIndexToValueIndex(listIndex: Int, size: Int): Int {
+    if (size <= 0) return 0
+    return (listIndex - 1).coerceIn(0, size - 1)
+}
+
+/**
+ * 由 LazyListState 的可见位置算出「此刻落在高亮条里的是第几个**列表项**」。
+ *
+ * 几何（`firstVisibleItemIndex` 记作 F、offset 记作 o、`itemHeight` 记作 H）：
+ * 列表项 j 的顶边 `y_j = -o + (j - F) * H`。
+ * 列表项 F 顶边在 `-o`，F+1 在 `H - o`，F+2 在 `2H - o`……
+ * 高亮条固定占 `[H, 2H)`。
+ *
+ * o == 0 时 `y_{F+1} = H`，正好是高亮条顶边 —— **高亮条里是 `F + 1`**。
+ * 那个 `+1` 就是「顶部占位项」造成的位移：占位项把 values 整体往下推了一格。
+ * 随着 o 增大，`F+1` 逐渐上移、`F+2` 逐渐顶上来，`o = H/2` 时两者各占一半，
+ * `o > H/2` 之后 `F+2` 覆盖更多。所以覆盖最多的是 `F + 1 + round(o/H)`。
+ *
+ * 返回值是 **LazyColumn 下标**，调用方必须再过 [listIndexToValueIndex] 才是
+ * values 下标。**不要在这里顺手减 1** —— c3f3af2 那一版正是这里和下游各扣一次，
+ * 合起来少了这个 `+1`，于是屏上写着 5、写回 4。
+ */
+internal fun wheelHighlightListIndex(
     firstVisibleItemIndex: Int,
     firstVisibleItemScrollOffset: Int,
     itemHeight: Int,
 ): Int {
-    if (itemHeight <= 0) return firstVisibleItemIndex
-    return firstVisibleItemIndex +
+    if (itemHeight <= 0) return firstVisibleItemIndex + 1
+    return firstVisibleItemIndex + 1 +
         (firstVisibleItemScrollOffset.toFloat() / itemHeight).roundToInt()
 }
 
@@ -236,8 +264,8 @@ internal fun wheelHighlightIndex(
  * 于是设置页预览是"绿/黄绿/黄/橙"，实际盘面却是"绿/橄榄/黄/橙红"，两套色对不上。
  * 现在两边都走 [ExtColors.trafficStepColor]，预览即所得。
  *
- * 份数不再夹到调色板长度：`trafficStepColor` 自己会按 divisions 均分插值，
- * 8 份、12 份都能正确显示，不会因为 Palette 只有 8 个颜色就截断。
+ * 份数夹取与 [SettingsRepo.MIN_FRACTION_DIVISIONS]..[SettingsRepo.MAX_FRACTION_DIVISIONS]
+ * 完全一致，格数恒等于传进来的 [divisions]（在合法区间内）。
  */
 @Composable
 fun PaletteStrip(
@@ -246,10 +274,9 @@ fun PaletteStrip(
 ) {
     // 与 WheelTimerView.pickColor() 的 Fraction 分支用**完全相同**的夹取范围，
     // 否则设置页画的格数和盘面实际的档数又不一致。
-    // 边界直接引用 SettingsRepo 的常量，不在各处另写字面量。
     val n = divisions.coerceIn(
-        at.cwiesner.android.visualtimer.ext.settings.SettingsRepo.MIN_FRACTION_DIVISIONS,
-        at.cwiesner.android.visualtimer.ext.settings.SettingsRepo.MAX_FRACTION_DIVISIONS,
+        SettingsRepo.MIN_FRACTION_DIVISIONS,
+        SettingsRepo.MAX_FRACTION_DIVISIONS,
     )
     Row(
         modifier = modifier.fillMaxWidth(),

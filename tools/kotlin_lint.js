@@ -46,6 +46,41 @@ for (const f of walk(root)) {
   const src = stripComments(raw);
   const lines = src.split("\n");
 
+  // 7) collect { } 块里出现 .first() —— 极易漏的"只取一次"bug
+  //
+  // 真实案例（ExtApplication 悬浮窗，提交 8756f65 修）：
+  //     panelRunner.runtimes.collect { map ->
+  //         val enabled = settings.overlayEnabled.first()   // 只读一次！
+  //         if (enabled && running > 0) start()
+  //     }
+  // collect 只在 runtimes 变化时才触发，所以「先启动计时器、再去设置里打开开关」
+  // 这条最常见的顺序**永远不会生效** —— 开关变了但 runtimes 没变，块不执行。
+  //
+  // 正解是 combine(runtimes, overlayEnabled) 让两个来源都能触发。
+  //
+  // 这条规则经实测：在 stripComments 之后**零误报**（注释里的示例不算），
+  // 全工程 13 处合法 .first() 一处都没被误报。
+  for (const m of src.matchAll(/\.collect\s*\{/g)) {
+    let i = m.index + m[0].length;
+    let depth = 1;
+    while (i < src.length && depth > 0) {
+      if (src[i] === "{") depth++;
+      else if (src[i] === "}") depth--;
+      i++;
+    }
+    const body = src.slice(m.index + m[0].length, i);
+    if (/\.first\s*\(\s*\)/.test(body)) {
+      const ln = src.slice(0, m.index).split("\n").length;
+      report(
+        f,
+        ln,
+        "collect { } 块里出现 .first() —— 那个源只在本次 collect 触发时读一次，" +
+          "它单独变化不会生效。多源联动请用 combine(...)",
+        lines[ln - 1]
+      );
+    }
+  }
+
   // 追踪"这个标识符是不是 Sequence"：变量名 -> 是否 Sequence
   const seqVars = new Set();
   for (const m of src.matchAll(

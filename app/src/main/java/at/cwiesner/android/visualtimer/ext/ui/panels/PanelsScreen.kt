@@ -52,8 +52,10 @@ import at.cwiesner.android.visualtimer.ext.ui.ExtColors
 import at.cwiesner.android.visualtimer.ext.ui.common.AiCompileDialog
 import at.cwiesner.android.visualtimer.ext.ui.common.AiSplitDialog
 import at.cwiesner.android.visualtimer.ext.ui.common.CompileReviewDialog
+import at.cwiesner.android.visualtimer.ext.ui.common.ConfirmDeleteDialog
 import at.cwiesner.android.visualtimer.ext.ui.sequences.SequenceEditorScreen
 import at.cwiesner.android.visualtimer.ext.ui.sequences.SequenceFocusScreen
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -132,6 +134,14 @@ fun PanelsScreen(
     var editingGroupId by remember { mutableStateOf<Long?>(null) }
     var editingSequenceId by remember { mutableStateOf<Long?>(null) }
     var focusSequenceId by remember { mutableStateOf<Long?>(null) }
+    // 非 null 表示正在确认删除这条序列。
+    //
+    // 为什么网格里的删除要单独走一个确认框，而不是像 TimerCell 那样卡片右上角画个垃圾桶：
+    // 网格卡片上的长按已经被**拖拽排序**吃掉（见文件里那段 longPressEntry 的注释），
+    // 卡片里也不该再叠点击层（会给 DraggableGrid 的手势留破口）。
+    // 所以入口放在「双击进入的全屏序列页」和「面板编辑器」这两处 ——
+    // 它们本来就是用户查看/管理这条序列的界面，不是网格内部。
+    var sequenceDeleteTarget by remember { mutableStateOf<StepSequence?>(null) }
     var editingTimerId by remember { mutableStateOf<Long?>(null) }
     var alertPickerTimerId by remember { mutableStateOf<Long?>(null) }
     // DDL 两步创建：第一步选截止时刻，第二步选提前提醒。
@@ -287,6 +297,39 @@ fun PanelsScreen(
 
     fun toast(msg: String) {
         Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+    }
+
+    /**
+     * 删除一条序列，并**级联删掉它的全部阶段**。
+     *
+     * steps 表没有对 sequences 的外键，只删父行会留下一辈子看不到的孤儿步骤
+     * （占库、还会被导出进备份）。顺序固定先子后父，与删组的
+     * clearMembers → deleteGroup 一致。
+     *
+     * 这里和 SequencesScreen 里的同名逻辑保持一份实现：两处都能删序列，
+     * 少了一处级联就等于从另一条路径制造孤儿行。
+     */
+    fun deleteSequenceCascade(seq: StepSequence) {
+        scope.launch {
+            try {
+                db.sequenceDao().steps(seq.id).forEach { db.sequenceDao().deleteStep(it.id) }
+                db.sequenceDao().deleteById(seq.id)
+                // 引擎握着这条序列的内存副本，不停的话会继续倒计时一个已不存在的序列
+                if (app.sequenceEngine.activeSequenceId == seq.id) app.sequenceEngine.stop()
+                // 正在用它的界面全部退出，否则保存会用旧 id 把它重新插回来
+                if (focusSequenceId == seq.id) focusSequenceId = null
+                if (editingSequenceId == seq.id) editingSequenceId = null
+                sequenceDeleteTarget = null
+                toast("已删除序列「" + seq.name + "」")
+                Log.i("PanelsScreen", "序列已删除（含级联步骤）：id=" + seq.id)
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (e: Exception) {
+                // 不静默吞：删除失败时至少 logcat 里查得到
+                Log.e("PanelsScreen", "删除序列失败 id=" + seq.id, e)
+                toast("删除失败，请重试")
+            }
+        }
     }
 
     var orderOverride by remember { mutableStateOf<List<PanelEntry>?>(null) }
@@ -486,6 +529,8 @@ fun PanelsScreen(
                         toast("序列已重置")
                     },
                     onClose = { focusSequenceId = null },
+                    // 网格里序列卡片没有删除入口（长按被拖拽占用），删除收在全屏视图里
+                    onDelete = { sequenceDeleteTarget = focusedSeq },
                     modifier = Modifier.fillMaxSize(),
                 )
             } else {
@@ -1034,11 +1079,28 @@ fun PanelsScreen(
                     toast(if (on) "已加入面板" else "已移出面板")
                 }
             },
+            onDeleteSequence = { sq ->
+                // 先关掉面板编辑器再弹确认：两个 AlertDialog 同时在场时，
+                // 底层的那个会挡住确认框的触摸区域
+                showPanelEditor = false
+                sequenceDeleteTarget = sq
+            },
         )
     }
 
     // DDL 提前提醒的对话框现在住在「创建流程第二步」里（见文件末尾），
     // 这里不再有"创建完才问"的那一块。
+
+    // ---- 序列删除确认（全屏序列视图的删除图标 / 面板编辑器里的删除触发）----
+    val seqToDelete = sequenceDeleteTarget
+    if (seqToDelete != null) {
+        ConfirmDeleteDialog(
+            title = "删除序列",
+            text = "「" + seqToDelete.name + "」及其全部阶段会被永久删除，无法撤销。",
+            onDismiss = { sequenceDeleteTarget = null },
+            onConfirm = { deleteSequenceCascade(seqToDelete) },
+        )
+    }
 
     // ---- 提醒类型（列表右侧按钮触发）----
     val alertPickerTimer = alertPickerTimerId?.let { id ->

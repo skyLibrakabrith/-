@@ -14,8 +14,23 @@ android {
         applicationId = "at.cwiesner.android.visualtimer.ext"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0.0"
+        /**
+         * versionCode 必须**每次构建都递增**，否则装不上。
+         *
+         * 之前写死 `1`，结果是每次出新包都只能「先卸载再安装」——
+         * Android 对同版本号的覆盖安装会报 INSTALL_FAILED_ALREADY_EXISTS。
+         *
+         * 这里取 CI 的 run number（GitHub Actions 每次递增，不会重复）：
+         *   · 本地构建没有该环境变量 -> 回退到 1
+         *   · 手搓个包给手机装时，用 -PversionCodeOverride=123 覆盖
+         *
+         * 注意不用时间戳：versionCode 是 Int，毫秒时间戳会溢出；
+         * 秒级时间戳虽不溢出但会让"最新版"难以判断。
+         */
+        versionCode = (System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull()
+            ?: (project.findProperty("versionCodeOverride") as String?)?.toIntOrNull()
+            ?: 1)
+        versionName = "1.0.${versionCode}"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

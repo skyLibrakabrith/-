@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
@@ -44,6 +45,15 @@ fun SequenceFocusScreen(
     onStop: () -> Unit,
     onReset: () -> Unit,
     onClose: () -> Unit,
+    /**
+     * 删除这条序列。
+     *
+     * 为什么入口在这里而不是网格卡片上：网格卡片的长按被拖拽排序占用，
+     * 卡片内部也不能再叠点击层（会破坏 DraggableGrid 的手势）。
+     * 全屏视图是用户在"查看这条序列"的界面，放删除入口既顺手又不抢手势。
+     * 传 null 表示调用方不提供删除（保持向后兼容）。
+     */
+    onDelete: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val currentIndex = when (phase) {
@@ -99,6 +109,16 @@ fun SequenceFocusScreen(
                     fontSize = 12.sp,
                     color = if (isActive) activeColor else ExtColors.TextDim,
                 )
+            }
+            if (onDelete != null) {
+                // 删除图标：只负责把请求抛给调用方，确认框和级联删除都由上层做
+                IconButton(onClick = onDelete) {
+                    Icon(
+                        Icons.Filled.Delete,
+                        contentDescription = "删除序列",
+                        tint = ExtColors.OutlineStrong,
+                    )
+                }
             }
             IconButton(onClick = onClose) {
                 Icon(

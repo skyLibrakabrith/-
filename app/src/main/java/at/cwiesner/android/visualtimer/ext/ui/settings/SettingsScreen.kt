@@ -266,12 +266,16 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                 }
 
                 ColorMode.Fraction -> {
-                    // 文案和滚轮用**同一个**夹取表达式，边界取自 SettingsRepo。
+                    // 文案、滚轮、色带三处必须取**同一个数**，且夹取区间与
+                    // SettingsRepo 读写两端、WheelTimerView.pickColor() 完全一致。
                     //
-                    // 之前文案直接写 ${fractionDivisions}，滚轮却用
-                    // fractionDivisions.coerceIn(2, 8)，两处范围不同：
-                    // 数据里一旦出现 >8 的值，滚轮显示的是一回事、文案说的是另一回事。
-                    // 现在两者都夹到同一区间，且区间与盘面（2..12）一致。
+                    // ⚠️ 关于用户报过的「选中 n 显示 n-1」：
+                    // 那个偏差**不在这一层**。这里三处一直用的都是 shownDivisions，
+                    // 滚轮写回的值也被 setFractionDivisions 夹到同一区间。
+                    // 真正的断点在 NumberWheel 的写回路径：它算出「高亮条里是第几个
+                    // LazyColumn 项」时漏了顶部占位造成的 +1，又过一次 valueIndex 的 -1，
+                    // 于是屏上高亮 5 却回调 onSelect(4)。详见 NumberWheel.kt 文件头。
+                    // 所以这次修的只有 NumberWheel，这里保持原样（本来是对的）。
                     val shownDivisions = fractionDivisions.coerceIn(
                         SettingsRepo.MIN_FRACTION_DIVISIONS,
                         SettingsRepo.MAX_FRACTION_DIVISIONS,
@@ -288,7 +292,7 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                         modifier = Modifier.fillMaxWidth(),
                         suffix = " 份",
                     )
-                    // 色带与盘面同源取色，见 PaletteStrip 的注释
+                    // 色带格数 = shownDivisions，与滚轮选中值同源，见 PaletteStrip 的注释
                     PaletteStrip(divisions = shownDivisions)
                 }
             }

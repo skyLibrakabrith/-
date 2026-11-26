@@ -67,6 +67,15 @@ fun PanelEditorDialog(
     onCreateGroup: (name: String, timerIds: List<Long>) -> Unit,
     onDeleteGroup: (TimerGroup) -> Unit,
     onToggleSequence: (Long, Boolean) -> Unit,
+    /**
+     * 删除一条序列（含级联删阶段由调用方负责）。
+     *
+     * 为什么删除入口放在面板编辑器里：这里是**唯一一处按名字列出全部序列**的地方
+     * （包括还没归到任何面板、因此在网格里根本不出现的序列）。
+     * 用户报告"序列不能删除"，而网格卡片上又不能挂长按/删除 ——
+     * 这个列表就成了管理序列唯一合理的落点。
+     */
+    onDeleteSequence: (at.cwiesner.android.visualtimer.ext.data.StepSequence) -> Unit,
 ) {
     var name by remember { mutableStateOf(panelName) }
     var selected by remember { mutableStateOf(memberIds) }
@@ -257,6 +266,19 @@ fun PanelEditorDialog(
                                         belongsElsewhere -> ExtColors.Amber
                                         else -> ExtColors.TextDim
                                     },
+                                )
+                            }
+                            // 删除：与上面「组」的删除按钮同一位置、同一尺寸，
+                            // 面板编辑器的三种条目（组 / 计时器 / 序列）删除方式保持一致
+                            IconButton(
+                                onClick = { onDeleteSequence(sq) },
+                                modifier = Modifier.size(30.dp),
+                            ) {
+                                Icon(
+                                    Icons.Filled.Delete,
+                                    contentDescription = "删除序列",
+                                    tint = ExtColors.OutlineStrong,
+                                    modifier = Modifier.size(16.dp),
                                 )
                             }
                         }

@@ -22,6 +22,30 @@ jobs:
         with:
           gradle-version: '8.11.1'
 
+      # ---- 固定 debug 签名 ----
+      #
+      # 为什么需要：GitHub 的 runner 每次都是全新机器，Android 插件会在
+      # ~/.android/debug.keystore 现场生成一个 debug 证书 —— **每次都不一样**。
+      # 签名不同的 APK 无法覆盖安装，Android 报
+      #   INSTALL_FAILED_UPDATE_INCOMPATIBLE
+      # 用户只能"先卸载再安装"，数据全丢。
+      #
+      # 做法：仓库 secret `DEBUG_KEYSTORE_B64` 存一份固定 keystore 的 base64，
+      # 这里解出来放到 ~/.android/debug.keystore，Android 插件会自动复用它。
+      #
+      # 没配 secret 时**不失败**，只是回到旧的"每次新证书"行为（仍然能出包）。
+      - name: Restore stable debug keystore (optional)
+        env:
+          DEBUG_KEYSTORE_B64: ${{ secrets.DEBUG_KEYSTORE_B64 }}
+        run: |
+          if [ -z "$DEBUG_KEYSTORE_B64" ]; then
+            echo "::warning::未配置 DEBUG_KEYSTORE_B64，本次 APK 的签名与上次不同，安装时可能需要先卸载"
+            exit 0
+          fi
+          mkdir -p ~/.android
+          printf '%s' "$DEBUG_KEYSTORE_B64" | base64 -d > ~/.android/debug.keystore
+          echo "已恢复固定 debug keystore（$(stat -c%s ~/.android/debug.keystore) 字节）"
+
       - name: Build debug APK
         run: gradle :app:assembleDebug --no-daemon --stacktrace
 
