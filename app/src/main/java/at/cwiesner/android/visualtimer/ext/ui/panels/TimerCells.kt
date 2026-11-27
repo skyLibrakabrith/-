@@ -135,10 +135,16 @@ internal fun TimerCell(
                         //      doubleClickTimeoutMillis，detectTapGestures 同样没有，
                         //      但语义边界更明确。
                         .then(
-                            if (onDialTap != null) {
+                            // 只要**单击或双击有一个**可用，就要挂手势。
+                            //
+                            // 之前这里只判断 `onDialTap != null`，导致 DDL 卡片
+                            // （它没有暂停语义，所以 onDialTap 传的是 null）
+                            // 连双击也一起被禁掉了 —— 表现为"DDL 双击进不了全屏"。
+                            // 双击和单击是两件事，不能用一个条件绑死。
+                            if (onDialTap != null || onDialDoubleTap != null) {
                                 Modifier.pointerInput(timer.id) {
                                     detectTapGestures(
-                                        onTap = { onDialTap() },
+                                        onTap = onDialTap?.let { { it() } },
                                         onDoubleTap = onDialDoubleTap?.let { { it() } },
                                     )
                                 }
