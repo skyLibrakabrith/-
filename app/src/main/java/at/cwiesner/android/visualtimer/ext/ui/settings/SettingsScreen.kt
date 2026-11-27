@@ -503,10 +503,26 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
 
         AiSettingsCard(settings = settings, toast = { toast(it) })
 
-        SettingsCard(title = "备份") {            Text(
-                "导出为 JSON，包含面板、序列、警报配置。使用系统文件选择器，不需要存储权限。",
+        SettingsCard(title = "备份") {
+            Text(
+                "导出为 JSON，包含**全部配置**（面板、计时器、序列、警报、分组）" +
+                    "**和全部归档记录**。使用系统文件选择器，不需要存储权限。",
                 fontSize = 12.sp,
                 color = ExtColors.TextDim,
+            )
+            // 降级安装会清空数据 —— 这是 Android 的平台限制，不是漏了迁移。
+            //
+            // `AppDatabase` 里挂了 `fallbackToDestructiveMigrationOnDowngrade()`：
+            // 装了**更低版本**的 APK 时 Room 无法迁移，只能删库重建，而且**不抛异常**
+            // （所以上层接不住、也没法提示）。这个取舍是刻意的：只保留"降级"这一种
+            // 场景的破坏性回退，缺迁移仍然会抛异常并保留数据文件。
+            //
+            // 用户看不到这段代码，只能靠这里提醒 —— 否则换版本后"东西全没了"且无从追查。
+            Text(
+                "⚠️ 安装更低版本的 APK 会清空全部数据（系统限制，无法用迁移解决）。" +
+                    "换版本前请先导出一份备份。",
+                fontSize = 12.sp,
+                color = ExtColors.Red,
             )
             Row(
                 modifier = Modifier.fillMaxWidth(),

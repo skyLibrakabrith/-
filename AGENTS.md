@@ -85,7 +85,7 @@ node tools/checkbraces.js  # 花括号/圆括号平衡
 - CI：`.github/workflows/build.yml`，push 即触发；约 30 秒开始、**1–4 分钟**出结果。
 - 产物：Actions → Build APK → Artifacts → `visual-timer-ext-debug-apk`（`app-debug.apk`）。
 - **手势 / 悬浮窗 / 警报 / 闪烁**等真机行为**无法在无设备环境验证**，改完必须装机试。
-- **有单元测试**（`app/src/test`，83 个 test，6 个 suite）。CI 里 `testDebugUnitTest` 是独立一步，
+- **有单元测试**（`app/src/test`，150+ 个 test，13 个 suite）。CI 里 `testDebugUnitTest` 是独立一步，
   **这是本机唯一能"真跑"的验证手段**，改纯逻辑务必补测试。
 - **APK 可以直接覆盖安装**（2026-11-26 起）：`versionCode` 取 CI 的 `GITHUB_RUN_NUMBER`
   自动递增，且 CI 用仓库 secret `DEBUG_KEYSTORE_B64` 恢复固定 debug 证书。
@@ -109,7 +109,7 @@ app/src/main/java/at/cwiesner/android/visualtimer/ext/
 └── ui/                   界面（panels/sequences/wheel/alerts/settings/home/duration/theme）
 ```
 
-规模：**78 个 Kotlin 文件 / 约 18,000 行**（含 app/src/test）。
+规模：**80 个 Kotlin 文件 / 约 19,500 行**（含 app/src/test）。
 
 ### PanelRunner —— 倒计时为什么不会丢
 
@@ -144,8 +144,12 @@ app/src/main/java/at/cwiesner/android/visualtimer/ext/
 
    **例外（2026-11-27 起）：`TimerCell` 把点按收窄到了圆盘。**
    卡片左上角多了个「固定」图钉；如果整卡可点，点图钉会顺带触发暂停。
-   做法是 `DraggableGrid(gridHandlesTaps = false)`，由卡片自己在**圆盘那个 Box** 上挂
-   `detectTapGestures(onTap, onDoubleTap)`，**不注册 onLongPress**（长按仍归网格拖拽）。
+   做法是 `DraggableGrid(tapHandledByItem = { it.kind == EntryKind.Timer })`，
+   由卡片自己在**圆盘那个 Box** 上挂 `detectTapGestures(onTap, onDoubleTap)`，
+   **不注册 onLongPress**（长按仍归网格拖拽）。
+   注意这个参数是**按条目**判断的，不是全网格开关 —— 早期写成全局 `gridHandlesTaps`
+   时，为了让计时器卡自己挂点击只能整个网格关掉，结果**序列卡连点击层都没了**
+   （双击打不开序列）。序列/组返回 false，仍由网格挂。
    这不是"嵌套"而是"兄弟"关系：圆盘与图钉布局上不重叠，且圆盘内只有一层。
    若将来再加可点区域，沿用同一原则：**同一像素上只能有一层点击**。
 2. 排序层**不消费**按下事件（不 `awaitFirstDown(requireUnconsumed = true)`）。
@@ -168,8 +172,9 @@ app/src/main/java/at/cwiesner/android/visualtimer/ext/
 
 ### 数据与备份
 
-- Room 版本 **9**，10 个实体：`TimerItem` / `Panel` / `PanelTimerRef` / `Step` / `StepSequence` /
-  `AlertProfile` / `TimerGroup` / `GroupMember` / `DeadlineReminder` / `TimerSession`。迁移 v1→v9 全在 `AppDatabase.kt`。
+- Room 版本 **10**，11 个实体：`TimerItem` / `Panel` / `PanelTimerRef` / `Step` / `StepSequence` /
+  `AlertProfile` / `TimerGroup` / `GroupMember` / `DeadlineReminder` / `TimerSession` /
+  `RuntimeSnapshot`。迁移 v1→v10 全在 `AppDatabase.kt`。
   **`ADD COLUMN ... DEFAULT` 之后要检查要不要回填**：v6 加 `locked` 时没回填，
   升级前就存在的老 DDL 全都变成可编辑（v7 才补上 `UPDATE timers SET locked=1 WHERE kind='Deadline'`）。
 - 备份 `BackupFile.CURRENT_SCHEMA = 3`。旧备份**仍可导入**——新字段一律带默认值。
@@ -223,8 +228,12 @@ app/src/main/java/at/cwiesner/android/visualtimer/ext/
 | 1 | `fallbackToDestructiveMigrationOnDowngrade()` 会在**降级安装**时静默删库，且不抛异常 —— 上层那段提示接不住它 | `AppDatabase.kt:329` |
 | 2 | 拖拽排序**不支持边缘自动滚动**（格子超出屏幕后拖不到远处） | `DraggableGrid` |
 | 3 | 单击要等双击窗口（约 300ms）才响应；本版 Compose 的 `combinedClickable` **没有** `doubleClickTimeoutMillis` / `hasDoubleClick` 参数 | 手势 |
-| 4 | `PanelsScreen` 是 **1348 行**巨型 Composable；`PanelState.kt` 的 `rememberPanelState()` 零调用（漂移中的副本） | `ui/panels/PanelsScreen.kt` |
-| 5 | `tools/unused2.js` 有 `if (unused.length > 1)` —— **只有 1 个未使用 import 的文件会静默通过** | `tools/unused2.js` |
+| 4 | `PanelsScreen` 是 **1600+ 行**巨型 Composable；`PanelState.kt` 的 `rememberPanelState()` **零调用**（设计完整，但与 PanelsScreen 里的订阅段重复 —— 重构待做） | `ui/panels/PanelsScreen.kt`、`panels/PanelState.kt` |
+
+> 曾列在这里的「`tools/unused2.js` 的 `> 1` 漏报」**已经修好了**：
+> 实际检查逻辑是 `if (!unused.length) continue`（不管几个都报），
+> 第 321 行那个 `> 1` 是 `--self-test` 里**刻意复现旧 bug 的对照代码**。
+> 跑 `node tools/unused2.js --self-test` 可验证（14/14 通过）。
 
 更完整的清单见 `docs/ENGINEERING_PITFALLS.md`（历史踩坑）与
 `docs/ARCHITECTURE_REVIEW.md`（23 条设计逻辑问题 + 7 条模块化问题）。
