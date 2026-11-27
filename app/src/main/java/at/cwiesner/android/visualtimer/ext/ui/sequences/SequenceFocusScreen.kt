@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -165,6 +166,16 @@ fun SequenceFocusScreen(
                 color = ExtColors.TextDim,
             )
         }
+
+        // 把操作按钮**钉在底部**，而不是"跟在内容后面"。
+        //
+        // 真实问题：大圆盘用 `heightIn(max = 340.dp)` 但不带 weight，
+        // 于是它按剩余空间撑到最大，后面的「下一阶段」预告文字与按钮行
+        // 被一路推到底、甚至挤出可视区 —— 真机上按钮**完全看不见**，
+        // 用户点它本以为在的位置当然没反应。
+        //
+        // 用 Spacer 吃掉中间剩余空间，按钮行自然落在底部，任何屏幕尺寸都可见。
+        Spacer(modifier = Modifier.weight(1f))
 
         // 操作
         Row(

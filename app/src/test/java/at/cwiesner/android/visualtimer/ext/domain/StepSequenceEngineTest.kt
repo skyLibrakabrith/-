@@ -305,4 +305,62 @@ class StepSequenceEngineTest {
 
         assertEquals(listOf("第1步", "第2步"), fired)
     }
+
+    // ---------------- 「下一阶段」按钮该用哪个方法 ----------------
+
+    /**
+     * 真机上确认过的问题：序列全屏的「下一阶段」原来接的是 `confirm()`，
+     * 而 `confirm()` 第一行就是 `if (current !is AwaitingConfirm) return` ——
+     * `AwaitingConfirm` 只在本阶段**倒计时走完**后才进入。
+     * 所以用户在阶段还在倒计时时点「下一阶段」，`confirm()` 立刻返回，按钮毫无反应。
+     *
+     * 这两条测试把「两个方法的适用相位」钉死，防止以后又接错。
+     */
+    @Test
+    fun `confirm 在 Running 状态下无效`() = runTest {
+        val engine = newEngine()
+        engine.start(seq(), steps(1000L, 1000L))
+
+        // 还在第一阶段倒计时中
+        advanceTimeBy(200L)
+        runCurrent()
+        assertTrue(engine.phase.value is StepSequenceEngine.Phase.Running)
+
+        engine.confirm()
+
+        // 没有任何变化 —— 这就是"点了没用"
+        val phase = engine.phase.value
+        assertTrue(phase is StepSequenceEngine.Phase.Running)
+        assertEquals(0, (phase as StepSequenceEngine.Phase.Running).stepIndex)
+    }
+
+    @Test
+    fun `skip 在 Running 状态下能直接进入下一阶段`() = runTest {
+        val engine = newEngine()
+        engine.start(seq(), steps(1000L, 1000L))
+
+        advanceTimeBy(200L)
+        runCurrent()
+        engine.skip()
+        // runStep 里对 phase 的写入发生在协程里，要让调度器跑一拍才看得到
+        runCurrent()
+
+        val phase = engine.phase.value
+        assertTrue("skip 后应进入第二阶段", phase is StepSequenceEngine.Phase.Running)
+        assertEquals(1, (phase as StepSequenceEngine.Phase.Running).stepIndex)
+    }
+
+    @Test
+    fun `skip 在最后一步会结束序列`() = runTest {
+        val engine = newEngine()
+        engine.start(seq(), steps(1000L))
+
+        advanceTimeBy(200L)
+        runCurrent()
+        engine.skip()
+        runCurrent()
+
+        assertEquals(StepSequenceEngine.Phase.Finished, engine.phase.value)
+        assertNull("结束时必须清掉 activeSequenceId", engine.activeSequenceId)
+    }
 }

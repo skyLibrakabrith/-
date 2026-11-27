@@ -739,7 +739,16 @@ fun PanelsScreen(
                             toast("开始序列「" + focusedSeq.name + "」")
                         }
                     },
-                    onNext = { app.sequenceEngine.confirm() },
+                    // 「下一阶段」必须用 skip() 而不是 confirm()。
+                    //
+                    // `confirm()` 第一行是 `if (current !is AwaitingConfirm) return`，
+                    // 而 AwaitingConfirm 只在本阶段**倒计时走完之后**才进入。
+                    // 用户在阶段还在倒计时时点「下一阶段」→ confirm() 立刻返回，
+                    // 按钮看起来完全没反应（真机确认过）。
+                    //
+                    // `skip()` 对两种相位都有效，且 AwaitingConfirm 下走的是同一条
+                    // `runStep(next)`，语义正好是"现在就进入下一步"。
+                    onNext = { app.sequenceEngine.skip() },
                     onStop = {
                         app.sequenceEngine.stop()
                         toast("已停止")
@@ -894,6 +903,7 @@ fun PanelsScreen(
                     sequences = panelSequences,
                     stepsBySequence = stepsBySequence,
                     onOpenSequence = { seq -> focusSequenceId = seq.id },
+                    onEditSequence = { seq -> editingSequenceId = seq.id },
                     onMergeToSequence = { mergeDialogOpen = true },
                     onChangeAlert = { t -> alertPickerTimerId = t.id },
                     onBatchStart = {

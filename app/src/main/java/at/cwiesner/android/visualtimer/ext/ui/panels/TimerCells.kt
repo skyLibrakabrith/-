@@ -353,6 +353,15 @@ internal fun TimerList(
     stepsBySequence: Map<Long, List<at.cwiesner.android.visualtimer.ext.data.Step>> = emptyMap(),
     /** 点序列行 → 进序列全屏。 */
     onOpenSequence: (StepSequence) -> Unit = {},
+    /**
+     * 长按序列行 → 打开序列编辑器。
+     *
+     * 为什么网格里没有这个入口：网格层长按被拖拽排序占用
+     * （`detectDragGesturesAfterLongPress`）。列表视图不参与拖拽，
+     * 长按是空的，正好给"编辑"用 —— 与计时器行的"长按选中"不冲突
+     * （序列不参与多选，见上方注释）。
+     */
+    onEditSequence: (StepSequence) -> Unit = {},
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
         Row(
@@ -495,7 +504,13 @@ internal fun TimerList(
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(12.dp))
                         .background(ExtColors.Surface)
-                        .clickable { onOpenSequence(seq) }
+                        // 单击进全屏、长按进编辑器。
+                        // 原来只有 `.clickable`，长按什么都没发生 —— 用户报"列表里长按序列
+                        // 没有弹出序列编辑器"。
+                        .combinedClickable(
+                            onClick = { onOpenSequence(seq) },
+                            onLongClick = { onEditSequence(seq) },
+                        )
                         .padding(horizontal = 10.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
