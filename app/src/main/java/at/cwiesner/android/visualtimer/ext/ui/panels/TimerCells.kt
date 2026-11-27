@@ -22,6 +22,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.PlaylistPlay
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material3.Card
@@ -41,6 +42,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import at.cwiesner.android.visualtimer.ext.data.StepSequence
 import at.cwiesner.android.visualtimer.ext.data.TimerItem
 import at.cwiesner.android.visualtimer.ext.data.TimerKind
 import at.cwiesner.android.visualtimer.ext.domain.DeadlineCalculator
@@ -329,6 +331,28 @@ internal fun TimerList(
      * 一次一个让结果和意图一一对应，也避免"批量拆解"这种没人想得清楚的交互。
      */
     onSplit: (TimerItem?) -> Unit,
+    /**
+     * 「合并为序列」：把选中的计时器 / 序列合成一个新序列。
+     *
+     * 选中 ≥2 项时才出现（见工具栏那段注释）。
+     */
+    onMergeToSequence: () -> Unit = {},
+    /**
+     * 当前面板里的序列，显示在列表**末尾**。
+     *
+     * 为什么列表视图原来没有序列：`TimerList` 只接收 `timers`。
+     * 用户明确反馈「列表视图里没有序列」—— 卡片视图有、列表视图没有，
+     * 同一个面板切换视图就看到不同内容，这是 bug 不是设计。
+     *
+     * 序列行与计时器行的区别：
+     * - 单选/多选不参与（序列的批量开始/删除语义与计时器不同，不混在一起）
+     * - 点击直接进序列全屏（这是列表里最自然的"打开"动作）
+     */
+    sequences: List<StepSequence> = emptyList(),
+    /** 每个序列的阶段数，用于在行里显示「N 阶段」。 */
+    stepsBySequence: Map<Long, List<at.cwiesner.android.visualtimer.ext.data.Step>> = emptyMap(),
+    /** 点序列行 → 进序列全屏。 */
+    onOpenSequence: (StepSequence) -> Unit = {},
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
         Row(
@@ -365,6 +389,17 @@ internal fun TimerList(
                 TextButton(onClick = { onSplit(target) }) {
                     Text(if (target != null) "✨ 拆解这个" else "✨ 拆解")
                 }
+            }
+
+            // 「合并为序列」：选中 ≥2 项时出现。
+            //
+            // 与「拆解」方向相反：
+            //   拆解 = 一个计时器 → 多个阶段
+            //   合并 = 多个计时器/序列 → 一个序列的多阶段
+            // 两者互斥（一个要 ≤1 个选中，一个要 ≥2 个），所以同一时刻只出现一个，
+            // 工具栏不会挤。
+            if (selectedIds.size >= 2) {
+                TextButton(onClick = onMergeToSequence) { Text("合并为序列") }
             }
 
             if (selectedIds.isNotEmpty()) {
@@ -442,6 +477,49 @@ internal fun TimerList(
                             .clickable { onChangeAlert(timer) }
                             .padding(horizontal = 8.dp, vertical = 4.dp),
                     )
+                }
+            }
+
+            // 序列显示在计时器之后。
+            //
+            // 用户反馈过「列表视图里没有序列」：卡片视图有、列表视图没有，
+            // 同一个面板切个视图就看到不同内容 —— 那是 bug。
+            // 这里不给序列加 Checkbox：批量开始/删除是计时器语义，
+            // 序列的"开始"要走引擎，混进同一套批量操作会让人误解。
+            // 点行 = 进序列全屏，这是列表里最自然的"打开"动作。
+            items(sequences, key = { "seq-" + it.id }) { seq ->
+                val steps = stepsBySequence[seq.id].orEmpty()
+                val totalMillis = steps.sumOf { it.durationMillis }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(ExtColors.Surface)
+                        .clickable { onOpenSequence(seq) }
+                        .padding(horizontal = 10.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Icon(
+                        Icons.Filled.PlaylistPlay,
+                        contentDescription = null,
+                        tint = ExtColors.Primary,
+                        modifier = Modifier.size(20.dp),
+                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            seq.name,
+                            fontSize = 14.sp,
+                            color = ExtColors.TextPrimary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            "${steps.size} 阶段 · " + DeadlineCalculator.formatRemaining(totalMillis),
+                            fontSize = 12.sp,
+                            color = ExtColors.TextSecondary,
+                        )
+                    }
                 }
             }
         }

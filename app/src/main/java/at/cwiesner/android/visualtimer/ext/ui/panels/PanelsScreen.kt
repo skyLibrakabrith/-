@@ -4,6 +4,7 @@ import android.util.Log
 import android.widget.Toast
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -49,6 +50,7 @@ import at.cwiesner.android.visualtimer.ext.data.AlertProfile
 import at.cwiesner.android.visualtimer.ext.data.GroupMember
 import at.cwiesner.android.visualtimer.ext.data.Panel
 import at.cwiesner.android.visualtimer.ext.data.PanelTimerRef
+import at.cwiesner.android.visualtimer.ext.ui.archive.ArchiveDates
 import at.cwiesner.android.visualtimer.ext.data.Step
 import at.cwiesner.android.visualtimer.ext.data.StepSequence
 import at.cwiesner.android.visualtimer.ext.data.TimerGroup
@@ -171,6 +173,8 @@ fun PanelsScreen(
 
     // 列表视图里「拆解」：非 null 表示要拆的是这个已有计时器（拆完替换它）
     var splitTargetTimer by remember { mutableStateOf<TimerItem?>(null) }
+    /** 「合并为序列」对话框是否打开（列表视图多选 ≥2 时触发）。 */
+    var mergeDialogOpen by remember { mutableStateOf(false) }
     var focusTimerId by remember { mutableStateOf<Long?>(null) }
 
     // 以前这里有一对 longPressEntry / showPanelActions，负责「长按卡片弹出面板操作框」。
@@ -877,6 +881,11 @@ fun PanelsScreen(
                     // 全选：选中当前面板的全部计时器
                     onSelectAll = { selectedIds = timers.map { it.id }.toSet() },
                     onClearSelection = { selectedIds = emptySet() },
+                    // 列表视图也要显示序列（原来只有卡片视图有）
+                    sequences = panelSequences,
+                    stepsBySequence = stepsBySequence,
+                    onOpenSequence = { seq -> focusSequenceId = seq.id },
+                    onMergeToSequence = { mergeDialogOpen = true },
                     onChangeAlert = { t -> alertPickerTimerId = t.id },
                     onBatchStart = {
                         scope.launch {
@@ -1303,6 +1312,83 @@ fun PanelsScreen(
                     toast("已拆成 ${steps.size} 阶段的序列")
                     editingSequenceId = seqId
                 }
+            },
+        )
+    }
+
+    // ---- 列表视图的「合并为序列」：把选中的计时器 / 序列合成一个序列 ----
+    //
+    // 与「拆解」方向相反：
+    //   拆解 = 一个计时器 → 多个阶段
+    //   合并 = 多个计时器/序列 → 一个序列的多阶段
+    //
+    // 展开规则：
+    //   · 倒计时 → 一个阶段（用它自己的名称与时长）
+    //   · 序列   → 把它**已有的全部阶段**展开进来（按 order）
+    // 合并完删除原计时器/序列（与拆解一致：产物取代原物，不留重复内容）。
+    if (mergeDialogOpen) {
+        // 按当前列表顺序取选中项，这样合并结果的阶段顺序 = 用户看到的顺序
+        val chosen = timers.filter { it.id in selectedIds }
+        var mergeName by remember { mutableStateOf("合并 " + ArchiveDates.dayTitle(ArchiveDates.today())) }
+        AlertDialog(
+            onDismissRequest = { mergeDialogOpen = false },
+            title = { Text("合并为序列") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = mergeName,
+                        onValueChange = { mergeName = it },
+                        label = { Text("序列名称") },
+                        singleLine = true,
+                    )
+                    Text(
+                        "将合并 ${chosen.size} 个计时器为 ${chosen.size} 个阶段。",
+                        fontSize = 13.sp,
+                        color = ExtColors.TextSecondary,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        mergeDialogOpen = false
+                        val name = mergeName.trim().ifBlank { "合并的序列" }
+                        scope.launch {
+                            val pid = currentPanel?.id
+                            if (pid == null) {
+                                toast("先选一个面板")
+                                return@launch
+                            }
+                            val seqId = db.sequenceDao().upsert(
+                                StepSequence(
+                                    name = name,
+                                    panelId = pid,
+                                    sortOrder = (panelSequences.maxOfOrNull { it.sortOrder } ?: -1) + 1,
+                                ),
+                            )
+                            // 批量插入（不要循环 upsertStep：会互相覆盖，见 insertSteps 的注释）
+                            db.sequenceDao().insertSteps(
+                                chosen.mapIndexed { idx, t ->
+                                    Step(
+                                        sequenceId = seqId,
+                                        durationMillis = t.durationMillis,
+                                        label = t.label,
+                                        order = idx,
+                                    )
+                                },
+                            )
+                            // 原计时器被序列取代
+                            chosen.forEach { t -> deleteTimerRows(t.id, removeRefPanelId = pid) }
+                            selectedIds = emptySet()
+                            stepsVersion++
+                            toast("已合并 ${chosen.size} 个阶段")
+                            editingSequenceId = seqId
+                        }
+                    },
+                ) { Text("合并") }
+            },
+            dismissButton = {
+                TextButton(onClick = { mergeDialogOpen = false }) { Text("取消") }
             },
         )
     }
