@@ -43,6 +43,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import at.cwiesner.android.visualtimer.ext.ExtApplication
+import at.cwiesner.android.visualtimer.ext.data.TimerSession
 import at.cwiesner.android.visualtimer.ext.data.saveAndGetId
 import at.cwiesner.android.visualtimer.ext.data.AlertProfile
 import at.cwiesner.android.visualtimer.ext.data.GroupMember
@@ -406,6 +407,53 @@ fun PanelsScreen(
             toast("删除失败，请重试")
         }
     }
+    /**
+     * 「结束」一个**未固定**的计时器：先写归档，再从面板移除。
+     *
+     * ## 为什么未固定的按钮叫「结束」而不是「重置」
+     *
+     * `pinned = false` 表达的是"这是一次性计时"（泡面 3 分钟、跑一次测试）。
+     * 对一次性计时，"重置回满格"没有意义 —— 用户想要的是"这件事做完了/不做了"。
+     * 所以按钮语义变成结束：记一条历史、把卡片收走。
+     *
+     * 固定的计时器仍叫「重置」：它还要反复用，回到满格才是想要的。
+     *
+     * ## 归档字段
+     *
+     * - `startedAt` 用运行时的墙钟起点（没有就退回"结束时刻 − 已计时长"）
+     * - `endedAt` 用**现在**（用户主动结束，没有比这更准的终点）
+     * - `completed = false` → 归档里显示**「提前结束」**：
+     *   它是事实（没到点就停了），和自然到点的「按时到点」区分开
+     * - `plannedMillis` 存原始计划时长，这样归档里能看到"计划 15 分，实际跑了 8 分"
+     */
+    suspend fun archiveAndEndTimer(t: TimerItem) {
+        val rt = runner.get(t.id)
+        val now = System.currentTimeMillis()
+        val elapsed = when {
+            rt == null -> 0L
+            rt.stopwatch -> rt.stopwatchSegmentMillis
+            else -> (rt.totalMillis - rt.remainingMillis).coerceAtLeast(0L)
+        }
+        val startedAt = rt?.startedAt?.takeIf { it > 0L } ?: (now - elapsed).coerceAtLeast(0L)
+        // 时长为 0（从没跑过就点结束）不写归档 —— 那不是"发生过一次计时"
+        if (elapsed >= 1000L) {
+            runCatching {
+                db.timerSessionDao().insert(
+                    TimerSession(
+                        label = t.label,
+                        startedAt = startedAt,
+                        endedAt = now,
+                        plannedMillis = if (rt?.stopwatch == true) elapsed else rt?.totalMillis ?: t.durationMillis,
+                        kind = t.kind.name,
+                        completed = false,
+                    ),
+                )
+            }
+        }
+        deleteTimerRows(t.id, removeRefPanelId = currentPanel?.id)
+        toast("已结束并归档" + t.label?.let { "：$it" }.orEmpty())
+    }
+
 
     /**
      * 删除一个面板，并级联清掉它的全部从属行。
@@ -745,7 +793,18 @@ fun PanelsScreen(
                         runner.stop(focused.id)
                         toast("已暂停")
                     },
-                    onReset = { runner.reset(focused.id) },
+                    onReset = {
+                        // 与网格卡片同一套语义：未固定 = 结束并归档，固定 = 重置
+                        scope.launch {
+                            if (focused.pinned) {
+                                runner.reset(focused.id)
+                            } else {
+                                archiveAndEndTimer(focused)
+                                // 卡片已被移除，全屏要跟着退出，否则会停在一个不存在的计时器上
+                                focusTimerId = null
+                            }
+                        }
+                    },
                     // 长按标题改名：只改 label，不碰时长/类型/截止时刻。
                     // 空串统一存成 null —— 这样界面会回退显示「未命名」，
                     // 而不是显示一个看不见的空字符串。
@@ -977,7 +1036,16 @@ fun PanelsScreen(
                                             }
                                         },
                                         onReset = {
-                                            scope.launch { runner.reset(t.id) }
+                                            // 未固定 = 一次性计时，按钮是「结束」：
+                                            // 先归档再移除（等价于「到点」的收尾，只是用户主动结束）。
+                                            // 固定 = 「重置」：回到满格接着用，不写归档。
+                                            scope.launch {
+                                                if (t.pinned) {
+                                                    runner.reset(t.id)
+                                                } else {
+                                                    archiveAndEndTimer(t)
+                                                }
+                                            }
                                         },
                                         onDelete = {
                                             scope.launch {

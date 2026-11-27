@@ -211,6 +211,12 @@ internal fun TimerCell(
                     val needsReset = runtime != null &&
                         (runtime.isOverdue || (!running && !locked))
                     if (needsReset) {
+                        // 未固定 = 一次性计时，按钮语义是「结束」（归档后从面板移除）；
+                        // 固定 = 还要继续用，按钮语义是「重置」（回到满格重新来）。
+                        //
+                        // 为什么不做成两个按钮：两个小按钮挤在 20dp 高的行里会点不准，
+                        // 而且同一时刻只有一种是用户真正想做的（由 pinned 唯一决定）。
+                        val endMode = !timer.pinned
                         Box(
                             modifier = Modifier
                                 .height(20.dp)
@@ -222,7 +228,7 @@ internal fun TimerCell(
                             contentAlignment = Alignment.Center,
                         ) {
                             Text(
-                                text = "重置",
+                                text = if (endMode) "结束" else "重置",
                                 fontSize = 9.sp,
                                 lineHeight = 9.sp,
                                 color = ExtColors.Primary,
