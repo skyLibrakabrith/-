@@ -38,8 +38,21 @@ function parseImport(line) {
 }
 
 // 把 src 里的顶层声明收进 packages（package 名 -> Set(声明名)）
+//
+// ## 为什么要容忍「接收者.」前缀
+//
+// 旧版正则在 `fun` 之后直接抓名字，遇到**带接收者的扩展函数**会抓错：
+//
+//     suspend fun SequenceDao.saveAndGetId(...)
+//                 ^^^^^^^^^^^ 被当成函数名
+//
+// 于是 `saveAndGetId` 从来没被登记，而真正用到它的两个文件被报成
+// "package ... 里没有 saveAndGetId" —— 假阳性，而且会让人去改本来就对的代码。
+//
+// 现在允许 `fun` 后面先有一个可选的 `接收者.`（支持泛型接收者如 `List<T>.`），
+// 再抓真正的函数名。
 const declRe =
-  /^(?:@\w+\s*)?(?:(?:public|internal|private|abstract|open|sealed|data|enum|inline|suspend|annotation|value|fun)\s+)*(fun|class|interface|object|val|var|typealias)\s+(?:<[^>]*>\s*)?([A-Za-z_]\w*)/;
+  /^(?:@\w+\s*)?(?:(?:public|internal|private|abstract|open|sealed|data|enum|inline|suspend|annotation|value|fun)\s+)*(fun|class|interface|object|val|var|typealias)\s+(?:<[^>]*>\s*)?(?:[\w.<>,?*]+\.)?([A-Za-z_]\w*)/;
 
 function collect(decls, src) {
   const lines = src.split('\n');

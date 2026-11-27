@@ -684,3 +684,32 @@ class PanelRunner(private val scope: CoroutineScope) {
         const val TICK_MILLIS: Long = 200L
     }
 }
+
+/**
+ * 一次计时**实际持续了多久**（归档用）。
+ *
+ * ## 为什么要单独一个函数
+ *
+ * 这个算式有三处语义容易各写各的：
+ * - **超时要算进去**：5 分钟计划 + 3 分钟超时 = 8 分钟。
+ *   只算 `total - remaining` 会得到 5 分钟，归档里就看不到超时那一段。
+ * - **正计时**没有"计划/剩余"概念，只有"这一段累计了多少"。
+ * - **暂停结束**（remaining > 0）只算走过的那部分，不能当满时长。
+ *
+ * 两条写入路径（`ExtApplication` 的到点归档、`PanelsScreen` 的「结束」按钮）
+ * 都用它，避免其中一处以后被改坏而另一处没跟上。
+ *
+ * @param stopwatchSegmentMillis 正计时**本段**的净计时（见 [TimerRuntime.stopwatchSegmentMillis]）
+ */
+fun elapsedMillisForArchive(
+    totalMillis: Long,
+    remainingMillis: Long,
+    overdueMillis: Long,
+    stopwatch: Boolean,
+    stopwatchSegmentMillis: Long,
+): Long = if (stopwatch) {
+    stopwatchSegmentMillis.coerceAtLeast(0L)
+} else {
+    // 计划 − 剩余 = 已经走过；再加超时 = 实际持续
+    (totalMillis - remainingMillis + overdueMillis).coerceAtLeast(0L)
+}

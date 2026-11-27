@@ -20,6 +20,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -104,6 +109,25 @@ fun PieTimerView(
     var dragFraction by remember { mutableFloatStateOf(-1f) }
 
     val isOverdue = overdueMillis > 0L
+    /**
+     * 超时时的旋转指示角度（0..360，无限循环）。
+     *
+     * 为什么需要：到点后 `remainingMillis` 恒为 0，盘面停在"空"的状态一动不动 ——
+     * 看起来像卡死了。超时是"还在走"的状态，必须让用户一眼看出它没停。
+     * 所以画一段绕着圆环转的弧，转速 1.4 秒一圈（比 tick 快，但不刺眼）。
+     *
+     * 注意 transition 要**无条件创建**（Compose 规则：不能把它放在 if 里），
+     * 只是在没超时时不参与绘制 —— 否则超时那一刻会重建动画、出现跳帧。
+     */
+    val spin = rememberInfiniteTransition(label = "overdue-spin")
+    val spinAngle by spin.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1400, easing = LinearEasing),
+        ),
+        label = "overdue-spin-angle",
+    )
     val pieColor = if (isOverdue) ExtColors.Red else pickColor(
         remainingMillis = remainingMillis,
         totalMillis = totalMillis,
@@ -229,6 +253,29 @@ fun PieTimerView(
                     useCenter = true,
                     topLeft = sliceTopLeft,
                     size = sliceSize,
+                )
+            }
+
+            // ---- 2.5 超时：绕圆环转动的指示弧 ----
+            //
+            // 超时后 remaining 恒为 0，上面那段弧就不再变化、整个盘面一动不动。
+            // 这里画一段短弧绕着圆环转，把"还在走"这个事实表达出来，
+            // 否则用户看到的是一张静止的图，分不清是"超时中"还是"卡住了"。
+            //
+            // 画在饼**外沿**（半径略大于饼半径、用 Stroke 描边），
+            // 不盖住已经填满的红色扇形，也不和中央的 +MM:SS 抢注意力。
+            if (isOverdue) {
+                val ringRadius = pieRadius * 1.04f
+                val strokeWidth = (diameter * 0.035f).coerceAtLeast(2f)
+                drawArc(
+                    color = pieColor,
+                    startAngle = spinAngle - 90f,
+                    // 46° 的一段：太短看不出方向，太长像"又填了一块饼"
+                    sweepAngle = 46f,
+                    useCenter = false,
+                    topLeft = Offset(center.x - ringRadius, center.y - ringRadius),
+                    size = Size(ringRadius * 2f, ringRadius * 2f),
+                    style = Stroke(width = strokeWidth, cap = StrokeCap.Round),
                 )
             }
 

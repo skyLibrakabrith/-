@@ -382,7 +382,14 @@ class TimerOverlayService : Service() {
                             totalMillis = rt.totalMillis,
                             running = rt.running,
                         )
-                        dial.label = OverlayDialView.labelFor(rt.remainingMillis)
+                        // 超时：让圆环转起来（与面板大盘同一个视觉语言）
+                        dial.overdue = rt.isOverdue
+                        // 超时时中央显示"已超时多久"，与面板一致；否则显示剩余
+                        dial.label = if (rt.isOverdue) {
+                            "+" + OverlayDialView.labelFor(rt.overdueMillis)
+                        } else {
+                            OverlayDialView.labelFor(rt.remainingMillis)
+                        }
                         dial.caption = rt.label ?: "未命名"
                         idx++
                     }
@@ -410,7 +417,13 @@ class TimerOverlayService : Service() {
                             totalMillis = rt.totalMillis,
                             running = rt.running,
                         )
-                        label = OverlayDialView.labelFor(rt.remainingMillis)
+                        // 与增量更新分支保持一致（两处必须同步，否则重建后表现不同）
+                        overdue = rt.isOverdue
+                        label = if (rt.isOverdue) {
+                            "+" + OverlayDialView.labelFor(rt.overdueMillis)
+                        } else {
+                            OverlayDialView.labelFor(rt.remainingMillis)
+                        }
                         caption = rt.label ?: "未命名"
                         layoutParams = LinearLayout.LayoutParams(dialSize, dialSize + (14 * dp).toInt())
                             .apply { if (c > 0) marginStart = gap }

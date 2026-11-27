@@ -21,6 +21,7 @@ import at.cwiesner.android.visualtimer.ext.domain.DeadlineCalculator
 import at.cwiesner.android.visualtimer.ext.domain.DeadlineRestore
 import at.cwiesner.android.visualtimer.ext.domain.PanelRunner
 import at.cwiesner.android.visualtimer.ext.domain.TimerRuntime
+import at.cwiesner.android.visualtimer.ext.domain.elapsedMillisForArchive
 import at.cwiesner.android.visualtimer.ext.service.AlertOverlayService
 import at.cwiesner.android.visualtimer.ext.service.TimerOverlayService
 import at.cwiesner.android.visualtimer.ext.settings.SettingsRepo
@@ -709,24 +710,56 @@ class ExtApplication : Application() {
         val dao = database.timerSessionDao()
         val timer = logCatching("archive-get-timer") { database.timerDao().get(rt.timerId) }
 
-        // 结束时刻：优先用「开始 + 总时长」推算，而不是 System.currentTimeMillis()。
+        // 结束时刻：用「开始 + 实际跑过的时长」推算，而不是 System.currentTimeMillis()。
         // 原因：tick 是 200ms 一拍，到点被检测到时会比真实终点晚最多 ~200ms；
-        // 用推算值能让归档里的区间和盘面上显示的总时长严格一致。
+        // 用推算值能让归档里的区间和盘面上显示的数字严格一致。
+        //
+        // **必须把超时算进去**：一个 5 分钟的倒计时如果到点后没有立刻被处理、
+        // 又跑了 3 分钟才停，那次计时实际持续了 8 分钟。
+        // 只记 5 分钟会让归档页显示"5 分钟"，而用户明明看着它超时了 3 分钟 ——
+        // 归档是"当时发生了什么"的事实记录，不能只记计划。
+        // plannedMillis 仍然存 rt.totalMillis（计划值），所以归档能同时给出
+        // "计划 5 分 / 实际 8 分"这个对比。
         val startedAt = rt.startedAt.takeIf { it > 0L } ?: System.currentTimeMillis()
-        val planned = if (rt.stopwatch) rt.remainingMillis else rt.totalMillis
-        val endedAt = (startedAt + planned).coerceAtLeast(startedAt)
+        // 实际走了多久（含超时）—— 算式收在 elapsedMillisForArchive 里，
+        // 与「结束」按钮那条路径共用，避免两边各算一份以后漂移。
+        val elapsed = elapsedMillisForArchive(
+            totalMillis = rt.totalMillis,
+            remainingMillis = rt.remainingMillis,
+            overdueMillis = rt.overdueMillis,
+            stopwatch = rt.stopwatch,
+            stopwatchSegmentMillis = rt.stopwatchSegmentMillis,
+        )
+        val endedAt = (startedAt + elapsed).coerceAtLeast(startedAt)
 
-        logCatching("archive-insert") {
-            dao.insert(
-                TimerSession(
-                    label = rt.label ?: timer?.label,
-                    startedAt = startedAt,
-                    endedAt = endedAt,
-                    plannedMillis = rt.totalMillis,
-                    kind = timer?.kind?.name ?: TimerKind.Countdown.name,
-                    completed = true,
-                ),
-            )
+        // **只在"这一轮计时真的结束了"时归档**：也就是它即将被移出面板（未固定）。
+        //
+        // 固定的计时器到点后并没有结束 —— 它转入超时继续走，盘面还在转
+        // （见 PieTimerView 的超时旋转弧），用户随时可能回来继续。
+        // 如果到期就归档一条，等用户之后取消固定再点「结束」，同一次计时会出现
+        // **两条**记录（到期一条 60s + 结束一条 110s），归档合计重复计算。
+        //
+        // 真机上确认过这个重复：同一个 startedAt 落了两行。
+        //
+        // 反过来，未固定 = 一次性计时，到点即结束，归档 + 移除一起做，
+        // 语义干净且只有一条记录。
+        //
+        // `timer == null` 说明计时器行已经被删了（用户直接删掉卡片），
+        // 这时也该留一条历史，否则那次计时凭空消失。
+        val willBeRemoved = timer == null || !timer.pinned
+        if (willBeRemoved) {
+            logCatching("archive-insert") {
+                dao.insert(
+                    TimerSession(
+                        label = rt.label ?: timer?.label,
+                        startedAt = startedAt,
+                        endedAt = endedAt,
+                        plannedMillis = rt.totalMillis,
+                        kind = timer?.kind?.name ?: TimerKind.Countdown.name,
+                        completed = true,
+                    ),
+                )
+            }
         }
 
         // 未固定的才移除

@@ -57,6 +57,7 @@ import at.cwiesner.android.visualtimer.ext.data.TimerGroup
 import at.cwiesner.android.visualtimer.ext.data.TimerItem
 import at.cwiesner.android.visualtimer.ext.data.TimerKind
 import at.cwiesner.android.visualtimer.ext.domain.DeadlineCalculator
+import at.cwiesner.android.visualtimer.ext.domain.elapsedMillisForArchive
 import at.cwiesner.android.visualtimer.ext.domain.DeadlineCreator
 import at.cwiesner.android.visualtimer.ext.domain.StepSequenceEngine
 import at.cwiesner.android.visualtimer.ext.domain.TimerRuntime
@@ -433,10 +434,18 @@ fun PanelsScreen(
     suspend fun archiveAndEndTimer(t: TimerItem) {
         val rt = runner.get(t.id)
         val now = System.currentTimeMillis()
-        val elapsed = when {
-            rt == null -> 0L
-            rt.stopwatch -> rt.stopwatchSegmentMillis
-            else -> (rt.totalMillis - rt.remainingMillis).coerceAtLeast(0L)
+        val elapsed = if (rt == null) {
+            0L
+        } else {
+            // 实际时长（含超时）。算式收在 elapsedMillisForArchive 里，
+            // 与「到点自动归档」那条路径共用。
+            elapsedMillisForArchive(
+                totalMillis = rt.totalMillis,
+                remainingMillis = rt.remainingMillis,
+                overdueMillis = rt.overdueMillis,
+                stopwatch = rt.stopwatch,
+                stopwatchSegmentMillis = rt.stopwatchSegmentMillis,
+            )
         }
         val startedAt = rt?.startedAt?.takeIf { it > 0L } ?: (now - elapsed).coerceAtLeast(0L)
         // 时长为 0（从没跑过就点结束）不写归档 —— 那不是"发生过一次计时"

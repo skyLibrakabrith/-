@@ -29,6 +29,20 @@ class OverlayDialView(context: Context) : View(context) {
             }
         }
 
+    /**
+     * 是否处于**超时**状态（倒计时走完后还在继续累加）。
+     *
+     * 超时后 `progress` 恒为 0，扇形不再变化 —— 画面上就是一潭死水，
+     * 分不清"超时中"还是"卡住了"。所以超时要额外画一段绕圆环转的弧。
+     */
+    var overdue: Boolean = false
+        set(value) {
+            if (field != value) {
+                field = value
+                invalidate()
+            }
+        }
+
     /** 扇形颜色。 */
     var arcColor: Int = COLOR_NORMAL
         set(value) {
@@ -79,7 +93,25 @@ class OverlayDialView(context: Context) : View(context) {
         textAlign = Paint.Align.CENTER
     }
 
+    private val spinPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE
+        style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.ROUND
+    }
+
     private val rect = RectF()
+
+    /**
+     * 超时旋转弧的角度由一个**时间驱动**的循环推算，而不是 Animator。
+     *
+     * 为什么不用 ValueAnimator：这个 View 会被 Service 反复创建/丢弃，
+     * Animator 需要在 onAttachedToWindow / onDetachedFromWindow 里配对启停，
+     * 漏一处就是内存泄漏或空转。用 `System.currentTimeMillis()` 算角度 +
+     * 每次 onDraw 里 `postInvalidateDelayed` 自驱动，没有生命周期要管，
+     * 而且 Service 不画的时候自然会停（不再 invalidate）。
+     */
+    private fun spinAngleDeg(): Float =
+        ((System.currentTimeMillis() % SPIN_PERIOD_MS).toFloat() / SPIN_PERIOD_MS) * 360f
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
         val size = (58 * density).toInt()
@@ -106,6 +138,18 @@ class OverlayDialView(context: Context) : View(context) {
             canvas.drawArc(rect, -90f, sweep, true, arcPaint)
         }
 
+        // 超时：绕外沿画一段转动的弧，表示"还在走"
+        if (overdue) {
+            val ringR = radius * 1.02f
+            rect.set(cx - ringR, cy - ringR, cx + ringR, cy + ringR)
+            spinPaint.color = arcColor
+            spinPaint.strokeWidth = (size * 0.06f).coerceAtLeast(1.5f * density)
+            canvas.drawArc(rect, spinAngleDeg() - 90f, 46f, false, spinPaint)
+        }
+
+        // 超时时自我驱动下一帧；不超时就不排，避免 Service 闲置时白耗电
+        if (overdue) postInvalidateDelayed(FRAME_MS)
+
         // 中央时间
         textPaint.textSize = 11f * density
         val metrics = textPaint.fontMetrics
@@ -126,6 +170,10 @@ class OverlayDialView(context: Context) : View(context) {
 
     companion object {
         private const val COLOR_TRACK = 0xFF1A1A1A.toInt()
+        /** 旋转一圈的周期，与面板大盘一致（1.4 秒）。 */
+        private const val SPIN_PERIOD_MS = 1400L
+        /** 超时的重绘间隔 ≈ 30fps。 */
+        private const val FRAME_MS = 33L
         /** 未设置弧色时的默认值（`arcColor` 的初始值）。 */
         val COLOR_NORMAL = 0xFF7C9EFF.toInt()
         private const val COLOR_CAPTION = 0xFF8A8A8A.toInt()
