@@ -126,17 +126,15 @@ class OverlayDialView(context: Context) : View(context) {
 
     companion object {
         private const val COLOR_TRACK = 0xFF1A1A1A.toInt()
+        /** 未设置弧色时的默认值（`arcColor` 的初始值）。 */
         val COLOR_NORMAL = 0xFF7C9EFF.toInt()
-        val COLOR_WARN = 0xFFFFC107.toInt()
-        val COLOR_DANGER = 0xFFF44336.toInt()
         private const val COLOR_CAPTION = 0xFF8A8A8A.toInt()
 
-        /** 按剩余比例挑颜色，与主界面同一套规则。 */
-        fun colorFor(progress: Float): Int = when {
-            progress > 0.5f -> COLOR_NORMAL
-            progress > 0.2f -> COLOR_WARN
-            else -> COLOR_DANGER
-        }
+        // 原来的 `colorFor(progress)` 已删除：
+        // 它按 progress 硬编码三档阈值取色，**完全不读设置里的变色模式** ——
+        // 用户报的正是「面板时钟配色应用到悬浮窗上」。
+        // 现在颜色由 `TimerOverlayService.pickOverlayColor` 调面板同一个
+        // `pickColor` 算出，这里不再保留第二套规则（两套规则必然漂移）。
 
         /** 圆盘中央的紧凑文本：`5:00` / `1:23`。 */
         fun labelFor(remainingMillis: Long): String =

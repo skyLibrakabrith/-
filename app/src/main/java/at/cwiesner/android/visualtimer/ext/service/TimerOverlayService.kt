@@ -13,6 +13,12 @@ import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.IBinder
 import android.provider.Settings
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.launch
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -22,6 +28,11 @@ import android.widget.TextView
 import androidx.core.app.NotificationCompat
 import at.cwiesner.android.visualtimer.ext.ExtApplication
 import at.cwiesner.android.visualtimer.ext.domain.TimerRuntime
+import at.cwiesner.android.visualtimer.ext.settings.ColorMode
+import at.cwiesner.android.visualtimer.ext.settings.ColorThreshold
+import at.cwiesner.android.visualtimer.ext.ui.ExtColors
+import at.cwiesner.android.visualtimer.ext.ui.wheel.pickColor
+import androidx.compose.ui.graphics.toArgb
 
 /**
  * 悬浮窗服务：在别的应用上层显示正在运行的计时器。
@@ -52,13 +63,101 @@ class TimerOverlayService : Service() {
     private val app: ExtApplication?
         get() = applicationContext as? ExtApplication
 
+    /**
+     * 悬浮窗配色配置，跟随设置页的「变色模式」。
+     *
+     * ## 为什么要把设置拷到字段里
+     *
+     * 悬浮窗是 `Service`，绘制发生在 `post { }` 的 View 层，没有 Composable 的
+     * `collectAsState` 可用。所以订阅一次设置、缓存成普通字段，
+     * 设置变化时刷新并重绘一次。
+     *
+     * ## 为什么不自己写一套取色
+     *
+     * `AGENTS.md` 明确记着："三种模式（阈值 / 等间隔 / 表盘比例）**全部**走同一条
+     * 红绿灯色带"。悬浮窗若各写一份，改一处就会和面板不一致 ——
+     * 用户报的正是「面板时钟配色应用到悬浮窗上」。
+     * 所以这里直接调面板用的同一个 `pickColor`，不复制逻辑。
+     */
+    private var colorMode: ColorMode = ColorMode.Fraction
+    private var thresholdMinutes: List<Long> = emptyList()
+    private var thresholdColors: List<androidx.compose.ui.graphics.Color> = emptyList()
+    private var intervalMinutes: Long = 5L
+    private var fractionDivisions: Int = 4
+
+    /** 最近一次渲染用的运行时列表；设置变化时用它重绘，不必等下一次 tick。 */
+    private var lastRuntimes: List<TimerRuntime> = emptyList()
+
+    private val settingsScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         createChannel()
+        observeColorSettings()
     }
+
+    /**
+     * 订阅设置里的配色项，变化时更新字段并重绘悬浮窗。
+     *
+     * 用 `combine` 而不是四个独立 collect：分开订阅会在用户改一项时
+     * 触发多次无谓重绘。
+     */
+    private fun observeColorSettings() {
+        val a = app ?: return
+        settingsScope.launch {
+            combine(
+                a.settings.colorMode,
+                a.settings.thresholds,
+                a.settings.intervalMinutes,
+                a.settings.fractionDivisions,
+            ) { mode, thresholds, interval, divisions ->
+                Quad(mode, thresholds, interval, divisions)
+            }.collect { q ->
+                colorMode = q.mode
+                thresholdMinutes = q.thresholds.map { it.minutesLeft }
+                // 阈值颜色来自固定的红绿灯色带（trafficStepColor 只依赖静态常量），
+                // 所以可以在 Service 里安全取色，不依赖 composition。
+                thresholdColors = q.thresholds.map {
+                    ExtColors.trafficStepColor(it.paletteIndex, 4)
+                }
+                intervalMinutes = q.interval
+                fractionDivisions = q.divisions
+                // 立刻按新配色重绘，不等下一次 tick
+                if (lastRuntimes.isNotEmpty()) mainHandlerUpdate(lastRuntimes)
+            }
+        }
+    }
+
+    private data class Quad(
+        val mode: ColorMode,
+        val thresholds: List<ColorThreshold>,
+        val interval: Long,
+        val divisions: Int,
+    )
+
+    /**
+     * 按设置的变色模式算悬浮窗颜色。
+     *
+     * 直接复用面板的 `pickColor`（`ui/wheel/WheelTimerView.kt`）——
+     * 面板和悬浮窗必须是同一套配色，否则用户一眼就能看出不一致。
+     */
+    private fun pickOverlayColor(
+        remainingMillis: Long,
+        totalMillis: Long,
+        running: Boolean,
+    ): Int = pickColor(
+        remainingMillis = remainingMillis,
+        totalMillis = totalMillis,
+        running = running,
+        mode = colorMode,
+        thresholdMinutes = thresholdMinutes,
+        thresholdColors = thresholdColors,
+        intervalMinutes = intervalMinutes,
+        fractionDivisions = fractionDivisions,
+    ).toArgb()
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
@@ -80,6 +179,8 @@ class TimerOverlayService : Service() {
     }
 
     override fun onDestroy() {
+        // 不停这个协程会一直挂着设置订阅，Service 重建后重复订阅
+        settingsScope.cancel()
         runningFlag = false
         updateThread?.interrupt()
         updateThread = null
@@ -240,6 +341,8 @@ class TimerOverlayService : Service() {
      * 实心扇形 + 中央时间 + 下方名称。最多 6 个，两行三列。
      */
     private fun mainHandlerUpdate(list: List<TimerRuntime>) {
+        // 记住这一批：设置变化时要按新配色重绘同一批计时器
+        lastRuntimes = list
         val dp = resources.displayMetrics.density
         container?.post {
             val box = container ?: return@post
@@ -273,7 +376,12 @@ class TimerOverlayService : Service() {
                         dial.progress = if (rt.totalMillis > 0)
                             (rt.remainingMillis.toFloat() / rt.totalMillis).coerceIn(0f, 1f)
                         else 0f
-                        dial.arcColor = OverlayDialView.colorFor(dial.progress)
+                        // 按设置的变色模式取色（与面板同一套 pickColor）
+                        dial.arcColor = pickOverlayColor(
+                            remainingMillis = rt.remainingMillis,
+                            totalMillis = rt.totalMillis,
+                            running = rt.running,
+                        )
                         dial.label = OverlayDialView.labelFor(rt.remainingMillis)
                         dial.caption = rt.label ?: "未命名"
                         idx++
@@ -296,7 +404,12 @@ class TimerOverlayService : Service() {
                         progress = if (rt.totalMillis > 0)
                             (rt.remainingMillis.toFloat() / rt.totalMillis).coerceIn(0f, 1f)
                         else 0f
-                        arcColor = OverlayDialView.colorFor(progress)
+                        // 按设置的变色模式取色（与面板同一套 pickColor）
+                        arcColor = pickOverlayColor(
+                            remainingMillis = rt.remainingMillis,
+                            totalMillis = rt.totalMillis,
+                            running = rt.running,
+                        )
                         label = OverlayDialView.labelFor(rt.remainingMillis)
                         caption = rt.label ?: "未命名"
                         layoutParams = LinearLayout.LayoutParams(dialSize, dialSize + (14 * dp).toInt())
