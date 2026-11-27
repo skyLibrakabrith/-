@@ -1,6 +1,7 @@
 package at.cwiesner.android.visualtimer.ext.ui.panels
 
 import android.util.Log
+import at.cwiesner.android.visualtimer.ext.panels.rememberPanelState
 import android.widget.Toast
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
@@ -31,19 +32,16 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import at.cwiesner.android.visualtimer.ext.ExtApplication
 import at.cwiesner.android.visualtimer.ext.data.TimerSession
 import at.cwiesner.android.visualtimer.ext.data.saveAndGetId
 import at.cwiesner.android.visualtimer.ext.data.AlertProfile
@@ -60,7 +58,6 @@ import at.cwiesner.android.visualtimer.ext.domain.DeadlineCalculator
 import at.cwiesner.android.visualtimer.ext.domain.elapsedMillisForArchive
 import at.cwiesner.android.visualtimer.ext.domain.DeadlineCreator
 import at.cwiesner.android.visualtimer.ext.domain.StepSequenceEngine
-import at.cwiesner.android.visualtimer.ext.domain.TimerRuntime
 import at.cwiesner.android.visualtimer.ext.ui.ExtColors
 import at.cwiesner.android.visualtimer.ext.ui.common.AiCompileDialog
 import at.cwiesner.android.visualtimer.ext.ui.common.AiSplitDialog
@@ -69,7 +66,6 @@ import at.cwiesner.android.visualtimer.ext.ui.common.ConfirmDeleteDialog
 import at.cwiesner.android.visualtimer.ext.ui.sequences.SequenceEditorScreen
 import at.cwiesner.android.visualtimer.ext.ui.sequences.SequenceFocusScreen
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
@@ -116,31 +112,35 @@ fun PanelsScreen(
     onActionConsumed: () -> Unit = {},
 ) {
     val context = LocalContext.current
-    val app = context.applicationContext as ExtApplication
-    val db = app.database
-    val scope = rememberCoroutineScope()
-    // Application 持有：切标签 / 回桌面都不会丢倒计时
-    val runner = app.panelRunner
-    val settings = app.settings   // 共享 + 预热，避免切标签时先画默认值
 
-    val thresholds by settings.thresholds.collectAsState(initial = emptyList())
-    val colorMode by settings.colorMode.collectAsState(
-        initial = at.cwiesner.android.visualtimer.ext.settings.ColorMode.Fraction,
-    )
-    val intervalMinutes by settings.intervalMinutes.collectAsState(initial = 5L)
-    val fractionDivisions by settings.fractionDivisions.collectAsState(initial = 4)
-    val gridColumns by settings.gridColumns.collectAsState(initial = 2)
+    // ---- 面板页的全部数据都来自 PanelState ----
+    //
+    // 这里原来有约 170 行自己的 DAO 订阅 / 设置订阅 / 派生表计算，
+    // 与 `PanelState.kt` 里那份逐行重复（那份曾经零调用）。
+    // 现在只保留这一个入口，数据从哪来只在一处定义。
+    //
+    // 下面这些局部别名是为了让本文件里 300 多处引用不用全改成 `state.x` ——
+    // 它们**不是**新的订阅，只是同一个不可变值的另一个名字；
+    // 删掉任何一行都不会改变行为，改成 `state.x` 也一样。
+    val state = rememberPanelState()
+    val app = state.app
+    val db = state.db
+    val scope = state.scope
+    val runner = state.runner
+    val settings = state.settings
 
-    val panels by remember { db.panelDao().observeAll() }
-        .collectAsState(initial = emptyList<Panel>())
+    val colorMode = state.colorMode
+    val intervalMinutes = state.intervalMinutes
+    val fractionDivisions = state.fractionDivisions
+    val gridColumns = state.gridColumns
 
-    var selectedPanel by remember { mutableIntStateOf(0) }
-    val safeIndex = selectedPanel.coerceIn(0, (panels.size - 1).coerceAtLeast(0))
-    val currentPanel = panels.getOrNull(safeIndex)
+    val panels = state.panels
+    val safeIndex = state.safeIndex
+    val currentPanel = state.currentPanel
 
-    val timers by remember(currentPanel?.id) {
-        currentPanel?.let { db.panelDao().observePanelTimers(it.id) } ?: flowOf(emptyList())
-    }.collectAsState(initial = emptyList<TimerItem>())
+    val timers = state.timers
+    val thresholdMinutes = state.thresholdMinutes
+    val thresholdColors = state.thresholdColors
 
     var showNewPanel by remember { mutableStateOf(false) }
     var showPanelEditor by remember { mutableStateOf(false) }
@@ -263,64 +263,20 @@ fun PanelsScreen(
         }
     }
 
-    val allTimers by remember { db.timerDao().observeAll() }
-        .collectAsState(initial = emptyList<TimerItem>())
-    val allRefs by remember { db.panelDao().observeAllRefs() }
-        .collectAsState(initial = emptyList<PanelTimerRef>())
-
-    val groups by remember(currentPanel?.id) {
-        currentPanel?.let { db.groupDao().observeGroups(it.id) } ?: flowOf(emptyList())
-    }.collectAsState(initial = emptyList<TimerGroup>())
-    val allGroupMembers by remember { db.groupDao().observeAllMembers() }
-        .collectAsState(initial = emptyList<GroupMember>())
-    val groupMembersMap = remember(allGroupMembers) {
-        allGroupMembers.groupBy { it.groupId }.mapValues { (_, list) ->
-            list.sortedBy { it.order }.map { it.timerId }
-        }
-    }
-
-    val alertProfiles by app.alertProfiles
-        .collectAsState(initial = emptyList<AlertProfile>())
-
-    val allSequences by remember { db.sequenceDao().observeAll() }
-        .collectAsState(initial = emptyList<StepSequence>())
-    val sequencePanelMap = remember(allSequences) {
-        allSequences.associate { it.id to it.panelId }
-    }
-    val timerOwnerGroup = remember(allGroupMembers) {
-        allGroupMembers.associate { it.timerId to it.groupId }
-    }
-
-    val panelSequences by remember(currentPanel?.id) {
-        currentPanel?.let { db.sequenceDao().observeByPanel(it.id) } ?: flowOf(emptyList())
-    }.collectAsState(initial = emptyList<StepSequence>())
-
-    // 当前面板的成员计时器 id（编辑器回填勾选状态用）
-    val memberIds = remember(allRefs, currentPanel?.id) {
-        if (currentPanel == null) emptySet()
-        else allRefs.filter { it.panelId == currentPanel.id }.map { it.timerId }.toSet()
-    }
-
-    val groupedTimerIds = remember(allGroupMembers) {
-        allGroupMembers.map { it.timerId }.toSet()
-    }
-
-    // 跨类型统一列表：序列 / 组 / 未成组计时器一起参与排序与渲染
-    val gridEntries: List<PanelEntry> = remember(
-        panelSequences, groups, timers, groupedTimerIds,
-    ) {
-        val list = mutableListOf<PanelEntry>()
-        panelSequences.forEach {
-            list += PanelEntry(EntryKind.Sequence, it.id, it.name, it.sortOrder)
-        }
-        groups.forEach { g ->
-            list += PanelEntry(EntryKind.Group, g.id, g.name, g.order)
-        }
-        timers.filter { it.id !in groupedTimerIds }.forEach { t ->
-            list += PanelEntry(EntryKind.Timer, t.id, t.label ?: "未命名", t.position)
-        }
-        list.sortedBy { it.order }
-    }
+    // 以下数据同样来自 PanelState（原来是本文件自己订阅 DAO 的第二份）
+    val allTimers = state.allTimers
+    val allRefs = state.allRefs
+    val groups = state.groups
+    val allGroupMembers = state.allGroupMembers
+    val groupMembersMap = state.groupMembersMap
+    val alertProfiles = state.alertProfiles
+    val allSequences = state.allSequences
+    val sequencePanelMap = state.sequencePanelMap
+    val timerOwnerGroup = state.timerOwnerGroup
+    val panelSequences = state.panelSequences
+    val memberIds = state.memberIds
+    val groupedTimerIds = state.groupedTimerIds
+    val gridEntries = state.gridEntries
 
     fun toast(msg: String) {
         Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
@@ -509,75 +465,15 @@ fun PanelsScreen(
         }
     }
 
-    /**
-     * 把拖拽后的新顺序落库。
-     *
-     * 三张表各有自己的 order 字段，统一按拍平后的下标重编号，
-     * 这样序列 / 组 / 计时器可以互相穿插排序。
-     */
-    fun persistOrder(ordered: List<PanelEntry>) {
-        scope.launch {
-            ordered.forEachIndexed { idx, entry ->
-                when (entry.kind) {
-                    EntryKind.Sequence ->
-                        allSequences.firstOrNull { it.id == entry.refId }?.let { sq ->
-                            db.sequenceDao().upsert(sq.copy(sortOrder = idx))
-                        }
-                    EntryKind.Group ->
-                        groups.firstOrNull { it.id == entry.refId }?.let { g ->
-                            db.groupDao().upsertGroup(g.copy(order = idx))
-                        }
-                    EntryKind.Timer ->
-                        timers.firstOrNull { it.id == entry.refId }?.let { t ->
-                            db.timerDao().upsert(t.copy(position = idx))
-                        }
-                }
-            }
-            toast("顺序已保存")
-        }
-    }
 
-    val enginePhase by app.sequenceEngine.phase.collectAsState()
-    val engineActiveId = app.sequenceEngine.activeSequenceId
-
-    var stepsBySequence by remember { mutableStateOf<Map<Long, List<Step>>>(emptyMap()) }
-    // 步骤内容的刷新信号。
-    //
-    // 为什么需要：`LaunchedEffect(panelSequences)` 只在**序列列表**变化时重跑。
-    // 拆解 / 改步骤只往 `steps` 表里写行，`panelSequences` 本身没变 ——
-    // 于是回到面板时拿到的还是旧 map，表现为「拆解完回面板，阶段是旧的/不完整」。
-    // 任何写了 steps 的地方都把版本号 +1，这里跟着重读。
-    var stepsVersion by remember { mutableIntStateOf(0) }
-    LaunchedEffect(panelSequences, stepsVersion) {
-        val map = mutableMapOf<Long, List<Step>>()
-        panelSequences.forEach { sq ->
-            map[sq.id] = runCatching { db.sequenceDao().steps(sq.id) }.getOrDefault(emptyList())
-        }
-        stepsBySequence = map
-    }
-
-    val runtimeMap by runner.runtimes.collectAsState()
-    val runtimes: List<TimerRuntime> = runtimeMap.values.sortedBy { it.timerId }
+    // 序列引擎与运行时（同样来自 PanelState）
+    val enginePhase = state.enginePhase
+    val engineActiveId = state.engineActiveId
+    val stepsBySequence = state.stepsBySequence
+    val runtimeMap = state.runtimeMap
+    val runtimes = state.runtimes
     val runtimeById = runtimeMap
-
-    val thresholdMinutes = remember(thresholds) { thresholds.map { it.minutesLeft } }
-    val thresholdColors = remember(thresholds) {
-        thresholds.map {
-            ExtColors.Palette[it.paletteIndex.coerceIn(0, ExtColors.Palette.size - 1)]
-        }
-    }
-
-    var runningCountByPanel by remember { mutableStateOf<Map<Long, Int>>(emptyMap()) }
-    LaunchedEffect(runtimeMap, panels) {
-        val map = mutableMapOf<Long, Int>()
-        for (p in panels) {
-            val ids = runCatching { db.panelDao().refsOf(p.id).map { it.timerId } }
-                .getOrDefault(emptyList())
-            val n = ids.count { id -> runtimeMap[id]?.running == true }
-            if (n > 0) map[p.id] = n
-        }
-        runningCountByPanel = map
-    }
+    val runningCountByPanel = state.runningCountByPanel
 
     // ---- 序列编辑（长按序列块进入）：就地渲染全屏编辑器 ----
     val editingSeq = editingSequenceId?.let { sid ->
@@ -587,7 +483,7 @@ fun PanelsScreen(
         SequenceEditorScreen(
             sequence = editingSeq,
             steps = stepsBySequence[editingSeq.id].orEmpty(),
-            onDismiss = { editingSequenceId = null; stepsVersion++ },
+            onDismiss = { editingSequenceId = null; state.refreshSteps() },
             onSave = { name, timeout, stepDrafts ->
                 scope.launch {
                     // 用 saveAndGetId 而不是裸 upsert：Room 的 @Upsert 在
@@ -618,7 +514,7 @@ fun PanelsScreen(
                     )
                     editingSequenceId = null
                     // 重读步骤，否则退回面板时卡片上的阶段数/总时长是旧的
-                    stepsVersion++
+                    state.refreshSteps()
                     toast("序列「" + name + "」已保存，" + stepDrafts.size + " 个阶段")
                 }
             },
@@ -670,7 +566,7 @@ fun PanelsScreen(
                         panels.forEachIndexed { index, panel ->
                             Tab(
                                 selected = index == safeIndex,
-                                onClick = { selectedPanel = index; selectedIds = emptySet() },
+                                onClick = { state.setSelectedPanel(index); selectedIds = emptySet() },
                                 text = {
                                     val active = runningCountByPanel[panel.id] ?: 0
                                     // 长按面板名 → 重命名。
@@ -689,7 +585,7 @@ fun PanelsScreen(
                                     Text(
                                         text = if (active > 0) "${panel.name} ·$active" else panel.name,
                                         modifier = Modifier.combinedClickable(
-                                            onClick = { selectedPanel = index; selectedIds = emptySet() },
+                                            onClick = { state.setSelectedPanel(index); selectedIds = emptySet() },
                                             onLongClick = { renamingPanel = panel },
                                         ),
                                     )
@@ -959,7 +855,10 @@ fun PanelsScreen(
                         onDragEnd = {
                             // 松手才落库：把新顺序按类型写回各自 order 字段
                             orderOverride?.let { ordered ->
-                                persistOrder(ordered)
+                                // 落库逻辑在 PanelState.persistOrder 里（与界面无关的纯数据操作）。
+                                // toast 留在调用点：PanelState 不该知道"拖完要提示一句"这种事。
+                                state.persistOrder(ordered)
+                                toast("顺序已保存")
                                 orderOverride = null
                             }
                         },
@@ -1157,20 +1056,20 @@ fun PanelsScreen(
             onDismiss = { showPanelManager = false },
             onOpen = { opened ->
                 val idx = panels.indexOfFirst { it.id == opened.id }
-                if (idx >= 0) selectedPanel = idx
+                if (idx >= 0) state.setSelectedPanel(idx)
                 showPanelManager = false
             },
             onEdit = { target ->
                 // 从管理列表直接进该面板的编辑器
                 val idx = panels.indexOfFirst { it.id == target.id }
-                if (idx >= 0) selectedPanel = idx
+                if (idx >= 0) state.setSelectedPanel(idx)
                 showPanelManager = false
                 showPanelEditor = true
             },
             onCreate = { name ->
                 scope.launch {
                     db.panelDao().upsert(Panel(name = name, sortOrder = panels.size))
-                    selectedPanel = panels.size
+                    state.setSelectedPanel(panels.size)
                     showPanelManager = false
                     toast("面板「" + name + "」已创建")
                 }
@@ -1186,7 +1085,7 @@ fun PanelsScreen(
                     // 必须级联：只删 panels 行会残留 timer_groups / group_members /
                     // panel_timers，让属于这些组的计时器从网格里凭空消失（见函数注释）
                     deletePanelCascade(target.id)
-                    selectedPanel = 0
+                    state.setSelectedPanel(0)
                     toast("面板「" + target.name + "」已删除")
                 }
             },
@@ -1206,7 +1105,7 @@ fun PanelsScreen(
                     db.panelDao().upsertRefs(
                         listOf(PanelTimerRef(panelId = panelId, timerId = timerId, order = 0)),
                     )
-                    selectedPanel = panels.size
+                    state.setSelectedPanel(panels.size)
                     toast("面板「$name」已创建")
                 }
             },
@@ -1327,7 +1226,7 @@ fun PanelsScreen(
                     deleteTimerRows(splitTarget.id, removeRefPanelId = pid)
                     selectedIds = emptySet()
                     // 让 stepsBySequence 重读，否则返回面板时拿到的是旧 map
-                    stepsVersion++
+                    state.refreshSteps()
                     toast("已拆成 ${steps.size} 阶段的序列")
                     editingSequenceId = seqId
                 }
@@ -1399,7 +1298,7 @@ fun PanelsScreen(
                             // 原计时器被序列取代
                             chosen.forEach { t -> deleteTimerRows(t.id, removeRefPanelId = pid) }
                             selectedIds = emptySet()
-                            stepsVersion++
+                            state.refreshSteps()
                             toast("已合并 ${chosen.size} 个阶段")
                             editingSequenceId = seqId
                         }
@@ -1483,7 +1382,7 @@ fun PanelsScreen(
                 scope.launch {
                     // 与「面板管理」里的删除走同一条级联路径
                     deletePanelCascade(currentPanel.id)
-                    selectedPanel = 0
+                    state.setSelectedPanel(0)
                     toast("面板已删除")
                 }
             },

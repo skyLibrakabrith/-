@@ -105,7 +105,7 @@ app/src/main/java/at/cwiesner/android/visualtimer/ext/
 ├── service/              悬浮窗、告警悬浮窗、前台服务、开机恢复
 ├── io/                   导入导出（BackupFormat 定义 schema）
 ├── settings/SettingsRepo.kt  DataStore 设置项
-├── panels/PanelState.kt  ⚠️ rememberPanelState() 零调用，内容被逐行复制在 PanelsScreen 里（死代码）
+├── panels/PanelState.kt  **面板页的唯一数据源**：DAO 订阅 / 设置订阅 / 派生表 / 排序落库都在这里，PanelsScreen 只渲染
 └── ui/                   界面（panels/sequences/wheel/alerts/settings/home/duration/theme）
 ```
 
@@ -228,7 +228,7 @@ app/src/main/java/at/cwiesner/android/visualtimer/ext/
 | 1 | `fallbackToDestructiveMigrationOnDowngrade()` 会在**降级安装**时静默删库，且不抛异常 —— 上层那段提示接不住它 | `AppDatabase.kt:329` |
 | 2 | 拖拽排序**不支持边缘自动滚动**（格子超出屏幕后拖不到远处） | `DraggableGrid` |
 | 3 | 单击要等双击窗口（约 300ms）才响应；本版 Compose 的 `combinedClickable` **没有** `doubleClickTimeoutMillis` / `hasDoubleClick` 参数 | 手势 |
-| 4 | `PanelsScreen` 是 **1600+ 行**巨型 Composable；`PanelState.kt` 的 `rememberPanelState()` **零调用**（设计完整，但与 PanelsScreen 里的订阅段重复 —— 重构待做） | `ui/panels/PanelsScreen.kt`、`panels/PanelState.kt` |
+| 4 | `PanelsScreen` 仍是 **1467 行**巨型 Composable（订阅已全部搬进 `PanelState`，剩下的都是界面与副作用；后续可按分区继续拆文件） | `ui/panels/PanelsScreen.kt` |
 
 > 曾列在这里的「`tools/unused2.js` 的 `> 1` 漏报」**已经修好了**：
 > 实际检查逻辑是 `if (!unused.length) continue`（不管几个都报），
