@@ -189,7 +189,11 @@ fun TimerFocusScreen(
 
         // 底部有小轮盘时，主盘缩一点：竖屏 1.0 宽度 + 小轮盘 + 按钮行会超出一屏，
         // 表现为小轮盘被底栏裁掉（真机上确认过）。
-        val miniWheelVisible = !locked && !running
+        //
+        // **正计时没有"时长"这个概念**（它从 0 往上跑，没有终点），
+        // 所以既不该出现 ±5 小轮盘，也不该允许拖圆盘改时长 ——
+        // 之前这两样对正计时都还开着，用户拖一下就把「已计 12:30」改成了别的数字。
+        val miniWheelVisible = !locked && !running && !isStopwatchTimer
         Box(
             modifier = Modifier
                 .fillMaxWidth(
@@ -211,8 +215,9 @@ fun TimerFocusScreen(
                 totalMillis = if (isStopwatch) 0L else total,
                 remainingMillis = remain,
                 running = running,
-                onDurationChange = if (running || locked) null else { d -> draft = d },
-                onDurationCommit = if (running || locked) null else { d ->
+                // 正计时不给拖拽调时长（见上面 miniWheelVisible 的注释）
+                onDurationChange = if (running || locked || isStopwatchTimer) null else { d -> draft = d },
+                onDurationCommit = if (running || locked || isStopwatchTimer) null else { d ->
                     draft = d
                     onDurationCommit(d)
                 },
