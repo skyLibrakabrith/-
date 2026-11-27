@@ -1,6 +1,7 @@
 package at.cwiesner.android.visualtimer.ext.domain
 
 import at.cwiesner.android.visualtimer.ext.data.TimerItem
+import at.cwiesner.android.visualtimer.ext.data.TimerKind
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -189,6 +190,74 @@ class PanelRunner(private val scope: CoroutineScope) {
     fun stopTicking() {
         tickJob?.cancel()
         tickJob = null
+    }
+
+    /**
+     * 冷启动恢复：根据**持久化的计时器类型**重建运行时。
+     *
+     * ## 为什么需要它
+     *
+     * `_runtimes` 是纯内存的 StateFlow，进程一死就空了。
+     * 之前只有 DDL 有恢复路径（`ExtApplication.restoreDeadlines`），
+     * 普通倒计时和正计时**都没有** —— 退出重进后它们没有任何运行时，
+     * 卡片只能按 `TimerItem.durationMillis` 回退到"满格倒计时"的样子。
+     *
+     * 用户看到的就是「正计时退出重进以后变成了倒计时」：
+     * 正计时的 `durationMillis` 是 0，回退后显示成 0:00 的倒计时，
+     * 而且点一下会走 `start()`（从头开始），之前计的时长看起来全没了。
+     *
+     * ## 各类型怎么恢复
+     *
+     * - **Stopwatch（正计时）**：没有任何终点，只能从 0 重新累加。
+     *   这是**固有取舍** —— 时间只在内存里走，没有落库，
+     *   进程死了就不知道之前计了多久。至少它现在还是"正计时"，
+     *   不会伪装成倒计时。想要真正跨进程延续，得把已计时长定期写库。
+     * - **Countdown（普通倒计时）**：从完整时长重新开始。
+     *   同样因为剩余量没有落库，只能重来。
+     * - **Deadline**：**不在这里处理** —— 它的剩余量由 `deadlineEpochMillis`
+     *   决定，是**可精确恢复**的，走 `restoreDeadlines()` 那条更精细的路径
+     *   （还要处理提醒行、过期判定）。这里明确跳过，避免两处打架。
+     *
+     * ## 为什么标成 running = false
+     *
+     * 恢复出来的运行时是"准备好了但没跑"的状态：
+     * 正计时从 0、倒计时满格，用户点一下才开始。
+     * 如果直接 `running = true`，冷启动瞬间一堆计时器自己跑起来，
+     * 而用户根本没按过开始 —— 那比"没恢复"更糟。
+     *
+     * @param timers 数据库里的全部计时器
+     */
+    fun restoreInactive(timers: List<TimerItem>) {
+        val current = _runtimes.value
+        val add = LinkedHashMap<Long, TimerRuntime>()
+        for (t in timers) {
+            // DDL 走 restoreDeadlines；已存在运行时的（这次进程里已经跑着）不要覆盖
+            if (t.kind == TimerKind.Deadline) continue
+            if (current.containsKey(t.id)) continue
+            add[t.id] = when (t.kind) {
+                TimerKind.Stopwatch -> TimerRuntime(
+                    timerId = t.id,
+                    label = t.label,
+                    totalMillis = 0L,
+                    remainingMillis = 0L,
+                    running = false,
+                    deadlineEpochMillis = null,
+                    alertProfileId = t.alertProfileId,
+                    stopwatch = true,
+                )
+                else -> TimerRuntime(
+                    timerId = t.id,
+                    label = t.label,
+                    totalMillis = t.durationMillis,
+                    remainingMillis = t.durationMillis,
+                    running = false,
+                    deadlineEpochMillis = null,
+                    alertProfileId = t.alertProfileId,
+                )
+            }
+        }
+        if (add.isEmpty()) return
+        _runtimes.value = current + add
     }
 
     fun snapshot(): List<TimerRuntime> =

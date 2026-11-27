@@ -181,6 +181,31 @@ class ExtApplication : Application() {
         // 恢复放在订阅之后，且要等那几个 launch 真正把 collect 挂上 ——
         // 见 restoreDeadlines 里那句 yield()。
         restoreDeadlines()
+        // 非 DDL 的计时器（普通倒计时 / 正计时）也要有运行时。
+        //
+        // 不恢复的话，`_runtimes` 里没有它们的条目，卡片只能按 durationMillis
+        // 回退成"满格倒计时"—— 正计时（durationMillis = 0）就会显示成 0:00 的倒计时，
+        // 用户看到的现象是「退出重进以后正计时变成了倒计时」。
+        //
+        // 放在 restoreDeadlines 之后：DDL 的恢复更精细（要处理提醒行、过期判定），
+        // 由它先跑；restoreInactive 里也显式跳过 Deadline，两者不会打架。
+        restoreInactiveTimers()
+    }
+
+    /**
+     * 给非 DDL 计时器补上"未运行"的运行时。
+     *
+     * 为什么单独一个方法而不是塞进 restoreDeadlines：那个方法的职责是
+     * 「恢复 DDL 的绝对截止时刻 + 提醒行」，逻辑已经很密；
+     * 这里的规则完全不同（不落库、只能重来），分开放更好读。
+     */
+    private fun restoreInactiveTimers() {
+        appScope.launch(Dispatchers.IO) {
+            logCatching("restore-inactive") {
+                val all = database.timerDao().observeAllOnce()
+                panelRunner.restoreInactive(all)
+            }
+        }
     }
 
     private fun observeFlashSetting() {

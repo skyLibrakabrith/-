@@ -78,6 +78,22 @@ internal fun completionLabel(s: TimerSession): String =
     if (s.completed) "按时到点" else "提前结束"
 
 /**
+ * 这条记录是否**跨越了午夜**：开始与结束不在同一个本地日期。
+ *
+ * ## 为什么单独抽出来
+ *
+ * 之前详情弹窗里写的是 `session.endedAt + 1L < dayEnd`，语义完全反了 ——
+ * 它问的是"这条记录是否在当天零点之前结束"，也就是**几乎所有正常记录**都成立。
+ * 结果每条详情都多出一行「完整时长」和一句
+ * "表盘上只画了落在这一天里的部分"（归档里没跨午夜的记录被记成跨午夜）。
+ *
+ * 抽成纯函数是为了能直接单测边界：23:59:59 结束不算跨午夜，
+ * 00:00:01 结束才算。
+ */
+internal fun crossesMidnight(s: TimerSession): Boolean =
+    ArchiveDates.localDateOf(s.startedAt) != ArchiveDates.localDateOf(s.endedAt)
+
+/**
  * 开始/结束时刻。
  *
  * 跨午夜的那一头（结束落在次日）要标出「次日」，否则同一条记录会显示成

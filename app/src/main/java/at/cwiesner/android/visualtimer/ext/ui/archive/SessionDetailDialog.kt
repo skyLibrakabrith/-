@@ -58,7 +58,9 @@ internal fun SessionDetailDialog(
 ) {
     val inDay = actualMillisInDay(session, dayStart, dayEnd)
     val full = actualFullMillis(session)
-    val crossesMidnight = session.endedAt + 1L < dayEnd
+    // 开始与结束是否不在同一个本地日期。判据抽在 ArchiveFormat.crossesMidnight 里，
+    // 有单测盯着（这个判断之前写反过：`endedAt + 1 < dayEnd` 让每条记录都显示跨午夜）。
+    val crosses = crossesMidnight(session)
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -97,7 +99,7 @@ internal fun SessionDetailDialog(
                 )
                 DetailRow("时长", describeDuration(inDay))
                 // 跨午夜时"当天只画了这一段"，必须说清楚，否则用户以为记录被截断了
-                if (crossesMidnight) {
+                if (crosses) {
                     DetailRow("完整时长", describeDuration(full))
                     Text(
                         text = "这条记录跨午夜，表盘上只画了落在这一天里的部分",
