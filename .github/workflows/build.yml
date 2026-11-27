@@ -42,9 +42,19 @@ jobs:
             echo "::warning::未配置 DEBUG_KEYSTORE_B64，本次 APK 的签名与上次不同，安装时可能需要先卸载"
             exit 0
           fi
-          mkdir -p ~/.android
-          printf '%s' "$DEBUG_KEYSTORE_B64" | base64 -d > ~/.android/debug.keystore
-          echo "已恢复固定 debug keystore（$(stat -c%s ~/.android/debug.keystore) 字节）"
+          # 放到**工作区内**的固定路径，而不是 ~/.android/debug.keystore。
+          #
+          # 为什么不放 ~/.android：AGP 的默认 debug 签名配置是"如果文件不存在或
+          # 内容不是它内置的那份就直接重新生成"，实测把正确 keystore 放进去后
+          # 打出来的 APK 证书依然是另一个指纹（2666 字节的 keystore 确实恢复了，
+          # 但签名用的不是它）。所以改成和本地构建**同一条路径**：
+          # 写 local.properties 让 build.gradle.kts 的 localDebug signingConfig 生效。
+          KEYSTORE_PATH="$GITHUB_WORKSPACE/ci-debug.keystore"
+          printf '%s' "$DEBUG_KEYSTORE_B64" | base64 -d > "$KEYSTORE_PATH"
+          echo "已恢复固定 debug keystore（$(stat -c%s "$KEYSTORE_PATH") 字节）"
+          # local.properties 一旦存在，AGP 就不再看 ANDROID_HOME —— sdk.dir 必须一起写
+          printf 'sdk.dir=%s\nvte.keystore.path=%s\n' "$ANDROID_HOME" "$KEYSTORE_PATH" > local.properties
+          echo "local.properties: $(cat local.properties)"
 
       - name: Build debug APK
         run: gradle :app:assembleDebug --no-daemon --stacktrace

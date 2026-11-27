@@ -17,3 +17,6 @@ __pycache__/
 
 # Kotlin 编译会话目录（Gradle 生成）
 .kotlin/
+
+# CI 临时恢复的签名文件（由 workflow 生成，绝不入库）
+ci-debug.keystore
