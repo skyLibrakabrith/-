@@ -9,14 +9,14 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
@@ -126,7 +126,6 @@ fun TimerFocusScreen(
                 indication = null,
                 onClick = onClose,
             )
-            .verticalScroll(rememberScrollState())
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -188,9 +187,21 @@ fun TimerFocusScreen(
             }
         }
 
+        // 底部有小轮盘时，主盘缩一点：竖屏 1.0 宽度 + 小轮盘 + 按钮行会超出一屏，
+        // 表现为小轮盘被底栏裁掉（真机上确认过）。
+        val miniWheelVisible = !locked && !running
         Box(
             modifier = Modifier
-                .fillMaxWidth(if (landscape) 0.62f else 1f)
+                .fillMaxWidth(
+                    when {
+                        landscape -> 0.62f
+                        // 0.62 是试出来的：0.80 / 0.72 时小轮盘下面的「重置/开始」
+                        // 都会被底栏裁掉（真机逐档试过）。竖屏本来也放不下
+                        // "满宽大盘 + 小轮盘 + 按钮行"三件套。
+                        miniWheelVisible -> 0.62f
+                        else -> 1f
+                    },
+                )
                 .aspectRatio(1f)
                 .padding(vertical = 4.dp),
             contentAlignment = Alignment.Center,
@@ -257,6 +268,66 @@ fun TimerFocusScreen(
             color = if (overdue) ExtColors.Red else ExtColors.TextDim,
         )
 
+        // ---- 小轮盘：全屏页的精细调时长入口 ----
+        //
+        // 为什么大轮盘拖起来不够：全屏那个盘占满宽度，拖动 1 分钟只移动几个像素，
+        // 想从 15 分调到 26 分得拖很长的弧；反过来想微调 30 秒又容易拖过头。
+        // 小轮盘直径小、同样的角度对应同样的分钟数但物理距离短，适合精调；
+        // 两侧的 ±按钮则用来一次跳一档，不用拖。
+        //
+        // 仅在**未锁定且未运行**时可用，与主盘保持一致：
+        // 运行中改时长语义不清（是改本轮还是下一轮？），DDL 的时长由截止时刻决定。
+        if (miniWheelVisible) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                MiniAdjustButton("−5") {
+                    val next = (draft - 5 * 60_000L).coerceAtLeast(60_000L)
+                    draft = next
+                    onDurationCommit(next)
+                }
+                Box(
+                    // 只给 size，不要再叠 weight：
+                    // `Row` 里 `.size(112.dp).weight(1f)` 会先被分配宽度、再被高度约束，
+                    // 结果是横向拉长、纵向被裁 —— 盘只剩上面半个（真机上确认过）。
+                    modifier = Modifier.size(88.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    PieTimerView(
+                        totalMillis = draft,
+                        remainingMillis = draft,
+                        running = false,
+                        onDurationChange = { d -> draft = d },
+                        onDurationCommit = { d ->
+                            draft = d
+                            onDurationCommit(d)
+                        },
+                        modifier = Modifier.fillMaxSize(),
+                        // 与主盘同档吸附，拖出来的值和主盘一致，不会出现 25:30 这种怪值
+                        maxMinutes = 60,
+                        stepMinutes = 0.5f,
+                        centerFontSize = 14f,
+                        showCenterText = true,
+                        innerDial = false,
+                        colorMode = colorMode,
+                        intervalMinutes = intervalMinutes,
+                        fractionDivisions = fractionDivisions,
+                        thresholdMinutes = thresholdMinutes,
+                        thresholdColors = thresholdColors,
+                    )
+                }
+                MiniAdjustButton("+5") {
+                    val next = (draft + 5 * 60_000L).coerceAtMost(60 * 60_000L)
+                    draft = next
+                    onDurationCommit(next)
+                }
+            }
+        }
+
         // DDL 没有重置/暂停，整排按钮都不出现
         if (!locked) {
             Row(
@@ -314,6 +385,26 @@ private fun InnerDialControl(
                 color = if (overdue) ExtColors.Red else ExtColors.TextPrimary,
             )
         }
+    }
+}
+
+/**
+ * 小轮盘两侧的 ±按钮。窄、竖排居中，不抢主盘视觉。
+ *
+ * 单独一个组件而不是复用 [PillButton]：PillButton 是"整行一半宽"的主操作按钮
+ * （重置 / 暂停），这里只要一个 48dp 的小方块，用 PillButton 会把行撑开。
+ */
+@Composable
+private fun RowScope.MiniAdjustButton(text: String, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .size(48.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(ExtColors.Surface)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(text, fontSize = 13.sp, color = ExtColors.Primary)
     }
 }
 
