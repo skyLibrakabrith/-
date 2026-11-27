@@ -92,10 +92,9 @@ fun SequenceEditorScreen(
         )
     }
     var showAddStep by remember { mutableStateOf(false) }
-    var showSplitDialog by remember { mutableStateOf(false) }
     // 要「再拆解」的那一条在 draft 里的下标；null = 没有正在拆的条目。
-    // 与 showSplitDialog（整体拆解、追加到末尾）分开两套状态，
-    // 因为两者语义不同：一个是"往序列里加东西"，一个是"把某一条换成几条"。
+    // 这是**条目上的 ✨**（把某一条换成几条），
+    // 与已删除的「整体拆解」按钮不同：那个是往末尾追加。
     var splitTargetIndex by remember(sequence.id) { mutableStateOf<Int?>(null) }
 
     Column(
@@ -151,11 +150,13 @@ fun SequenceEditorScreen(
                 )
             }
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                // Magic ToDo：把一段话拆成有序阶段，直接追加到草稿里
-                TextButton(onClick = { showSplitDialog = true }) {
-                    Icon(Icons.Filled.AutoAwesome, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Text("拆解")
-                }
+                // 这里原来还有一个「✨ 拆解」按钮（把一段话拆成阶段、追加到草稿末尾）。
+                // 已去掉：它与**列表视图**的「✨ 拆解」功能重复（都是"把一件事拆成阶段"），
+                // 用户在两处看到同名入口会以为是两回事。
+                //
+                // 保留下方每个阶段条目上的「✨」——那是**再拆解某一步**
+                // （把"写报告"拆成"查数据/画图/写正文"），把某一条换成几条，
+                // 语义与"追加"完全不同，不重复。
                 TextButton(onClick = { showAddStep = true }) {
                     Icon(Icons.Filled.Add, contentDescription = null)
                     Text("添加")
@@ -305,32 +306,11 @@ fun SequenceEditorScreen(
         )
     }
 
-    if (showSplitDialog) {
-        AiSplitDialog(
-            onDismiss = { showSplitDialog = false },
-            onApply = { splitSteps ->
-                showSplitDialog = false
-                // 追加而不是替换：用户可能已经手填了几步，直接覆盖等于毁了他的输入
-                draft = draft + splitSteps.map {
-                    StepDraft(
-                        label = it.title,
-                        durationMillis = it.minutes * 60_000L,
-                        difficulty = it.difficulty,
-                        context = it.context,
-                    )
-                }
-                // 序列名还是空的就顺手填上，省一次输入
-                if (name.isBlank()) name = splitSteps.firstOrNull()?.title ?: name
-            },
-        )
-    }
-
     // 再拆解某一条：拆完**替换**那一格，位置不变。
     //
-    // 与上面 showSplitDialog 的区别：
-    //   · showSplitDialog（「拆解」按钮）：把新东西**追加**到末尾，用于"还想加几步"
-    //   · 这里（条目上的 ✨）：把**某一条换成几条**，用于"这条太粗了，再细一点"
-    // 两者的 onApply 语义完全不同，所以没有合并。
+    // 这是序列编辑器里**唯一**的拆解入口（原来还有一个"整体拆解、追加到末尾"的按钮，
+    // 与列表视图的「✨ 拆解」功能重复，已删除）。
+    // 语义是"这条太粗了，再细一点"：把某一条换成几条，不是往末尾加。
     //
     // 用下标而不是条目对象来标识目标：StepDraft 是 data class，两个内容完全相同的
     // 条目会 equals，用它去找会删错行。
