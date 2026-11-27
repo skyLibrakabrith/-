@@ -174,6 +174,25 @@ suspend fun SequenceDao.saveAndGetId(seq: StepSequence): Long =
     resolveSavedSequenceId(seq.id, upsert(seq))
 
 @Dao
+interface RuntimeSnapshotDao {
+    @Query("SELECT * FROM runtime_snapshots")
+    suspend fun allOnce(): List<RuntimeSnapshot>
+
+    @Query("SELECT * FROM runtime_snapshots WHERE timerId = :timerId")
+    suspend fun byId(timerId: Long): RuntimeSnapshot?
+
+    @Upsert
+    suspend fun upsert(snapshot: RuntimeSnapshot)
+
+    @Query("DELETE FROM runtime_snapshots WHERE timerId = :timerId")
+    suspend fun deleteById(timerId: Long)
+
+    /** 清掉指向已删计时器的快照（启动时跑一次，见 ExtApplication 的恢复流程）。 */
+    @Query("DELETE FROM runtime_snapshots WHERE timerId NOT IN (SELECT id FROM timers)")
+    suspend fun deleteOrphans(): Int
+}
+
+@Dao
 interface AlertProfileDao {
     @Query("SELECT * FROM alert_profiles ORDER BY id ASC")
     fun observeAll(): Flow<List<AlertProfile>>
@@ -297,8 +316,9 @@ interface TimerSessionDao {
         GroupMember::class,
         DeadlineReminder::class,
         TimerSession::class,
+        RuntimeSnapshot::class,
     ],
-    version = 9,
+    version = 10,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -309,6 +329,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun groupDao(): GroupDao
     abstract fun deadlineReminderDao(): DeadlineReminderDao
     abstract fun timerSessionDao(): TimerSessionDao
+
+    abstract fun runtimeSnapshotDao(): RuntimeSnapshotDao
 
     companion object {
         @Volatile
@@ -458,6 +480,35 @@ abstract class AppDatabase : RoomDatabase() {
         }
 
         /**
+         * v9 → v10：新增运行时快照表 `runtime_snapshots`。
+         *
+         * 解决「所有卡片退出重进都丢失进度」—— 之前 `_runtimes` 纯内存，
+         * 进程一死就空，只有 DDL 能按绝对截止时刻恢复。
+         *
+         * 新表**不需要回填**：没有快照的计时器按老行为处理
+         * （从 `timers.durationMillis` / `TimerKind` 重建待命运行时）。
+         * 这是一个纯增量表，老数据完全不受影响。
+         *
+         * 注意 `timerId` 是**主键但不是外键**：项目一贯不建外键
+         * （避免级联删除误伤历史/快照），孤儿行由启动时的 `deleteOrphans()` 清。
+         */
+        private val MIGRATION_9_10 = object : androidx.room.migration.Migration(9, 10) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `runtime_snapshots` (" +
+                        "`timerId` INTEGER NOT NULL, " +
+                        "`remainingMillis` INTEGER NOT NULL, " +
+                        "`overdueMillis` INTEGER NOT NULL, " +
+                        "`running` INTEGER NOT NULL, " +
+                        "`startedAt` INTEGER NOT NULL, " +
+                        "`stopwatchBaseMillis` INTEGER NOT NULL, " +
+                        "`savedAt` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`timerId`))",
+                )
+            }
+        }
+
+        /**
          * 打开数据库。
          *
          * **刻意不用 `fallbackToDestructiveMigration()`**：那个兜底会在迁移写错、
@@ -485,6 +536,7 @@ abstract class AppDatabase : RoomDatabase() {
                     MIGRATION_6_7,
                     MIGRATION_7_8,
                     MIGRATION_8_9,
+                    MIGRATION_9_10,
                 )
                     .fallbackToDestructiveMigrationOnDowngrade()
                     .build()

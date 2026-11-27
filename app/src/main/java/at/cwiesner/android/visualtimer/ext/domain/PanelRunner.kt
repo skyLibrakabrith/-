@@ -142,6 +142,50 @@ class PanelRunner(private val scope: CoroutineScope) {
     private val leadMinutesOf = mutableMapOf<Long, List<Long>>()
 
     /**
+     * **运行时状态需要落盘**的信号流。
+     *
+     * ## 为什么需要
+     *
+     * `_runtimes` 纯内存，进程一死就空 —— 用户看到的是「所有卡片退出重进都丢失进度」。
+     * 把状态写进 `runtime_snapshots` 表才能在冷启动时接着走。
+     *
+     * ## 为什么用事件流
+     *
+     * 同 `pauseEvents`：`PanelRunner` 是纯 domain 层，**不持数据库引用**。
+     * 这里只发"该存了"的信号 + 快照数据，由 `ExtApplication` 订阅后写库。
+     *
+     * ## 为什么载荷是整批而不是单条
+     *
+     * tick 每次推进所有正在跑的计时器，一次性发出整张表比逐条发更省
+     * （订阅侧可以一次事务写多行）。
+     */
+    private val _snapshotRequests =
+        kotlinx.coroutines.flow.MutableSharedFlow<List<TimerRuntime>>(
+            // 1 够用：快照是"当前状态"而不是"事件序列"，中间帧丢了无所谓，
+            // 但要留 1 个缓冲避免 tick 恰好撞上订阅侧忙于写库时被丢弃。
+            extraBufferCapacity = 1,
+        )
+    val snapshotRequests: kotlinx.coroutines.flow.SharedFlow<List<TimerRuntime>> =
+        _snapshotRequests.asSharedFlow()
+
+    /** 上次发出快照请求的时刻，用于 tick 节流（避免每 200ms 写一次库）。 */
+    private var lastSnapshotAt = 0L
+
+    /** tick 里快照的节流间隔。2 秒足够精确，又不会把数据库写爆。 */
+    private val snapshotIntervalMillis = 2_000L
+
+    /**
+     * 立即请求写一次快照（不节流）。**状态刚发生变化时**用这个：
+     * start / stop / resume / reset / clear / setDuration —— 这些是关键边界，
+     * 不能等下一次节流窗口。
+     */
+    fun requestSnapshotNow(now: Long = System.currentTimeMillis()) {
+        lastSnapshotAt = now
+        _snapshotRequests.tryEmit(_runtimes.value.values.toList())
+    }
+
+
+    /**
      * **正计时被暂停**的事件流。
      *
      * ## 为什么需要
@@ -248,6 +292,28 @@ class PanelRunner(private val scope: CoroutineScope) {
     }
 
     /**
+     * 冷启动：把**从快照恢复出来的**运行时装进去。
+     *
+     * 与 [restoreInactive] 的区别：
+     * - `restoreInactive` 只能造"待命"状态（满格 / 0），因为手上没有历史进度
+     * - 这个方法接收**已经算好进度**的运行时（调用方读了 `runtime_snapshots`，
+     *   用 `computeRestoredProgress` 补算了离线流逝），所以能把进度接上
+     *
+     * 已有的运行时**不覆盖**：这次进程里可能已经跑着了（比如从通知点进来先触发了 start）。
+     *
+     * 装完立刻落一次快照，让"恢复后的状态"也成为新的基准 ——
+     * 否则下次启动会以更早的 `savedAt` 重新补算一遍离线时间，越算越离谱。
+     */
+    fun applyRestored(runtimes: List<TimerRuntime>) {
+        if (runtimes.isEmpty()) return
+        val current = _runtimes.value
+        val add = runtimes.filter { !current.containsKey(it.timerId) }.associateBy { it.timerId }
+        if (add.isEmpty()) return
+        _runtimes.value = current + add
+        requestSnapshotNow()
+    }
+
+    /**
      * 冷启动恢复：根据**持久化的计时器类型**重建运行时。
      *
      * ## 为什么需要它
@@ -337,6 +403,7 @@ class PanelRunner(private val scope: CoroutineScope) {
                 startedAt = System.currentTimeMillis(),
             )
             )
+        requestSnapshotNow()
     }
 
     /**
@@ -359,6 +426,7 @@ class PanelRunner(private val scope: CoroutineScope) {
                 startedAt = System.currentTimeMillis(),
             )
             )
+        requestSnapshotNow()
     }
 
     /**
@@ -394,6 +462,8 @@ class PanelRunner(private val scope: CoroutineScope) {
                 r.copy(running = true)
             }
             )
+        // 继续也是关键边界：立即落盘，保证"继续后马上杀进程"也不丢
+        requestSnapshotNow()
     }
 
     /** 以 DDL 方式开始：剩余时长 = 截止时刻 − 现在。 */
@@ -413,6 +483,7 @@ class PanelRunner(private val scope: CoroutineScope) {
                 startedAt = now,
             )
             )
+        requestSnapshotNow()
     }
 
     /** 每次 tick 推进所有正在跑的计时器。 */
@@ -471,6 +542,16 @@ class PanelRunner(private val scope: CoroutineScope) {
             }
         }
         if (changed) _runtimes.value = next
+
+        // 运行中的进度要定期落盘，否则进程被杀时最后一段就丢了。
+        //
+        // 节流 2 秒：tick 是 200ms 一拍，不节流会每 200ms 写一次库
+        // （10 个计时器就是 50 次/秒的写入，纯属浪费）。
+        // 节流的代价是"最多丢 2 秒进度"，对计时器场景完全够用。
+        if (now - lastSnapshotAt >= snapshotIntervalMillis) {
+            lastSnapshotAt = now
+            _snapshotRequests.tryEmit(next.values.toList())
+        }
     }
 
     fun stop(timerId: Long) {
@@ -488,6 +569,9 @@ class PanelRunner(private val scope: CoroutineScope) {
         if (wasRunning && r.stopwatch) {
             _pauseEvents.tryEmit(stopped)
         }
+        // 暂停是"状态变了"的关键边界，立即落盘，不节流：
+        // 用户很可能暂停完就杀进程，等 2 秒的节流窗口会丢掉这次进度。
+        requestSnapshotNow()
     }
 
     /**
@@ -570,6 +654,7 @@ class PanelRunner(private val scope: CoroutineScope) {
                 running = false,
             )
             )
+        requestSnapshotNow()
     }
 
     fun clear(timerId: Long) {
@@ -579,6 +664,8 @@ class PanelRunner(private val scope: CoroutineScope) {
         leadMinutesOf.remove(timerId)
         leadRowIdsOf.remove(timerId)
         _runtimes.value = _runtimes.value - timerId
+        // 运行时没了，快照也要跟着删（订阅侧会按"库里多出来的行"清理）
+        requestSnapshotNow()
     }
 
     fun clearAll() {

@@ -12,6 +12,9 @@ import at.cwiesner.android.visualtimer.ext.alarm.VibrationAlerter
 import at.cwiesner.android.visualtimer.ext.data.AlertProfile
 import at.cwiesner.android.visualtimer.ext.data.AppDatabase
 import at.cwiesner.android.visualtimer.ext.data.TimerKind
+import at.cwiesner.android.visualtimer.ext.data.RuntimeSnapshot
+import at.cwiesner.android.visualtimer.ext.data.TimerItem
+import at.cwiesner.android.visualtimer.ext.data.computeRestoredProgress
 import at.cwiesner.android.visualtimer.ext.data.TimerSession
 import at.cwiesner.android.visualtimer.ext.data.VibrationPresets
 import at.cwiesner.android.visualtimer.ext.domain.DeadlineCalculator
@@ -181,29 +184,33 @@ class ExtApplication : Application() {
         // 恢复放在订阅之后，且要等那几个 launch 真正把 collect 挂上 ——
         // 见 restoreDeadlines 里那句 yield()。
         restoreDeadlines()
-        // 非 DDL 的计时器（普通倒计时 / 正计时）也要有运行时。
+        // 非 DDL 的计时器按**快照**恢复进度（退出重进不丢进度），
+        // 没有快照的再补一个待命运行时。
         //
-        // 不恢复的话，`_runtimes` 里没有它们的条目，卡片只能按 durationMillis
-        // 回退成"满格倒计时"—— 正计时（durationMillis = 0）就会显示成 0:00 的倒计时，
-        // 用户看到的现象是「退出重进以后正计时变成了倒计时」。
-        //
-        // 放在 restoreDeadlines 之后：DDL 的恢复更精细（要处理提醒行、过期判定），
-        // 由它先跑；restoreInactive 里也显式跳过 Deadline，两者不会打架。
-        restoreInactiveTimers()
+        // 顺序要紧：
+        // 1. 先按快照恢复（能接上真实的剩余量 / 累计量）
+        // 2. 再给"没有快照的"补待命运行时（首次升级到 v10 的那批计时器就属于这种）
+        // 反过来的话 restoreInactive 会先塞一个满格的进去，
+        // 而 applyRestored 遇到已存在的条目会跳过 —— 快照就白读了。
+        restoreProgressAndInactive()
     }
 
     /**
-     * 给非 DDL 计时器补上"未运行"的运行时。
+     * 启动恢复：先按快照接进度，再给没快照的补待命运行时。
      *
-     * 为什么单独一个方法而不是塞进 restoreDeadlines：那个方法的职责是
-     * 「恢复 DDL 的绝对截止时刻 + 提醒行」，逻辑已经很密；
-     * 这里的规则完全不同（不落库、只能重来），分开放更好读。
+     * 合成一个 launch 是为了保证这两步的**顺序**：分成两个 `appScope.launch`
+     * 会并发跑，`restoreInactive` 可能抢在快照恢复之前塞进满格状态。
      */
-    private fun restoreInactiveTimers() {
+    private fun restoreProgressAndInactive() {
         appScope.launch(Dispatchers.IO) {
+            logCatching("restore-progress") { restoreProgressFromSnapshots() }
             logCatching("restore-inactive") {
                 val all = database.timerDao().observeAllOnce()
                 panelRunner.restoreInactive(all)
+            }
+            // 清掉指向已删计时器的快照
+            logCatching("restore-snapshot-orphans") {
+                database.runtimeSnapshotDao().deleteOrphans()
             }
         }
     }
@@ -545,6 +552,159 @@ class ExtApplication : Application() {
         }
     }
 
+    /**
+     * 把当前运行时表写进 `runtime_snapshots`。
+     *
+     * ## 为什么"整表覆盖"而不是逐条 upsert
+     *
+     * 快照记的是**当前状态**，不是事件流水。所以：
+     * 1. 先把表里多出来的行删掉（运行时已经 clear 掉的计时器）
+     * 2. 再把当前每一条 upsert 进去
+     *
+     * 分批做会留下"已删除计时器的陈旧快照"，下次冷启动会把一个不存在的东西恢复出来。
+     *
+     * @param runtimes 当前全部运行时（由 `PanelRunner.snapshotRequests` 提供）
+     */
+    private suspend fun persistRuntimes(runtimes: List<TimerRuntime>) {
+        val dao = database.runtimeSnapshotDao()
+        val now = System.currentTimeMillis()
+        val alive = runtimes.map { it.timerId }.toSet()
+        // 清掉不在运行时表里的陈旧快照
+        dao.allOnce().forEach { old ->
+            if (old.timerId !in alive) {
+                logCatching("snapshot-drop") { dao.deleteById(old.timerId) }
+            }
+        }
+        runtimes.forEach { rt ->
+            logCatching("snapshot-put") {
+                dao.upsert(
+                    RuntimeSnapshot(
+                        timerId = rt.timerId,
+                        remainingMillis = rt.remainingMillis,
+                        overdueMillis = rt.overdueMillis,
+                        running = rt.running,
+                        startedAt = rt.startedAt,
+                        stopwatchBaseMillis = rt.stopwatchBaseMillis,
+                        savedAt = now,
+                    ),
+                )
+            }
+        }
+    }
+
+    /**
+     * 冷启动：按快照恢复每个计时器的进度。
+     *
+     * ## 这是「退出重进不丢进度」的核心
+     *
+     * 之前 `_runtimes` 纯内存，进程一死就空；DDL 能靠绝对截止时刻恢复，
+     * 普通倒计时和正计时则彻底丢失（回满格 / 回 0）。
+     *
+     * ## 恢复规则
+     *
+     * 用 `computeRestoredProgress` 这个纯函数算，规则见它的注释：
+     * - **暂停态**：一秒不差原样恢复（离线时间不计）
+     * - **运行态 + 倒计时**：按 `savedAt` 补算离线期间流逝的时间，可能变成超时
+     * - **运行态 + 正计时**：累计时长继续往上加
+     *
+     * 恢复出来一律 `running = false`（待命）—— 冷启动瞬间让一堆计时器自己跑起来
+     * 而用户根本没按开始，比"没恢复"更糟。进度已经算进 remainingMillis，不会丢。
+     *
+     * ## 正计时额外动作
+     *
+     * 正计时"重新进入"意味着上一段计时实际结束了：先写一条归档，
+     * 再按 `pinned` 决定要不要清零（未固定=一次性计时，清零重来；固定=保留累计继续）。
+     */
+    private suspend fun restoreProgressFromSnapshots() {
+        val snapshots = logCatchingOr("restore-snapshots-read", emptyList<RuntimeSnapshot>()) {
+            database.runtimeSnapshotDao().allOnce()
+        }
+        if (snapshots.isEmpty()) return
+
+        val timers = logCatchingOr("restore-snapshots-timers", emptyList<TimerItem>()) {
+            database.timerDao().observeAllOnce()
+        }
+        val byId = timers.associateBy { it.id }
+        val now = System.currentTimeMillis()
+
+        // 快照对应的计时器已经被删了：顺手清掉，别留孤儿
+        snapshots.filter { it.timerId !in byId }.forEach {
+            logCatching("restore-snapshots-orphan") {
+                database.runtimeSnapshotDao().deleteById(it.timerId)
+            }
+        }
+
+        val restored = mutableListOf<TimerRuntime>()
+        snapshots.forEach { snap ->
+            val timer = byId[snap.timerId] ?: return@forEach
+            // DDL 由 restoreDeadlines 用绝对截止时刻精确恢复，这里不插手
+            if (timer.kind == TimerKind.Deadline) return@forEach
+
+            val stopwatch = timer.kind == TimerKind.Stopwatch
+            val total = if (stopwatch) 0L else timer.durationMillis
+            val offline = (now - snap.savedAt).coerceAtLeast(0L)
+            val progress = computeRestoredProgress(
+                remainingMillis = snap.remainingMillis,
+                overdueMillis = snap.overdueMillis,
+                totalMillis = total,
+                stopwatch = stopwatch,
+                running = snap.running,
+                offlineMillis = offline,
+            )
+
+            if (stopwatch) {
+                // 正计时"重新进入"：上一段算结束了，写归档
+                val segment = (progress.remainingMillis - snap.stopwatchBaseMillis).coerceAtLeast(0L)
+                if (segment >= 1000L && snap.startedAt > 0L) {
+                    logCatching("restore-stopwatch-archive") {
+                        database.timerSessionDao().insert(
+                            TimerSession(
+                                label = timer.label,
+                                startedAt = snap.startedAt,
+                                endedAt = snap.startedAt + segment,
+                                plannedMillis = segment,
+                                kind = TimerKind.Stopwatch.name,
+                                completed = true,
+                            ),
+                        )
+                    }
+                }
+                // 未固定 = 一次性计时，清零重来；固定 = 保留累计，接着走
+                val keep = timer.pinned
+                restored += TimerRuntime(
+                    timerId = timer.id,
+                    label = timer.label,
+                    totalMillis = 0L,
+                    remainingMillis = if (keep) progress.remainingMillis else 0L,
+                    running = false,
+                    deadlineEpochMillis = null,
+                    alertProfileId = timer.alertProfileId,
+                    stopwatch = true,
+                    startedAt = now,
+                    stopwatchBaseMillis = if (keep) progress.remainingMillis else 0L,
+                )
+            } else {
+                restored += TimerRuntime(
+                    timerId = timer.id,
+                    label = timer.label,
+                    totalMillis = total,
+                    remainingMillis = progress.remainingMillis.coerceAtMost(total),
+                    overdueMillis = progress.overdueMillis,
+                    running = false,
+                    deadlineEpochMillis = null,
+                    alertProfileId = timer.alertProfileId,
+                    startedAt = snap.startedAt.takeIf { it > 0L } ?: now,
+                )
+            }
+        }
+
+        if (restored.isNotEmpty()) {
+            logCatching("restore-snapshots-apply") {
+                panelRunner.applyRestored(restored)
+            }
+        }
+    }
+
     private suspend fun archiveAndMaybeRemove(rt: TimerRuntime) {
         val dao = database.timerSessionDao()
         val timer = logCatching("archive-get-timer") { database.timerDao().get(rt.timerId) }
@@ -632,6 +792,16 @@ class ExtApplication : Application() {
         appScope.launch {
             panelRunner.pauseEvents.collect { rt ->
                 archiveStopwatchPause(rt)
+            }
+        }
+
+        // 1.25) 运行时快照落盘
+        //
+        // 收「该存了」的信号，把整张运行时表写进 runtime_snapshots。
+        // 冷启动时 restoreProgressFromSnapshots 再读回来 —— 这样"退出重进不丢进度"。
+        appScope.launch(Dispatchers.IO) {
+            panelRunner.snapshotRequests.collect { runtimes ->
+                logCatching("snapshot-write") { persistRuntimes(runtimes) }
             }
         }
 
