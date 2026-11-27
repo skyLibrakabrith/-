@@ -44,10 +44,35 @@ data class TimerRuntime(
      * 因为用户问的是"那段时间我在做什么"，而不是"净计时多久"。
      */
     val startedAt: Long = 0L,
+    /**
+     * 正计时「本次继续」那一刻的累计时长基准（毫秒）。
+     *
+     * `remainingMillis` 对正计时是**从最初开始到现在的累计值**，会跨过多次暂停/继续。
+     * 但归档要按"每一段"记录，所以需要知道这一段是从哪个累计值起步的：
+     *
+     * ```
+     * 这一段的时长 = remainingMillis - stopwatchBaseMillis
+     * ```
+     *
+     * 由 [PanelRunner.resume] 在每次继续时刷新为当时的 `remainingMillis`。
+     * 倒计时用不到（恒为 0）。
+     */
+    val stopwatchBaseMillis: Long = 0L,
 ) {
     val progress: Float
         get() = if (totalMillis <= 0L) 0f
         else (remainingMillis.toFloat() / totalMillis).coerceIn(0f, 1f)
+
+    /**
+     * 正计时**这一段**（最近一次 start/resume 之后）的净计时时长。
+     *
+     * 和 [remainingMillis] 的区别：后者是累计值，跨过多次暂停/继续；
+     * 归档要按段记录，所以要用这个减掉上次继续时的基准。
+     * 倒计时返回 [remainingMillis] 的语义没有意义，调用方不该用它 —— 这里直接给 0。
+     */
+    val stopwatchSegmentMillis: Long
+        get() = if (!stopwatch) 0L
+        else (remainingMillis - stopwatchBaseMillis).coerceAtLeast(0L)
 
     /** 是否已经到过点。暂停后仍为 true —— 这是历史事实。 */
     val expired: Boolean
@@ -115,6 +140,36 @@ class PanelRunner(private val scope: CoroutineScope) {
 
     /** 计时器 id → 提前提醒分钟列表。由调用方在创建 / 从库里恢复时写入。 */
     private val leadMinutesOf = mutableMapOf<Long, List<Long>>()
+
+    /**
+     * **正计时被暂停**的事件流。
+     *
+     * ## 为什么需要
+     *
+     * 正计时永远不到点，所以它永远走不到 `_alerts` 那条「到点 → 写归档」的路径 ——
+     * 结果就是正计时**完全进不了归档**，用户在归档页看不到任何正计时记录。
+     *
+     * 而正计时唯一的"结束"方式就是用户主动按暂停，所以暂停才是最该落一条历史的时刻。
+     *
+     * ## 为什么用事件流而不是直接在这里写数据库
+     *
+     * `PanelRunner` 是纯 domain 层，手握的是 `StateFlow`，**不持数据库引用**
+     * （见 `leadRowIdsOf` 的注释："domain 层不碰数据库"）。
+     * 写归档需要 DAO，所以这里只发事件，由 `ExtApplication` 订阅后落库 ——
+     * 和 `alerts` / `leadAlerts` 走同一套模式。
+     *
+     * ## 载荷
+     *
+     * 发出的是**暂停那一刻的快照**（`running` 已置 false），
+     * 调用方拿 `startedAt` / `remainingMillis` 就能算出这段计时的区间与时长，
+     * 不需要再回查运行时。
+     */
+    private val _pauseEvents =
+        kotlinx.coroutines.flow.MutableSharedFlow<TimerRuntime>(
+            extraBufferCapacity = 16,
+        )
+    val pauseEvents: kotlinx.coroutines.flow.SharedFlow<TimerRuntime> =
+        _pauseEvents.asSharedFlow()
 
     fun setLeadMinutes(timerId: Long, minutes: List<Long>) {
         leadMinutesOf[timerId] = minutes.sortedDescending()
@@ -318,7 +373,27 @@ class PanelRunner(private val scope: CoroutineScope) {
         val r = _runtimes.value[timerId] ?: return
         // 继续时把提醒静音，避免震动一直响
         acknowledge(timerId)
-        _runtimes.value = _runtimes.value + (timerId to r.copy(running = true))
+        // 正计时继续：把 startedAt 挪到现在，并**记下此刻已累计的时长**。
+        //
+        // 为什么两件事都要做：
+        // - `startedAt` 不挪 → 下一次暂停写出的归档区间从最初起点开始，
+        //   和上一条完全重叠，且包含了根本没在计时的暂停期。
+        // - `stopwatchBaseMillis` 不记 → 下一次暂停算这一段时长时，
+        //   只能拿到 `remainingMillis`，那是**从开始到现在的累计值**（含之前的几段），
+        //   归档里每一段都会越来越大。
+        //
+        // 所以：这一段的时长 = `remainingMillis - stopwatchBaseMillis`。
+        _runtimes.value = _runtimes.value + (
+            timerId to if (r.stopwatch) {
+                r.copy(
+                    running = true,
+                    startedAt = System.currentTimeMillis(),
+                    stopwatchBaseMillis = r.remainingMillis,
+                )
+            } else {
+                r.copy(running = true)
+            }
+            )
     }
 
     /** 以 DDL 方式开始：剩余时长 = 截止时刻 − 现在。 */
@@ -400,7 +475,19 @@ class PanelRunner(private val scope: CoroutineScope) {
 
     fun stop(timerId: Long) {
         val r = _runtimes.value[timerId] ?: return
-        _runtimes.value = _runtimes.value + (timerId to r.copy(running = false))
+        // 已经是暂停态就别再发事件：否则重复点暂停会刷出多条一模一样的归档
+        val wasRunning = r.running
+        val stopped = r.copy(running = false)
+        _runtimes.value = _runtimes.value + (timerId to stopped)
+
+        // 正计时暂停 = 这一轮"结束"了（它永远不到点，走不到 alerts）。
+        // 用停止后的快照发事件，调用方据此写一条归档。
+        //
+        // 倒计时**不**在这里归档：它暂停后还能继续走完，到点时 alerts 会写，
+        // 提前暂停不该算"发生过一次完整计时"，否则归档会被半途暂停刷满。
+        if (wasRunning && r.stopwatch) {
+            _pauseEvents.tryEmit(stopped)
+        }
     }
 
     /**
