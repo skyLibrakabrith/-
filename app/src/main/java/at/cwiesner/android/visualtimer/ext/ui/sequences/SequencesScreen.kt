@@ -39,6 +39,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import at.cwiesner.android.visualtimer.ext.ExtApplication
+import at.cwiesner.android.visualtimer.ext.data.saveAndGetId
 import at.cwiesner.android.visualtimer.ext.data.Step
 import at.cwiesner.android.visualtimer.ext.data.StepSequence
 import at.cwiesner.android.visualtimer.ext.domain.DeadlineCalculator
@@ -229,23 +230,22 @@ fun SequencesScreen(modifier: Modifier = Modifier) {
                         } else {
                             editTarget.sortOrder
                         }
-                        val seqId = db.sequenceDao().upsert(
+                        // 用 saveAndGetId 拿到**可信**的 id。
+                        //
+                        // 原来这里是裸 upsert + "seqId <= 0 就放弃"的防御。
+                        // 但 Room 的 @Upsert 在**更新已有行**的分支本来就返回 -1
+                        // （这是它的既定行为，不是错误）—— 于是每次编辑已有序列
+                        // 都会命中那个防御，报「保存失败：数据库未返回有效 id」。
+                        // 而如果不防御直接往下写，就产生 sequenceId=-1 的孤儿步骤
+                        // （列表里显示"还没有阶段"）。
+                        // 两条路都不对。正确做法是不用 upsert 的返回值去当已有实体的 id。
+                        val seqId = db.sequenceDao().saveAndGetId(
                             editTarget.copy(
                                 name = name,
                                 timeoutMillis = timeout,
                                 sortOrder = keepSortOrder,
                             ),
                         )
-                        // @Upsert 在**不应该**返回负数的，但真机上抓到过 -1：
-                        //     steps: sequenceId = -1, label = 'step'
-                        // 于是这些步骤全成了谁都找不到的孤儿（列表里显示"还没有阶段"）。
-                        // 无论 -1 来自并发重复 upsert 还是别的原因，都不能拿它当外键继续写，
-                        // 否则数据静默损坏、而且看不出错。
-                        if (seqId <= 0L) {
-                            Log.e(TAG, "序列 upsert 返回了非法 id=$seqId，放弃写步骤")
-                            toastText("保存失败：数据库未返回有效 id，请重试")
-                            return@launch
-                        }
                         // 重建步骤：先删旧的再按新草稿写入。
                         // 必须用上面拿到的 seqId —— 用 editTarget.id 的话，新建时会往
                         // sequenceId = 0 写一批谁都找不到的孤儿步骤。

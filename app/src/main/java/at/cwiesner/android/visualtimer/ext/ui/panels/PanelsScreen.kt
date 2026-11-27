@@ -43,6 +43,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import at.cwiesner.android.visualtimer.ext.ExtApplication
+import at.cwiesner.android.visualtimer.ext.data.saveAndGetId
 import at.cwiesner.android.visualtimer.ext.data.AlertProfile
 import at.cwiesner.android.visualtimer.ext.data.GroupMember
 import at.cwiesner.android.visualtimer.ext.data.Panel
@@ -528,7 +529,10 @@ fun PanelsScreen(
             onDismiss = { editingSequenceId = null; stepsVersion++ },
             onSave = { name, timeout, stepDrafts ->
                 scope.launch {
-                    val seqId = db.sequenceDao().upsert(
+                    // 用 saveAndGetId 而不是裸 upsert：Room 的 @Upsert 在
+                    // "更新已有行"的分支返回 -1，拿它当 seqId 写步骤会产生
+                    // sequenceId=-1 的孤儿步骤（界面上表现为"阶段不见了"）。
+                    val seqId = db.sequenceDao().saveAndGetId(
                         editingSeq.copy(
                             name = name,
                             timeoutMillis = timeout,

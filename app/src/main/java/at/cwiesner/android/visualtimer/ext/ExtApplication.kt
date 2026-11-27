@@ -262,6 +262,15 @@ class ExtApplication : Application() {
                     }
                 }
 
+                // 同样清掉孤儿步骤：`sequenceId` 指向的序列已经不存在的行。
+                //
+                // 存量来源：保存序列时曾把 `@Upsert` 的返回值（更新分支是 -1）
+                // 当成新 id 去写步骤，于是产生一批 `sequenceId = -1` 的行。
+                // 代码已修，但已经写坏的数据不清会一直留在库里、被导出进备份。
+                logCatching("restore-orphan-steps") {
+                    db.sequenceDao().deleteOrphanSteps()
+                }
+
                 var count = 0
                 all.filter { it.kind == TimerKind.Deadline }.forEach { t ->
                     val deadline = t.deadlineEpochMillis

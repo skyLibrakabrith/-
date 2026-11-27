@@ -129,7 +129,49 @@ interface SequenceDao {
 
     @Query("DELETE FROM steps WHERE id = :id")
     suspend fun deleteStep(id: Long)
+
+    /**
+     * 删除「孤儿步骤」：`sequenceId` 指向的序列已经不存在的那些行。
+     *
+     * ## 为什么需要
+     *
+     * 历史上有过一个 bug：保存序列时把 `@Upsert` 的返回值当成新 id 去写步骤，
+     * 而 **Room 的 `@Upsert` 在「更新已有行」的分支返回 -1**（这是它的既定行为）。
+     * 于是编辑已有序列时，所有步骤都被写成 `sequenceId = -1` ——
+     * 谁都找不到它们，界面上表现为「序列里没有阶段」，而且还占着库。
+     *
+     * 代码已经修好，但**已经写坏的数据得清掉**，否则它们会一直留在库里、
+     * 被导出进备份、跟着备份漂到别的设备上。
+     *
+     * 用一条 SQL 做集合运算，不要 `forEach { deleteById }`：步骤可能很多，
+     * 逐条删既慢又可能出现「删到一半失败」的半坏状态。
+     *
+     * @return 删掉的行数（用于日志）
+     */
+    @Query("DELETE FROM steps WHERE sequenceId NOT IN (SELECT id FROM sequences)")
+    suspend fun deleteOrphanSteps(): Int
 }
+
+/**
+ * 保存序列并返回**可信的** id。
+ *
+ * ## 为什么不直接用 `upsert` 的返回值
+ *
+ * Room 的 `@Upsert` 有两套分支：
+ * - **插入新行**（id = 0）→ 返回新生成的自增 id，可信
+ * - **更新已有行**（id ≠ 0）→ 返回 **-1**
+ *
+ * -1 不是错误，是 Room 表示"这次做的是更新"的方式。但把它当外键写进
+ * `steps.sequenceId`，就会产生一批指向 `sequenceId = -1` 的孤儿步骤 ——
+ * 静默的数据损坏，界面上只表现为"阶段不见了"。
+ *
+ * 所以：已有实体（id ≠ 0）直接用它自己的 id，只有新建时才信 `upsert` 的返回值。
+ */
+internal fun resolveSavedSequenceId(entityId: Long, returnedId: Long): Long =
+    if (entityId != 0L) entityId else returnedId
+
+suspend fun SequenceDao.saveAndGetId(seq: StepSequence): Long =
+    resolveSavedSequenceId(seq.id, upsert(seq))
 
 @Dao
 interface AlertProfileDao {
