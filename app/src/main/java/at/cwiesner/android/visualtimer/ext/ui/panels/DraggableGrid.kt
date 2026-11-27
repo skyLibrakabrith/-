@@ -72,25 +72,23 @@ fun <T> DraggableGrid(
     onDoubleClick: ((T) -> Unit)? = null,
     onLongClick: ((T) -> Unit)? = null,
     /**
-     * 是否由**网格层**统一挂点按手势。
+     * 该条目是否**自己**处理点按（网格层就不给它挂 `combinedClickable`）。
      *
-     * - `true`（默认）：网格层给整个格子挂 `combinedClickable`。
-     *   适合"整张卡片都可以点"的场景（序列卡、组卡、列表视图）。
-     * - `false`：网格层**不挂**点按手势，由 `itemContent` 自己在卡片内部
-     *   某块区域里挂。适合"只有卡片的一部分可点"的场景。
+     * ## 为什么是「按条目」而不是全局开关
      *
-     * ## 为什么要这个开关
+     * 之前这里是 `gridHandlesTaps: Boolean`，一个开关管整个网格 ——
+     * 为了让计时器卡片把点击收窄到圆盘，只能整个网格关掉，
+     * 结果**序列卡和组卡连点击层都没有了**，双击打不开序列。
      *
-     * 计时器卡片要求：**只有圆盘可点**（暂停/继续、双击进全屏），
-     * 而左上角的图钉另有用途（切换固定）。如果网格层给整卡挂点击，
-     * 图钉就落在点击区里 —— 点图钉会同时触发暂停，两个动作打架。
+     * 现在改为按条目判断：
+     * - 计时器卡返回 `true`（它自己在圆盘上挂 `detectTapGestures`，
+     *   这样左上角的图钉不会被整卡点击层吞掉）
+     * - 序列卡 / 组卡返回 `false`（它们整卡可点，交给网格）
      *
-     * 让卡片自己挂的好处是：可以把点击区精确限定在圆盘那个 Box 上，
-     * 图钉在圆盘之外、完全不重叠。而拖拽仍然由网格层全区域接管，
-     * 因为 `detectDragGesturesAfterLongPress` 本来就不消费按下事件
-     * （见本文件 LazyVerticalGrid 那段注释）。
+     * 拖拽排序始终由网格层全区域接管，不受这个开关影响 ——
+     * `detectDragGesturesAfterLongPress` 本来就不消费按下事件。
      */
-    gridHandlesTaps: Boolean = true,
+    tapHandledByItem: (T) -> Boolean = { false },
     /** 拖拽松手时回调：新顺序要在这里落库。 */
     onDragEnd: (() -> Unit)? = null,
     itemContent: @Composable (item: T, dragging: Boolean) -> Unit,
@@ -203,18 +201,19 @@ fun <T> DraggableGrid(
                     //  onLongClick/onDoubleClick/onClick），
                     // 双击窗口用框架默认值 ~300ms，不能在这里调。
                     //
-                    // gridHandlesTaps = false 时这一层不挂：
+                    // 该条目自己处理点按时（tapHandledByItem 返回 true），这一层不挂。
                     // 计时器卡片要把点按收窄到圆盘，由卡片自己在圆盘上挂，
-                    // 这样左上角图钉（切换固定）不会和暂停/继续打架。
+                    // 这样左上角图钉（切换固定）不会和暂停/继续打架；
+                    // 序列卡 / 组卡返回 false，仍由网格挂 —— 否则它们点不动。
                     .then(
-                        if (gridHandlesTaps) {
+                        if (tapHandledByItem(item)) {
+                            Modifier
+                        } else {
                             Modifier.combinedClickable(
                                 onClick = { curOnClick(item) },
                                 onDoubleClick = curOnDouble?.let { d -> { d(item) } },
                                 onLongClick = curOnLong?.let { l -> { l(item) } },
                             )
-                        } else {
-                            Modifier
                         },
                     )
                     .zIndex(if (dragging) 1f else 0f)

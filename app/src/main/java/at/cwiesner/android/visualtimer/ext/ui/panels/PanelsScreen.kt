@@ -479,7 +479,14 @@ fun PanelsScreen(
     val engineActiveId = app.sequenceEngine.activeSequenceId
 
     var stepsBySequence by remember { mutableStateOf<Map<Long, List<Step>>>(emptyMap()) }
-    LaunchedEffect(panelSequences) {
+    // 步骤内容的刷新信号。
+    //
+    // 为什么需要：`LaunchedEffect(panelSequences)` 只在**序列列表**变化时重跑。
+    // 拆解 / 改步骤只往 `steps` 表里写行，`panelSequences` 本身没变 ——
+    // 于是回到面板时拿到的还是旧 map，表现为「拆解完回面板，阶段是旧的/不完整」。
+    // 任何写了 steps 的地方都把版本号 +1，这里跟着重读。
+    var stepsVersion by remember { mutableIntStateOf(0) }
+    LaunchedEffect(panelSequences, stepsVersion) {
         val map = mutableMapOf<Long, List<Step>>()
         panelSequences.forEach { sq ->
             map[sq.id] = runCatching { db.sequenceDao().steps(sq.id) }.getOrDefault(emptyList())
@@ -518,7 +525,7 @@ fun PanelsScreen(
         SequenceEditorScreen(
             sequence = editingSeq,
             steps = stepsBySequence[editingSeq.id].orEmpty(),
-            onDismiss = { editingSequenceId = null },
+            onDismiss = { editingSequenceId = null; stepsVersion++ },
             onSave = { name, timeout, stepDrafts ->
                 scope.launch {
                     val seqId = db.sequenceDao().upsert(
@@ -529,8 +536,10 @@ fun PanelsScreen(
                         ),
                     )
                     db.sequenceDao().steps(seqId).forEach { db.sequenceDao().deleteStep(it.id) }
-                    stepDrafts.forEachIndexed { idx, d ->
-                        db.sequenceDao().upsertStep(
+                    // 批量插入，不要 upsertStep 循环：
+                    // `Step.id` 默认 0，循环 upsert 会互相覆盖，保存后只剩最后一个阶段。
+                    db.sequenceDao().insertSteps(
+                        stepDrafts.mapIndexed { idx, d ->
                             Step(
                                 sequenceId = seqId,
                                 durationMillis = d.durationMillis,
@@ -539,10 +548,12 @@ fun PanelsScreen(
                                 // AI 拆解带来的两个属性要一起落库，否则界面改完顺序就丢了
                                 difficulty = d.difficulty,
                                 context = d.context,
-                            ),
-                        )
-                    }
+                            )
+                        },
+                    )
                     editingSequenceId = null
+                    // 重读步骤，否则退回面板时卡片上的阶段数/总时长是旧的
+                    stepsVersion++
                     toast("序列「" + name + "」已保存，" + stepDrafts.size + " 个阶段")
                 }
             },
@@ -690,7 +701,21 @@ fun PanelsScreen(
                     thresholdColors = thresholdColors,
                     locked = !focused.isEditable,
                     onDurationCommit = { d ->
-                        scope.launch { db.timerDao().upsert(focused.copy(durationMillis = d)) }
+                        scope.launch {
+                            val updated = focused.copy(durationMillis = d)
+                            db.timerDao().upsert(updated)
+                            // 必须同步运行时！
+                            //
+                            // 原来这里只写库：列表视图读 `timer.durationMillis`（库）→ 显示新时长，
+                            // 而网格/继续计时读 `runtime.remainingMillis`（内存旧值）→ 还是旧时长。
+                            // 用户看到的就是「全屏改成 26 分钟，继续后仍是 15 分钟，但列表里是 26 分钟」。
+                            //
+                            // replaceTotal 会换上新时长、回落到「未开始」态、清掉 firedLeads，
+                            // 正是改时长该有的语义（旧时长下判过的「到点」和已响的提醒都作废）。
+                            runner.replaceTotal(focused.id, d)
+                            // 改完不该马上被连响一串提前提醒：按新剩余量重设基线
+                            runner.markLeadsBaseline(focused.id, d)
+                        }
                     },
                     onStart = {
                         scope.launch {
@@ -736,7 +761,13 @@ fun PanelsScreen(
                 )
             } else when {
                 panels.isEmpty() -> EmptyHint("还没有面板，点右下角新建一个")
-                timers.isEmpty() -> EmptyHint("这个面板还没有计时器，点右下角添加")
+                // 判断的必须是「面板里**什么卡片都没有**」，不能只看 timers。
+                //
+                // 原来只判 `timers.isEmpty()`：面板里只有序列 / 组、没有普通计时器时，
+                // 整块内容被这个空状态挡掉 —— 用户看到"这个面板还没有计时器"，
+                // 但他的序列明明还在，也点不进去（双击打不开的观感来源之一）。
+                timers.isEmpty() && panelSequences.isEmpty() && groups.isEmpty() ->
+                    EmptyHint("这个面板还没有内容，点右下角添加")
 
                 listMode -> TimerList(
                     timers = timers,
@@ -841,15 +872,13 @@ fun PanelsScreen(
                                 orderOverride = null
                             }
                         },
-                        gridHandlesTaps = false,
+                        // 只有计时器卡片自己处理点按（它把点击收窄到圆盘，
+                        // 避免左上角图钉与暂停/继续打架）。
+                        // 序列卡 / 组卡交给网格挂，否则它们连点击层都没有 —— 双击打不开。
+                        tapHandledByItem = { entry -> entry.kind == EntryKind.Timer },
                         onClick = { entry ->
-                            // gridHandlesTaps = false 之后，计时器卡片的点按
-                            // 已经由圆盘自己处理（见 TimerCell 的 onDialTap），
-                            // 但序列卡和组卡**没有**自己的点击层，仍然需要走这里。
-                            //
-                            // 序列卡：双击进全屏（见 onDoubleClick）；单击不做动作。
-                            // 组卡：单击打开组编辑。
                             when (entry.kind) {
+                                // 计时器由圆盘接管，不经过这里
                                 EntryKind.Timer -> Unit
                                 EntryKind.Sequence -> Unit
                                 EntryKind.Group -> editingGroupId = entry.refId
@@ -857,7 +886,8 @@ fun PanelsScreen(
                         },
                         onDoubleClick = { entry ->
                             when (entry.kind) {
-                                // 计时器由圆盘接管；写上以防将来 gridHandlesTaps 变回来
+                                // 计时器卡不走这里（它自己挂双击）。写上只是兜底，
+                                // 万一将来某条目改回由网格处理也不会静默失效。
                                 EntryKind.Timer -> focusTimerId = entry.refId
                                 EntryKind.Sequence -> focusSequenceId = entry.refId
                                 EntryKind.Group -> editingGroupId = entry.refId
@@ -1174,8 +1204,14 @@ fun PanelsScreen(
                             sortOrder = (panelSequences.maxOfOrNull { it.sortOrder } ?: -1) + 1,
                         ),
                     )
-                    steps.forEachIndexed { idx, s ->
-                        db.sequenceDao().upsertStep(
+                    // 批量插入，不要用 upsertStep 循环。
+                    //
+                    // `Step.id` 是自增主键、构造时默认 0，循环 `upsertStep` 会让
+                    // Room 走 INSERT OR REPLACE 语义 —— 后一条覆盖前一条，
+                    // 最后表里只剩最后一个阶段（用户报的「拆解应用后只显示一个阶段」）。
+                    // insertSteps 是真正的批量自增插入，且在一个事务里。
+                    db.sequenceDao().insertSteps(
+                        steps.mapIndexed { idx, s ->
                             Step(
                                 sequenceId = seqId,
                                 durationMillis = s.minutes * 60_000L,
@@ -1183,13 +1219,15 @@ fun PanelsScreen(
                                 order = idx,
                                 difficulty = s.difficulty,
                                 context = s.context,
-                            ),
-                        )
-                    }
+                            )
+                        },
+                    )
                     // 原计时器被序列取代：停掉运行时并移出面板，再彻底删掉这一行。
                     // 只 removeRef 会留下孤儿行（面板里看不到但仍在库里）。
                     deleteTimerRows(splitTarget.id, removeRefPanelId = pid)
                     selectedIds = emptySet()
+                    // 让 stepsBySequence 重读，否则返回面板时拿到的是旧 map
+                    stepsVersion++
                     toast("已拆成 ${steps.size} 阶段的序列")
                     editingSequenceId = seqId
                 }

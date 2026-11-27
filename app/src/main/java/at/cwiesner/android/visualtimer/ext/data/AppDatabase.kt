@@ -104,6 +104,26 @@ interface SequenceDao {
     @Upsert
     suspend fun upsertStep(step: Step): Long
 
+    /**
+     * 批量插入新步骤，返回各自的自增 id。
+     *
+     * ## 为什么不能用 `upsertStep` 循环
+     *
+     * `Step.id` 是 `@PrimaryKey(autoGenerate = true)`，构造时**默认 0**。
+     * `@Upsert` 对 id=0 的处理是"插入"，但连续多次传入 id=0 时，
+     * Room 生成的是 `INSERT OR REPLACE` 语义 —— 后一条**覆盖**前一条，
+     * 最终表里只剩下最后一个步骤。
+     *
+     * 用户看到的现象：「拆解应用以后只显示一个阶段」。
+     *
+     * 用 `@Insert` 批量插入时，Room 走真正的自增路径，每行拿到不同的 id，
+     * 不会互相覆盖。而且是一个事务，比 N 次单条插入快得多。
+     *
+     * @return 新插入行各自的 id，顺序与入参一致
+     */
+    @Insert
+    suspend fun insertSteps(steps: List<Step>): List<Long>
+
     @Update
     suspend fun updateSteps(steps: List<Step>)
 

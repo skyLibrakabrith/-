@@ -182,13 +182,16 @@ class BackupManager(
                     val sid = db.sequenceDao().upsert(
                         dto.toEntity(dto.panelRef?.let { panelIdMap[it] }),
                     )
-                    backup.steps.filter { it.sequenceRef == dto.ref }
+                    // 批量插入，与拆解走同一条路径。
+                    //
+                    // 这里原本是 `upsertStep` 循环 —— 同一个 id=0 覆盖 bug，
+                    // **导入的多个阶段也只会留下最后一个**。同一个坑不能在两个地方踩。
+                    val steps = backup.steps.filter { it.sequenceRef == dto.ref }
                         .sortedBy { it.order }
-                        .forEach { st ->
-                            db.sequenceDao().upsertStep(
-                                st.toEntity(sid, st.alertProfileRef?.let { alertIdMap[it] }),
-                            )
+                        .map { st ->
+                            st.toEntity(sid, st.alertProfileRef?.let { alertIdMap[it] })
                         }
+                    if (steps.isNotEmpty()) db.sequenceDao().insertSteps(steps)
                 }
 
                 // 组：面板与计时器都落库之后才能建，否则拿不到新 id
