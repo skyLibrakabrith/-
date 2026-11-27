@@ -51,8 +51,19 @@ class LlmHttpClient(
         try {
             conn = (URL(url).openConnection() as HttpURLConnection).apply {
                 requestMethod = "POST"
+                // 连接超时：短。连不上就该立刻告诉用户（地址错了 / 没连 Tailscale）。
                 connectTimeout = timeoutMillis
-                readTimeout = timeoutMillis
+                // 读取超时：**长硬上限**，不是 setting 里那个值。
+                //
+                // 原因（用户报的）：网络卡的时候模型可能 20 秒内还没把数据传回来，
+                // 这时候直接 `SocketTimeoutException` 把请求砍掉，用户前面的输入、
+                // 已经付掉的 token 全白费，只能重来一遍。
+                //
+                // 现在的语义：
+                //   · setting 的「超时」= **多久之后提示网络慢**（界面层用，见 AiDialogs）；
+                //   · 这里只保留一个"绝不会永远挂着"的兜底上限（10 分钟）。
+                // 即：超时到了只是提醒，不终止请求。
+                readTimeout = READ_HARD_TIMEOUT_MILLIS
                 doOutput = true
                 setRequestProperty("Content-Type", "application/json; charset=utf-8")
                 setRequestProperty("Accept", "application/json")
@@ -77,7 +88,17 @@ class LlmHttpClient(
             AiResult.Ok(content)
         } catch (e: java.net.SocketTimeoutException) {
             Log.w(TAG, "超时 $url", e)
-            AiResult.Failed("请求超时（${timeoutMillis / 1000}s），检查网络或换更快的后端", e)
+            // 区分连接超时与读取超时：前者是"连不上"，后者是"等太久"
+            val isConnect = e.message?.contains("connect", ignoreCase = true) == true
+            AiResult.Failed(
+                if (isConnect) {
+                    "连不上服务器（连接超时 ${timeoutMillis / 1000}s），检查网络或地址"
+                } else {
+                    "等模型回复超时（已等 ${READ_HARD_TIMEOUT_MILLIS / 60_000} 分钟）——" +
+                        "网络太慢或后端卡住了，可以重试或换更快的后端"
+                },
+                e,
+            )
         } catch (e: java.net.UnknownHostException) {
             Log.w(TAG, "域名解析失败 $url", e)
             AiResult.Failed("连不上服务器，检查地址是否正确", e)
@@ -139,6 +160,14 @@ class LlmHttpClient(
 
     companion object {
         private const val TAG = "LlmHttpClient"
+
+        /**
+         * 读取超时的硬上限（10 分钟）。
+         *
+         * 只用来兜底"服务端永远不回"这种病态情况，**不是**给用户的超时阈值 ——
+         * 那个阈值现在是"多久后提示网络慢"，在对话框里展示（见 `AiDialogs`）。
+         */
+        internal const val READ_HARD_TIMEOUT_MILLIS: Int = 10 * 60 * 1000
 
         /** 构造 OpenAI 兼容的请求体。 */
         fun openAiBody(model: String, system: String, user: String): JsonObject = buildJsonObject {

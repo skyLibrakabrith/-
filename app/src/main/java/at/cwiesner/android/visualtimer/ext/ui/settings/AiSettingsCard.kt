@@ -212,9 +212,15 @@ private fun AiSettingsBody(
                 fontSize = 11.sp,
                 color = ExtColors.TextDim,
             )
+            Text(
+                "等这么久还没回复时，界面上会多显示一行「网络较慢，仍在等」，" +
+                    "**不会中止请求**；想停可以自己点「取消」。",
+                fontSize = 11.sp,
+                color = ExtColors.TextDim,
+            )
             AiSettingField(
                 value = timeout.toString(),
-                label = "超时（秒）",
+                label = "慢网络提示（秒）",
                 onCommit = {
                     it.toIntOrNull()?.let { n ->
                         scope.launch { settings.setAiTimeoutSeconds(n) }

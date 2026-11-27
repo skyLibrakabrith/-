@@ -1,5 +1,8 @@
 package at.cwiesner.android.visualtimer.ext.ui.common
 
+import at.cwiesner.android.visualtimer.ext.settings.SettingsRepo
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.Job
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -92,6 +95,27 @@ fun <T> AiPromptDialog(
     var error by remember { mutableStateOf<String?>(null) }
     var result by remember { mutableStateOf<T?>(null) }
     var tuning by remember { mutableStateOf(AiTuning()) }
+
+    // ---- 网络慢时的「只是提醒」----
+    //
+    // 需求原话：「网络卡的时候 AI 可能没办法在 20s 内把数据传到设备，
+    // 这个时候直接截停不合适，应该是给个提示」。
+    //
+    // 所以这里**不中止请求**，只在超过阈值后多显示一行提示；
+    // 真正的 HTTP 读取超时被挪到了 10 分钟的硬上限（见 LlmHttpClient）。
+    // 用户想停就点「取消」—— 取消**在加载中也必须可用**，否则就被锁死了。
+    val slowHintSeconds by settings.aiTimeoutSeconds
+        .collectAsState(initial = SettingsRepo.DEFAULT_AI_TIMEOUT_SECONDS)
+    var slow by remember { mutableStateOf(false) }
+    var requestJob by remember { mutableStateOf<Job?>(null) }
+
+    LaunchedEffect(loading, slowHintSeconds) {
+        slow = false
+        if (loading) {
+            delay(slowHintSeconds * 1000L)
+            slow = true
+        }
+    }
 
     // 打开时恢复草稿。
     // 放在 LaunchedEffect 里而不是同步读：DataStore 是磁盘读取，只能 suspend。
@@ -188,7 +212,10 @@ fun <T> AiPromptDialog(
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
                         CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                        Text("思考中…", fontSize = 12.sp)
+                        Text(
+                            if (slow) "网络较慢，还在等…（可以继续等，也可以取消）" else "思考中…",
+                            fontSize = 12.sp,
+                        )
                     }
                 }
 
@@ -214,7 +241,7 @@ fun <T> AiPromptDialog(
                     } else {
                         loading = true
                         error = null
-                        scope.launch {
+                        requestJob = scope.launch {
                             when (val r = run(ai, input, tuning)) {
                                 is AiResult.Ok -> result = r.value
                                 is AiResult.Failed -> error = r.message
@@ -226,7 +253,16 @@ fun <T> AiPromptDialog(
             ) { Text(if (hasResult) "采用" else actionLabel) }
         },
         dismissButton = {
-            TextButton(onClick = { dismissWithDraft() }, enabled = !loading) { Text("取消") }
+            TextButton(
+                onClick = {
+                    // 取消在加载中也可用：网络慢时用户不该被锁在这个对话框里
+                    if (loading) {
+                        requestJob?.cancel()
+                        loading = false
+                    }
+                    dismissWithDraft()
+                },
+            ) { Text("取消") }
         },
     )
 }
