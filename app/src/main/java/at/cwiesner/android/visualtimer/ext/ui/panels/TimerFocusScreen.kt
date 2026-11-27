@@ -1,5 +1,6 @@
 package at.cwiesner.android.visualtimer.ext.ui.panels
 
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.background
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
@@ -187,11 +188,10 @@ fun TimerFocusScreen(
             }
         }
 
-        // 底部有小轮盘时，主盘缩一点：竖屏 1.0 宽度 + 小轮盘 + 按钮行会超出一屏，
-        // 表现为小轮盘被底栏裁掉（真机上确认过）。
+        // 底部有 ±5 按钮行时，主盘缩一点。
         //
         // **正计时没有"时长"这个概念**（它从 0 往上跑，没有终点），
-        // 所以既不该出现 ±5 小轮盘，也不该允许拖圆盘改时长 ——
+        // 所以既不该出现 ±5 按钮行，也不该允许拖圆盘改时长 ——
         // 之前这两样对正计时都还开着，用户拖一下就把「已计 12:30」改成了别的数字。
         val miniWheelVisible = !locked && !running && !isStopwatchTimer
         Box(
@@ -199,11 +199,15 @@ fun TimerFocusScreen(
                 .fillMaxWidth(
                     when {
                         landscape -> 0.62f
-                        // 0.62 是试出来的：0.80 / 0.72 时小轮盘下面的「重置/开始」
-                        // 都会被底栏裁掉（真机逐档试过）。竖屏本来也放不下
-                        // "满宽大盘 + 小轮盘 + 按钮行"三件套。
+                        // 0.62 是试出来的：0.80 / 0.72 时 ±5 按钮行下面的「重置/开始」
+                        // 会被底栏裁掉（真机逐档试过）。竖屏本来也放不下
+                        // "满宽大盘 + 按钮行 + 操作行"三件套。
                         miniWheelVisible -> 0.62f
-                        else -> 1f
+                        // 没有按钮行时主盘可以占满宽度 —— 但**满宽会让 aspectRatio(1f)
+                        // 给出 1080px 的高度**，把后面的「已计」和操作行挤到只剩 26dp，
+                        // 结果「重置 / 开始」的标签被压成 0 高度、看起来像没有字
+                        // （正计时页真机上确认过）。所以留一档 0.78。
+                        else -> 0.78f
                     },
                 )
                 .aspectRatio(1f)
@@ -282,12 +286,23 @@ fun TimerFocusScreen(
         //
         // 仅在**未锁定且未运行**时可用，与主盘保持一致：
         // 运行中改时长语义不清（是改本轮还是下一轮？），DDL 的时长由截止时刻决定。
+        // ---- ±5 微调 ----
+        //
+        // 只有两个按钮，**没有小表盘**：全屏大表盘本身就能拖拽调时长，
+        // 再放一个缩小版圆盘是重复入口，只占地方还容易让人以为它俩作用不同。
+        // （之前确实加过一个小轮盘，已按用户意见去掉。）
+        //
+        // ±5 保留是因为「按档跳」和大表盘拖拽是两种不同的操作习惯：
+        // 15 分 → 45 分，拖半个圆很难精准，点 6 次 +5 更省事。
+        //
+        // 仅在**未锁定且未运行**时可用，与主盘保持一致：
+        // 运行中改时长语义不清（是改本轮还是下一轮？），DDL 的时长由截止时刻决定。
         if (miniWheelVisible) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(top = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.Center,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 MiniAdjustButton("−5") {
@@ -295,36 +310,7 @@ fun TimerFocusScreen(
                     draft = next
                     onDurationCommit(next)
                 }
-                Box(
-                    // 只给 size，不要再叠 weight：
-                    // `Row` 里 `.size(112.dp).weight(1f)` 会先被分配宽度、再被高度约束，
-                    // 结果是横向拉长、纵向被裁 —— 盘只剩上面半个（真机上确认过）。
-                    modifier = Modifier.size(88.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    PieTimerView(
-                        totalMillis = draft,
-                        remainingMillis = draft,
-                        running = false,
-                        onDurationChange = { d -> draft = d },
-                        onDurationCommit = { d ->
-                            draft = d
-                            onDurationCommit(d)
-                        },
-                        modifier = Modifier.fillMaxSize(),
-                        // 与主盘同档吸附，拖出来的值和主盘一致，不会出现 25:30 这种怪值
-                        maxMinutes = 60,
-                        stepMinutes = 0.5f,
-                        centerFontSize = 14f,
-                        showCenterText = true,
-                        innerDial = false,
-                        colorMode = colorMode,
-                        intervalMinutes = intervalMinutes,
-                        fractionDivisions = fractionDivisions,
-                        thresholdMinutes = thresholdMinutes,
-                        thresholdColors = thresholdColors,
-                    )
-                }
+                Spacer(modifier = Modifier.size(12.dp))
                 MiniAdjustButton("+5") {
                     val next = (draft + 5 * 60_000L).coerceAtMost(60 * 60_000L)
                     draft = next
