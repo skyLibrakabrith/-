@@ -21,6 +21,7 @@ import at.cwiesner.android.visualtimer.ext.data.Step
 import at.cwiesner.android.visualtimer.ext.data.StepSequence
 import at.cwiesner.android.visualtimer.ext.data.TimerGroup
 import at.cwiesner.android.visualtimer.ext.data.TimerItem
+import at.cwiesner.android.visualtimer.ext.domain.StepSequenceEngine
 import at.cwiesner.android.visualtimer.ext.domain.TimerRuntime
 import at.cwiesner.android.visualtimer.ext.settings.ColorMode
 import at.cwiesner.android.visualtimer.ext.settings.SettingsRepo
@@ -87,6 +88,14 @@ fun rememberPanelState(): PanelState {
     // 运行时
     val runtimeMap by app.panelRunner.runtimes.collectAsState()
 
+    // 序列引擎：phase 是 StateFlow，activeSequenceId 是**裸 var**（不是 Compose state）。
+    //
+    // `activeSequenceId` 保持"在 composition 里直接读"的老做法 —— 它靠 phase 变化
+    // 顺带触发的重组来更新。改成 mutableStateOf 会牵动引擎内部所有赋值点，
+    // 是另一个议题，本轮只做"把数据搬进 PanelState"。
+    val enginePhase by app.sequenceEngine.phase.collectAsState()
+    val engineActiveId = app.sequenceEngine.activeSequenceId
+
     val groupMembersMap = remember(allGroupMembers) {
         allGroupMembers.groupBy { it.groupId }.mapValues { (_, list) ->
             list.sortedBy { it.order }.map { it.timerId }
@@ -114,8 +123,18 @@ fun rememberPanelState(): PanelState {
         }
     }
 
+    // 步骤内容的刷新信号。
+    //
+    // 为什么需要：`LaunchedEffect(panelSequences)` 只在**序列列表**变化时重跑。
+    // 拆解 / 改步骤只往 `steps` 表里写行，`panelSequences` 本身没变 ——
+    // 于是拿到的是旧 map，表现为「拆解完回面板，阶段是旧的/不完整」。
+    // 任何写了 steps 的地方都调 refreshSteps()，这里跟着重读。
+    //
+    // 这个坑在 PanelsScreen 里修过一次；搬进 PanelState 时必须一起带过来，
+    // 否则切过去等于把修复回退。
+    var stepsVersion by remember { mutableIntStateOf(0) }
     var stepsBySequence by remember { mutableStateOf<Map<Long, List<Step>>>(emptyMap()) }
-    LaunchedEffect(panelSequences) {
+    LaunchedEffect(panelSequences, stepsVersion) {
         val map = mutableMapOf<Long, List<Step>>()
         panelSequences.forEach { sq ->
             map[sq.id] = runCatching { db.sequenceDao().steps(sq.id) }.getOrDefault(emptyList())
@@ -134,6 +153,15 @@ fun rememberPanelState(): PanelState {
             if (n > 0) map[p.id] = n
         }
         runningCountByPanel = map
+    }
+
+    // 跨类型统一列表：序列 / 组 / 未成组计时器一起参与排序与渲染。
+    //
+    // **必须 remember**：它每次重组都会重建三个列表再排序，
+    // PanelsScreen 原来就是记忆化的。搬进 PanelState 时不带上，
+    // 等于偷偷引入一个性能退化。
+    val gridEntries = remember(panelSequences, groups, timers, groupedTimerIds) {
+        buildGridEntries(panelSequences, groups, timers, groupedTimerIds)
     }
 
     val toast: (String) -> Unit = { msg ->
@@ -171,6 +199,10 @@ fun rememberPanelState(): PanelState {
         thresholdColors = thresholdColors,
         stepsBySequence = stepsBySequence,
         runningCountByPanel = runningCountByPanel,
+        enginePhase = enginePhase,
+        engineActiveId = engineActiveId,
+        gridEntries = gridEntries,
+        refreshSteps = { stepsVersion++ },
         toast = toast,
     )
 }
@@ -211,6 +243,19 @@ class PanelState(
     val thresholdColors: List<Color>,
     val stepsBySequence: Map<Long, List<Step>>,
     val runningCountByPanel: Map<Long, Int>,
+    /** 序列引擎相位（`phase` 是 StateFlow，已 collectAsState）。 */
+    val enginePhase: StepSequenceEngine.Phase,
+    /** 当前正在跑的序列 id；null = 没有。**注意它不是 Compose state**（见 rememberPanelState 的注释）。 */
+    val engineActiveId: Long?,
+    /** 已记忆化的跨类型卡片列表（见 rememberPanelState 里的 remember）。 */
+    val gridEntries: List<PanelEntry>,
+    /**
+     * 让 `stepsBySequence` 重读。
+     *
+     * 拆解 / 保存序列只往 `steps` 表写行，`panelSequences` 不变 →
+     * 那个 LaunchedEffect 不会重跑，界面拿到旧 map。所有写 steps 的地方都要调它。
+     */
+    val refreshSteps: () -> Unit,
     val toast: (String) -> Unit,
 ) {
     val db get() = app.database
@@ -218,22 +263,6 @@ class PanelState(
     val engine get() = app.sequenceEngine
     val runtimes: List<TimerRuntime> = runtimeMap.values.sortedBy { it.timerId }
 
-    /** 跨类型统一列表：序列 / 组 / 未成组计时器一起参与排序与渲染。 */
-    val gridEntries: List<PanelEntry> = buildGridEntries()
-
-    private fun buildGridEntries(): List<PanelEntry> {
-        val list = mutableListOf<PanelEntry>()
-        panelSequences.forEach {
-            list += PanelEntry(EntryKind.Sequence, it.id, it.name, it.sortOrder)
-        }
-        groups.forEach { g ->
-            list += PanelEntry(EntryKind.Group, g.id, g.name, g.order)
-        }
-        timers.filter { it.id !in groupedTimerIds }.forEach { t ->
-            list += PanelEntry(EntryKind.Timer, t.id, t.label ?: "未命名", t.position)
-        }
-        return list.sortedBy { it.order }
-    }
 
     /** 拖拽换位后按新顺序重新编号，写回各自的 order 字段。 */
     fun persistOrder(ordered: List<PanelEntry>) {
@@ -259,4 +288,30 @@ class PanelState(
             }
         }
     }
+}
+
+/**
+ * 把序列 / 组 / 未成组计时器合成一张有序卡片列表。
+ *
+ * 抽成**顶层函数**而不是 PanelState 的成员：这样 `rememberPanelState()` 能用
+ * `remember(keys)` 把它记忆化，再作为不可变值传给 PanelState ——
+ * 类里若写成 `val gridEntries = buildGridEntries()`，每次重组都会重算。
+ */
+private fun buildGridEntries(
+    panelSequences: List<StepSequence>,
+    groups: List<TimerGroup>,
+    timers: List<TimerItem>,
+    groupedTimerIds: Set<Long>,
+): List<PanelEntry> {
+    val list = mutableListOf<PanelEntry>()
+    panelSequences.forEach {
+        list += PanelEntry(EntryKind.Sequence, it.id, it.name, it.sortOrder)
+    }
+    groups.forEach { g ->
+        list += PanelEntry(EntryKind.Group, g.id, g.name, g.order)
+    }
+    timers.filter { it.id !in groupedTimerIds }.forEach { t ->
+        list += PanelEntry(EntryKind.Timer, t.id, t.label ?: "未命名", t.position)
+    }
+    return list.sortedBy { it.order }
 }
