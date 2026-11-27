@@ -26,6 +26,30 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\AndroidDev\build.ps1 -Tes
 **签名固定**：`local.properties` 里的 `vte.keystore.path` 指向固定 keystore，
 所以本地出的包签名永远一致，可以 `adb install -r` 直接覆盖，**不需要卸载**。
 
+> ⚠️ **CI 的包用仓库 secret `DEBUG_KEYSTORE_B64`**，那份必须和本地
+> `C:\AndroidDev\keys\vte-debug.keystore` **是同一个文件**。
+>
+> 如果重新生成过本地 keystore（换 JDK、删了重建等），**必须同步重传 secret**，
+> 否则 CI 包与本地包签名不同、互相装不上，报
+> `INSTALL_FAILED_UPDATE_INCOMPATIBLE`。
+>
+> 重传步骤：
+> ```powershell
+> # 1) 导出当前 keystore
+> $b64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes('C:\AndroidDev\keys\vte-debug.keystore'))
+> $b64 | Set-Content -Path C:\Temp\vte-keystore.b64 -NoNewline -Encoding ascii
+> # 2) 写入 secret（需要 GH_TOKEN）
+> cd F:\uuremote\GameViewer\Download\vte-repo
+> python tools/set_secret.py C:\Temp\vte-keystore.b64
+> # 3) 推一次触发 CI 才能生效
+> ```
+>
+> 验证两边一致：分别对两个 APK 跑
+> `apksigner verify --print-certs <apk>`，SHA-256 必须相同。
+>
+> **不要用 `dumpsys package` 里的 `signatures:[xxxx]` 判断**——那是 PackageManager
+> 的内部短哈希，不是证书指纹，拿它对比必然得出"签名不一致"的错误结论。
+
 ### 本机构建的三个坑（都踩过）
 
 1. **F: 盘是 exFAT**，Gradle 的文件锁语义比 NTFS 弱，并行/增量构建会间歇性报
