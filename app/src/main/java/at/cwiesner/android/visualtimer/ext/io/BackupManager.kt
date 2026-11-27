@@ -2,6 +2,7 @@ package at.cwiesner.android.visualtimer.ext.io
 
 import android.content.Context
 import android.net.Uri
+import at.cwiesner.android.visualtimer.ext.data.TimerItem
 import at.cwiesner.android.visualtimer.ext.data.AppDatabase
 import at.cwiesner.android.visualtimer.ext.data.DeadlineReminder
 import at.cwiesner.android.visualtimer.ext.data.GroupMember
@@ -155,11 +156,55 @@ class BackupManager(
                     alertIdMap[dto.ref] = db.alertProfileDao().upsert(dto.toEntity())
                 }
 
+                // 合并模式下的同名判定：先把本地已有的计时器按 label 建索引。
+                //
+                // 只索引**非空 label**：空名/未命名的计时器无法可靠判重
+                // （用户可能有好几个"未命名"），当作不同项全部导入。
+                val localByLabel: MutableMap<String, TimerItem> =
+                    if (replaceExisting) {
+                        mutableMapOf()
+                    } else {
+                        db.timerDao().observeAllOnce()
+                            .filter { !it.label.isNullOrBlank() }
+                            .associateBy { it.label!! }
+                            .toMutableMap()
+                    }
+
                 val timerIdMap = mutableMapOf<String, Long>()
+                // 冲突统计，写进结果摘要让用户知道发生了什么
+                var mergedLonger = 0
+                var skippedShorter = 0
                 backup.timers.forEach { dto ->
-                    timerIdMap[dto.ref] = db.timerDao().upsert(
-                        dto.toEntity(dto.alertProfileRef?.let { alertIdMap[it] }),
-                    )
+                    val label = dto.label?.takeIf { it.isNotBlank() }
+                    val existing = label?.let { localByLabel[it] }
+                    if (existing != null) {
+                        // 同名冲突：**取时长更长那个**（用户明确要求）。
+                        //
+                        // 为什么不是"保留本地"或"用导入覆盖"：
+                        // 备份常常是旧版本，直接覆盖会把用户后来调长的时长又改短；
+                        // 一律保留本地则导入的更长配置进不来。
+                        // 取更长是唯一"不会丢信息"的选择。
+                        if (dto.durationMillis > existing.durationMillis) {
+                            db.timerDao().upsert(
+                                existing.copy(durationMillis = dto.durationMillis),
+                            )
+                            mergedLonger++
+                        } else {
+                            skippedShorter++
+                        }
+                        // 映射到**本地那条**的 id：后续的面板引用 / 提醒 / 组
+                        // 都指向已有记录，不会产生第二条同名计时器
+                        timerIdMap[dto.ref] = existing.id
+                    } else {
+                        val newId = db.timerDao().upsert(
+                            dto.toEntity(dto.alertProfileRef?.let { alertIdMap[it] }),
+                        )
+                        timerIdMap[dto.ref] = newId
+                        if (label != null) {
+                            // 同一次导入里的重名也去重
+                            localByLabel[label] = dto.toEntity(null).copy(id = newId)
+                        }
+                    }
                 }
 
                 // 面板：先全部落库拿到新 id，再写关联，
@@ -240,6 +285,10 @@ class BackupManager(
                         "groups" to backup.groups.size,
                         "deadlineReminders" to backup.deadlineReminders.size,
                         "sessions" to backup.sessions.size,
+                        // 冲突统计：让用户知道"合并"到底做了什么，
+                        // 否则同名项悄悄消失/悄悄变长都没人知道
+                        "合并(取更长)" to mergedLonger,
+                        "跳过(本地更长)" to skippedShorter,
                     ),
                 )
             }.getOrElse { Result.Failed(it.message ?: it::class.java.simpleName) }
@@ -260,5 +309,10 @@ class BackupManager(
         db.panelDao().observeAllOnce().forEach { db.panelDao().deleteById(it.id) }
         db.sequenceDao().observeAllOnce().forEach { db.sequenceDao().deleteById(it.id) }
         db.alertProfileDao().observeAllOnce().forEach { db.alertProfileDao().deleteById(it.id) }
+        // 归档历史也要清：这是"覆盖导入"，用户期望的是导入后的状态**完全等于**备份。
+        // 不清的话旧记录会混在新记录里，归档页看起来像"多出一堆没见过的条"。
+        db.timerSessionDao().allOnce().forEach { db.timerSessionDao().deleteById(it.id) }
+        // 运行时快照：计时器行都删了，快照必然全成孤儿
+        db.runtimeSnapshotDao().deleteOrphans()
     }
 }

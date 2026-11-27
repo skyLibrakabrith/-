@@ -124,17 +124,85 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
         }
     }
 
+    // 导入模式选择（合并 / 覆盖）
+    var pendingImportUri by remember { mutableStateOf<Uri?>(null) }
+    var showImportMode by remember { mutableStateOf(false) }
+
+    /**
+     * 真正执行导入。
+     *
+     * 抽成局部函数是因为要在两个地方调（合并 / 覆盖），
+     * 复制两份会让"结果文案怎么拼"这类细节漂移。
+     */
+    fun doImport(uri: Uri?, replaceExisting: Boolean) {
+        // 接受可空：调用点在 AlertDialog 的 lambda 里，那里拿不到智能转换后的非空值。
+        // 与其在调用点写 `if (x != null) doImport(x!!)`，不如在这里守卫一次。
+        if (uri == null) return
+        scope.launch {
+            status = when (val r = backup.import(uri, replaceExisting = replaceExisting)) {
+                is BackupManager.Result.Ok ->
+                    (if (replaceExisting) "已覆盖导入：" else "已合并导入：") +
+                        r.counts.entries.joinToString { "${it.key}=${it.value}" }
+                is BackupManager.Result.Failed -> "导入失败：${r.message}"
+            }
+        }
+    }
+
     val importLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument(),
     ) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
-        scope.launch {
-            status = when (val r = backup.import(uri, replaceExisting = false)) {
-                is BackupManager.Result.Ok ->
-                    "导入成功：" + r.counts.entries.joinToString { "${it.key}=${it.value}" }
-                is BackupManager.Result.Failed -> "导入失败：${r.message}"
-            }
-        }
+        // 先问「合并还是覆盖」，拿到选择再真正导入。
+        //
+        // 为什么不直接合并：两种语义差别很大（覆盖会清空现有全部数据），
+        // 默认替用户决定任何一个都有风险。所以让用户明确选一次。
+        pendingImportUri = uri
+        showImportMode = true
+    }
+
+    if (showImportMode) {
+        val uri = pendingImportUri
+        AlertDialog(
+            onDismissRequest = { showImportMode = false; pendingImportUri = null },
+            title = { Text("导入备份") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        "合并：保留现有数据，同名计时器**取时长更长**的那个。",
+                        fontSize = 13.sp,
+                    )
+                    Text(
+                        "覆盖：**清空现有全部数据**（含归档记录），完全变成备份里的状态。",
+                        fontSize = 13.sp,
+                        color = ExtColors.Red,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showImportMode = false
+                        pendingImportUri = null
+                        // 覆盖 = 先清空；合并 = 追加 + 冲突取更长
+                        doImport(uri, replaceExisting = true)
+                    },
+                ) { Text("覆盖导入", color = ExtColors.Red) }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(
+                        onClick = {
+                            showImportMode = false
+                            pendingImportUri = null
+                            doImport(uri, replaceExisting = false)
+                        },
+                    ) { Text("合并导入") }
+                    TextButton(onClick = { showImportMode = false; pendingImportUri = null }) {
+                        Text("取消")
+                    }
+                }
+            },
+        )
     }
 
     Column(
