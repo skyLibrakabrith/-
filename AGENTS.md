@@ -85,7 +85,7 @@ node tools/checkbraces.js  # 花括号/圆括号平衡
 - CI：`.github/workflows/build.yml`，push 即触发；约 30 秒开始、**1–4 分钟**出结果。
 - 产物：Actions → Build APK → Artifacts → `visual-timer-ext-debug-apk`（`app-debug.apk`）。
 - **手势 / 悬浮窗 / 警报 / 闪烁**等真机行为**无法在无设备环境验证**，改完必须装机试。
-- **有单元测试**（`app/src/test`，150+ 个 test，13 个 suite）。CI 里 `testDebugUnitTest` 是独立一步，
+- **有单元测试**（`app/src/test`，**252 个 test，22 个 suite**）。CI 里 `testDebugUnitTest` 是独立一步，
   **这是本机唯一能"真跑"的验证手段**，改纯逻辑务必补测试。
 - **APK 可以直接覆盖安装**（2026-11-26 起）：`versionCode` 取 CI 的 `GITHUB_RUN_NUMBER`
   自动递增，且 CI 用仓库 secret `DEBUG_KEYSTORE_B64` 恢复固定 debug 证书。
@@ -172,9 +172,10 @@ app/src/main/java/at/cwiesner/android/visualtimer/ext/
 
 ### 数据与备份
 
-- Room 版本 **10**，11 个实体：`TimerItem` / `Panel` / `PanelTimerRef` / `Step` / `StepSequence` /
+- Room 版本 **11**，12 个实体：`TimerItem` / `Panel` / `PanelTimerRef` / `Step` / `StepSequence` /
   `AlertProfile` / `TimerGroup` / `GroupMember` / `DeadlineReminder` / `TimerSession` /
-  `RuntimeSnapshot`。迁移 v1→v10 全在 `AppDatabase.kt`。
+  `RuntimeSnapshot` / `TimerPause`。迁移 v1→v11 全在 `AppDatabase.kt`。
+  v11 新增 `timer_sessions.ongoing`（进行中占位）与 `timer_pauses`（暂停区间）。
   **`ADD COLUMN ... DEFAULT` 之后要检查要不要回填**：v6 加 `locked` 时没回填，
   升级前就存在的老 DDL 全都变成可编辑（v7 才补上 `UPDATE timers SET locked=1 WHERE kind='Deadline'`）。
 - 备份 `BackupFile.CURRENT_SCHEMA = 3`。旧备份**仍可导入**——新字段一律带默认值。
@@ -182,6 +183,62 @@ app/src/main/java/at/cwiesner/android/visualtimer/ext/
 - 导入时主键会重映射，跨实体引用一律用 `ref` 字符串（`"t<id>"` / `"p<id>"` / `"a<id>"`），
   **不要用原始 id**。
 - 导入导出走 SAF 文件选择器，**不需要任何存储权限**。
+
+### 通知、保活与到点闹钟
+
+**四条独立通道**，互不影响：
+
+| 通道 | 实现 | 能否单独关 |
+|---|---|---|
+| 系统通知 | 渠道 `timer_alerts`（HIGH），每秒刷新超时秒数 | ✅ 设置 → 「通知提醒」 |
+| 振动 | `VibrationAlerter`，循环到用户处理 | ✅ 设置 → 「警报启用震动」 |
+| 屏幕闪烁 | 应用内 `ScreenFlashOverlay` + `AlertOverlayService`（渠道 `alert_flash`） | ✅ 警报页单独开关 |
+| 耳机声音 | `HeadphoneSoundAlerter`，**只在有耳机时播，绝不外放** | ✅ 设置 |
+
+**五个通知渠道**：
+
+| 渠道 | 用途 | 重要级 |
+|---|---|---|
+| `timer_alerts` | 到点提醒 + 提前提醒 | HIGH |
+| `alert_flash` | 后台闪烁卡片（`AlertOverlayService` 前台通知） | HIGH |
+| `timer_overlay` | 计时悬浮窗（前台通知） | MIN |
+| `sequence_overlay` | 序列悬浮窗（前台通知） | MIN |
+| `timer_keepalive` | 保活前台服务 | MIN |
+
+> 曾有一个 `sequence_running` 渠道（`SequenceService`），**已删除**：
+> 它依赖一个从未向 AlarmManager 注册过的 receiver，永远启动不了。
+
+#### 进程被杀后会发生什么（真机实测）
+
+```
+App 后退到后台 → am kill → pid 变空
+等 10 秒 → 不会自动重启
+dumpsys alarm | grep visualtimer → 0 条（修复前）
+```
+
+修复前**到点不会响**。现在有三层防护：
+
+1. **前台服务保活**（`KeepAliveService`，`backgroundEnabled` 开关控制）
+   —— 用户切后台时不被优先回收。实测：退后台 `am kill` 后进程仍存活。
+2. **到点闹钟**（`TimerAlarmScheduler` + `TimerAlarmReceiver`）
+   —— 进程真被杀时，系统按闹钟把 receiver 拉起来。实测闹钟已注册为
+   `RTC_WAKEUP`、`window=0`（精确）、`exactAllowReason=policy_permission`。
+3. **开机重建**（`BootReceiver`）
+   —— AlarmManager 的闹钟重启后全丢，从 `runtime_snapshots` 读 `running=1`
+   按**剩余时间**重算注册。
+
+**仍然不保证的场景**（不要过度承诺）：
+- 用户手动「强行停止」应用 → Android 会清掉所有闹钟，这是系统设计
+- 厂商 ROM 的激进清理
+- 无 `SCHEDULE_EXACT_ALARM` 权限时降级为不精确闹钟，可能被推迟到打盹窗口
+
+#### 检查命令
+
+```bash
+adb shell dumpsys alarm | grep visualtimer          # 有没有待触发闹钟
+adb shell dumpsys activity services at.cwiesner.android.visualtimer.ext  # 前台服务在不在
+adb shell dumpsys notification --noredact | grep visualtimer  # 通知
+```
 
 ### 警报与声音
 
