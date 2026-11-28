@@ -424,7 +424,7 @@ class StepSequenceEngineTest {
         val engineA = StepSequenceEngine(
             scope = backgroundScope,
             onStepFinished = {},
-            onSequenceEnded = { endedA += it },
+            onSequenceEnded = { runs, _ -> endedA += runs },
         )
         engineA.start(seq(), steps(1_000L))
         advanceTimeBy(400L); runCurrent()
@@ -530,7 +530,7 @@ class StepSequenceEngineTest {
     ) = StepSequenceEngine(
         scope = backgroundScope,
         onStepFinished = {},
-        onSequenceEnded = {},
+        onSequenceEnded = { _, _ -> },
         onPaused = onPaused,
         onResumed = onResumed,
     )

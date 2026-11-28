@@ -108,6 +108,16 @@ class ExtApplication : Application() {
      * 挂在 Application 上，这样悬浮窗的「下一阶段」按钮
      * 可以在应用不在前台时也推进序列。
      */
+    /**
+     * 序列（多阶段计时）的归档写入者。
+     *
+     * 与 [sessionArchiver] 分开：那个的键是 timerId，这个的键是 sequenceId，
+     * 两者数字空间重叠，混用会串号。
+     */
+    val sequenceArchiver by lazy {
+        at.cwiesner.android.visualtimer.ext.domain.SequenceSessionArchiver(database)
+    }
+
     val sequenceEngine: at.cwiesner.android.visualtimer.ext.domain.StepSequenceEngine by lazy {
         at.cwiesner.android.visualtimer.ext.domain.StepSequenceEngine(
             scope = appScope,
@@ -120,7 +130,7 @@ class ExtApplication : Application() {
                     sequenceId = step.sequenceId,
                 )
             },
-            onSequenceEnded = { runs ->
+            onSequenceEnded = { runs, seqId ->
                 // 序列结束（跑完或被停掉）：每个**跑过的**阶段写一条归档。
                 //
                 // 用户要求：「序列被停止或跑完时，每个跑过的阶段记一条」。
@@ -167,6 +177,16 @@ class ExtApplication : Application() {
                         )
                     }
                 }
+                // 阶段记录写完后，把「序列暂停时写下的 ongoing 占位行」收尾。
+                // 顺序不能反：占位行要保留到阶段记录落库之后，否则暂停期间
+                // 的痕迹会在收尾时丢掉。
+                runCatching { sequenceArchiver.finish(seqId) }
+            },
+            onPaused = { p ->
+                logCatching("archive-sequence-pause") { sequenceArchiver.onPause(p) }
+            },
+            onResumed = { p ->
+                logCatching("archive-sequence-resume") { sequenceArchiver.onResume(p.sequenceId) }
             },
         )
     }

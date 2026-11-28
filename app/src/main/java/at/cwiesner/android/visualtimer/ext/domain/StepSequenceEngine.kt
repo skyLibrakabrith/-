@@ -43,7 +43,7 @@ class StepSequenceEngine(
      * 为什么由引擎提供：只有它知道每一步实际走了多久（含暂停、含超时）。
      * 界面层拿到的只是快照，自己再算一遍必然和引擎不一致。
      */
-    private val onSequenceEnded: suspend (List<StepRun>) -> Unit = {},
+    private val onSequenceEnded: suspend (List<StepRun>, Long) -> Unit = { _, _ -> },
     /**
      * 序列暂停 / 继续时回调。
      *
@@ -233,7 +233,11 @@ class StepSequenceEngine(
         if (stepRuns.isEmpty()) return
         val payload = stepRuns.toList()
         stepRuns.clear()
-        scope.launch { runCatching { onSequenceEnded(payload) } }
+        // **sequenceId 必须在这里取**：下面的 `scope.launch` 是异步的，
+        // 而调用方（stop/finish）紧接着就会把 `activeSequenceId` 置空。
+        // 协程真正跑起来时再读就是 null 了 —— 归档侧会因此拿不到该收尾哪一条。
+        val seqId = activeSequenceId ?: -1L
+        scope.launch { runCatching { onSequenceEnded(payload, seqId) } }
     }
 
     /**
