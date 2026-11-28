@@ -331,6 +331,31 @@ class SessionArchiverTest {
         assertEquals("未封口区间要关掉", 0, pauses.rows.count { it.toMillis == 0L })
     }
 
+    /**
+     * **这条是重点**：进程正常退出时，跑着的计时器会被 runtime_snapshots 恢复回来
+     * 继续走。这条会话还没结束，`settleLeftovers` 绝不能把它标成完成 ——
+     * 否则用户重启后再暂停/结束，归档里会多出一条重复记录。
+     */
+    @Test
+    fun `仍在运行的会话不会被收尾`() = runTest {
+        val sessions = FakeSessionDao()
+        val pauses = FakePauseDao()
+        var clock = 9_500_000L
+        val archiver = SessionArchiver(dao(sessions, pauses)) { clock }
+
+        clock += 600_000L
+        archiver.onPause(rt(remainingMillis = 25 * 60_000L - 600_000L, startedAt = 9_500_000L))
+        assertEquals(1, sessions.rows.count { it.ongoing })
+
+        // 模拟重启：该计时器的运行时被快照恢复，仍然存在
+        val archiver2 = SessionArchiver(dao(sessions, pauses)) { clock }
+        archiver2.settleLeftovers { timerId -> timerId == 1L }
+
+        assertEquals("**关键**：还在跑的会话不能被收尾", 1, sessions.rows.count { it.ongoing })
+        assertEquals("也不该新增记录", 1, sessions.rows.size)
+        assertEquals("暂停区间也不该被封口", 1, pauses.rows.count { it.toMillis == 0L })
+    }
+
     @Test
     fun `残留记录太短则删除`() = runTest {
         // 直接塞一条只有 3 秒的 ongoing（模拟异常退出）

@@ -259,6 +259,14 @@ class ExtApplication : Application() {
             logCatching("restore-snapshot-orphans") {
                 database.runtimeSnapshotDao().deleteOrphans()
             }
+            // 收尾上次进程留下的「进行中」归档。
+            //
+            // 必须放在**运行时恢复之后**：`hasLiveRuntime` 要靠恢复好的运行时表判断
+            // "这条会话是不是还在继续"。运行中的计时器由快照恢复回来，它们的会话
+            // 不能被当成残留收尾 —— 否则用户重启后再暂停/结束，归档里会多一条重复记录。
+            logCatching("restore-settle-ongoing") {
+                sessionArchiver.settleLeftovers { timerId -> panelRunner.get(timerId) != null }
+            }
         }
     }
 

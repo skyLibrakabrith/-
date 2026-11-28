@@ -213,11 +213,21 @@ class SessionArchiver(
      *
      * 不做的话归档页会一直挂着一条"进行中"，而对应的计时器可能早就不在了。
      */
-    suspend fun settleLeftovers(hadRuntime: (Long) -> Boolean) {
+    suspend fun settleLeftovers(hasLiveRuntime: (Long) -> Boolean) {
+        // 先清孤儿区间（会话被删了但区间还留着）
         dao.pauses().deleteOrphans()
+
         val leftovers = dao.sessions().allOngoing()
         if (leftovers.isEmpty()) return
+
         for (s in leftovers) {
+            // **只有对应的计时器已经不在运行时里才收尾。**
+            //
+            // 为什么必须判断：进程正常退出时，跑着的计时器会由 runtime_snapshots
+            // 恢复回来接着走 —— 那条会话还没结束，绝不能在这里把它标成完成，
+            // 否则用户重启后再暂停/结束，就会在归档里多出一条重复记录。
+            if (hasLiveRuntime(s.id)) continue
+
             // 封口还没结束的暂停区间
             dao.pauses().openPause(s.id)?.let { open ->
                 if (s.endedAt > open.fromMillis) {
@@ -229,6 +239,7 @@ class SessionArchiver(
             val elapsed = (s.endedAt - s.startedAt).coerceAtLeast(0L)
             val planned = s.plannedMillis
             if (!ArchiveRules.shouldArchive(s.kind == "Stopwatch", elapsed, planned)) {
+                // 太短的残留不进归档
                 dao.sessions().deleteById(s.id)
                 dao.pauses().deleteForSession(s.id)
             } else {
@@ -241,6 +252,7 @@ class SessionArchiver(
             }
         }
     }
+
 }
 
 /**
