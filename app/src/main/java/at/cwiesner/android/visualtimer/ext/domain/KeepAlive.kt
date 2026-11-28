@@ -45,3 +45,14 @@ fun dueAtMillisOf(rt: TimerRuntime, nowMillis: Long = System.currentTimeMillis()
     if (rt.remainingMillis <= 0L) return null
     return nowMillis + rt.remainingMillis
 }
+
+/**
+ * 该不该发系统通知。
+ *
+ * 抽成纯函数是为了能单测 —— `ExtApplication` 里的 `postNotification` 依赖
+ * `NotificationManager`，测不动。
+ *
+ * **只控制通知**：震动 / 屏幕闪烁 / 耳机声音都是独立通道，
+ * 用户关通知不代表不想被叫醒。
+ */
+fun shouldPostNotification(notificationEnabled: Boolean): Boolean = notificationEnabled

@@ -193,6 +193,14 @@ class SettingsRepo(
     /** 悬浮窗：在别的应用上层显示正在跑的计时器。 */
     val overlayEnabled: Flow<Boolean> = prefs.map { it[KEY_OVERLAY] ?: false }
 
+    /**
+     * 通知提醒：到点是否发系统通知。
+     *
+     * 关掉**不影响**震动 / 屏幕闪烁 / 耳机声音 —— 那三个是独立通道
+     * （用户可能只是不想让通知栏被占）。
+     */
+    val notificationEnabled: Flow<Boolean> = prefs.map { it[KEY_NOTIFICATION] ?: true }
+
     /** 后台运行：退出界面后继续走表并报警。 */
     val backgroundEnabled: Flow<Boolean> = prefs.map { it[KEY_BACKGROUND] ?: true }
 
@@ -370,6 +378,10 @@ class SettingsRepo(
         store.edit { it[KEY_BACKGROUND] = enabled }
     }
 
+    suspend fun setNotificationEnabled(enabled: Boolean) {
+        store.edit { it[KEY_NOTIFICATION] = enabled }
+    }
+
     suspend fun setKeepScreenOn(enabled: Boolean) {
         store.edit { it[KEY_KEEP_SCREEN_ON] = enabled }
     }
@@ -398,6 +410,7 @@ class SettingsRepo(
         private val KEY_OVERLAY = booleanPreferencesKey("overlay_enabled")
         private val KEY_BACKGROUND = booleanPreferencesKey("background_enabled")
         private val KEY_KEEP_SCREEN_ON = booleanPreferencesKey("keep_screen_on")
+    private val KEY_NOTIFICATION = booleanPreferencesKey("notification_enabled")
         private val KEY_GRID_COLUMNS = stringPreferencesKey("grid_columns")
         private val KEY_FLASH_INTERVAL = stringPreferencesKey("flash_interval_millis")
 

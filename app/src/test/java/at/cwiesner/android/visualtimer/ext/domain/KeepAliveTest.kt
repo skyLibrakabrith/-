@@ -74,4 +74,14 @@ class KeepAliveTest {
             shouldKeepAlive(true, anyTimerRunning = false, sequencePhase = StepSequenceEngine.Phase.Finished),
         )
     }
+
+    @Test
+    fun `通知开关关闭时不发通知`() {
+        assertFalse(shouldPostNotification(notificationEnabled = false))
+    }
+
+    @Test
+    fun `通知开关开启时发通知`() {
+        assertTrue(shouldPostNotification(notificationEnabled = true))
+    }
 }

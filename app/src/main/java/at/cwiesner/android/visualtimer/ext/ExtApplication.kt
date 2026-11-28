@@ -112,6 +112,15 @@ class ExtApplication : Application() {
      * 挂在 Application 上，这样悬浮窗的「下一阶段」按钮
      * 可以在应用不在前台时也推进序列。
      */
+    /**
+     * 通知开关的缓存。
+     *
+     * 为什么缓存：`postNotification` 会被「每秒刷新超时秒数」那个循环调用，
+     * 每次都去读 DataStore 太浪费。由 `observeNotificationSetting()` 维护。
+     */
+    @Volatile
+    private var notificationEnabledCache: Boolean = true
+
     /** 已经注册过闹钟的计时器 id，用于「取消不再跑的」。 */
     private val scheduledAlarmIds = mutableSetOf<Long>()
 
@@ -265,6 +274,7 @@ class ExtApplication : Application() {
         // 本该响的提醒会被静默吞掉。
         observeAlerts()
         observeFlashSetting()
+        observeNotificationSetting()
         observeSequenceOverlay()
         // 恢复放在订阅之后，且要等那几个 launch 真正把 collect 挂上 ——
         // 见 restoreDeadlines 里那句 yield()。
@@ -326,6 +336,13 @@ class ExtApplication : Application() {
                 sequencePhase = phase,
             )
         }
+
+    /** 订阅通知开关，维护 [notificationEnabledCache]。 */
+    private fun observeNotificationSetting() {
+        appScope.launch {
+            settings.notificationEnabled.collect { notificationEnabledCache = it }
+        }
+    }
 
     private fun observeFlashSetting() {
         appScope.launch {
@@ -1080,6 +1097,7 @@ class ExtApplication : Application() {
 
     /** 提前提醒通知：标注「还有多久到期」。 */
     private fun postLeadNotification(rt: TimerRuntime, leadMinutes: Long) {
+        if (!notificationEnabledCache) return
         val mgr = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
         val n = NotificationCompat.Builder(this, CHANNEL_ALERTS)
             .setContentTitle(rt.label ?: "即将到期")
@@ -1092,6 +1110,7 @@ class ExtApplication : Application() {
     }
 
     private fun postNotification(rt: TimerRuntime) {
+        if (!notificationEnabledCache) return
         val mgr = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
         val open = packageManager.getLaunchIntentForPackage(packageName)
         val pi = open?.let {

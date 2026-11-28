@@ -97,6 +97,7 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
     val soundEnabled by settings.soundEnabled.collectAsState(initial = true)
     val overlayEnabled by settings.overlayEnabled.collectAsState(initial = false)
     val backgroundEnabled by settings.backgroundEnabled.collectAsState(initial = true)
+    val notificationEnabled by settings.notificationEnabled.collectAsState(initial = true)
     val keepScreenOn by settings.keepScreenOn.collectAsState(initial = false)
     val gridColumns by settings.gridColumns.collectAsState(initial = 2)
     // 悬浮窗权限状态（用户可能在系统里改过，每次重组重新查）
@@ -384,6 +385,16 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                     scope.launch {
                         settings.setKeepScreenOn(it)
                         toast(if (it) "已开启常亮" else "已关闭常亮")
+                    }
+                },
+            )
+            ToggleRow(
+                label = "通知提醒（到点发系统通知）",
+                checked = notificationEnabled,
+                onChange = {
+                    scope.launch {
+                        settings.setNotificationEnabled(it)
+                        toast(if (it) "通知已开启" else "通知已关闭（震动与闪烁不受影响）")
                     }
                 },
             )
