@@ -3,7 +3,9 @@ package at.cwiesner.android.visualtimer.ext.domain
 import at.cwiesner.android.visualtimer.ext.data.AppDatabase
 import at.cwiesner.android.visualtimer.ext.data.TimerKind
 import at.cwiesner.android.visualtimer.ext.data.TimerPause
+import at.cwiesner.android.visualtimer.ext.data.TimerPauseDao
 import at.cwiesner.android.visualtimer.ext.data.TimerSession
+import at.cwiesner.android.visualtimer.ext.data.TimerSessionDao
 
 /**
  * 一次计时在归档里的唯一写入者。
@@ -36,9 +38,24 @@ import at.cwiesner.android.visualtimer.ext.data.TimerSession
  * "进行了 3 秒"的记录在归档里。
  */
 class SessionArchiver(
-    private val database: AppDatabase,
+    private val dao: SessionDao,
     private val now: () -> Long = { System.currentTimeMillis() },
 ) {
+    /** 直接用数据库构造（生产代码走这个）。 */
+    constructor(
+        database: AppDatabase,
+        now: () -> Long = { System.currentTimeMillis() },
+    ) : this(
+        // 用 provider 函数而不是匿名 object：匿名 object 里的 `this` 会和
+        // SessionArchiver 的初始化顺序打架（Kotlin 报
+        // "Cannot access '<this>' before the instance has been initialized"）。
+        dao = LambdaSessionDao(
+            sessionsProvider = database::timerSessionDao,
+            pausesProvider = database::timerPauseDao,
+        ),
+        now = now,
+    )
+
 
     /** 每个计时器当前那条进行中会话的 id（timerId → sessionId）。 */
     private val ongoingSessionOf = mutableMapOf<Long, Long>()
@@ -65,7 +82,7 @@ class SessionArchiver(
             stopwatch = rt.stopwatch,
             stopwatchSegmentMillis = rt.stopwatchSegmentMillis,
         )
-        val sessionId = database.timerSessionDao().insert(
+        val sessionId = dao.sessions().insert(
             TimerSession(
                 label = rt.label,
                 startedAt = startedAt,
@@ -78,7 +95,7 @@ class SessionArchiver(
             ),
         )
         ongoingSessionOf[rt.timerId] = sessionId
-        database.timerPauseDao().insert(
+        dao.pauses().insert(
             TimerPause(sessionId = sessionId, fromMillis = t, toMillis = 0L),
         )
         return true
@@ -89,11 +106,11 @@ class SessionArchiver(
      */
     suspend fun onResume(timerId: Long) {
         val sessionId = ongoingSessionOf[timerId] ?: return
-        val open = database.timerPauseDao().openPause(sessionId) ?: return
+        val open = dao.pauses().openPause(sessionId) ?: return
         val t = now()
         // 避免 0 长度区间（点暂停又立刻继续）
         if (t > open.fromMillis) {
-            database.timerPauseDao().close(open.id, t)
+            dao.pauses().close(open.id, t)
         }
     }
 
@@ -125,8 +142,8 @@ class SessionArchiver(
         // 太短的：把占位行删掉，归档里不留痕迹
         if (!ArchiveRules.shouldArchive(rt.stopwatch, elapsed, planned)) {
             existing?.let {
-                database.timerSessionDao().deleteById(it)
-                database.timerPauseDao().deleteForSession(it)
+                dao.sessions().deleteById(it)
+                dao.pauses().deleteForSession(it)
                 ongoingSessionOf.remove(rt.timerId)
             }
             return null
@@ -135,10 +152,10 @@ class SessionArchiver(
         val endedAt = (startedAt + elapsed).coerceAtLeast(startedAt)
         if (existing != null) {
             // 封口仍未结束的暂停区间（如果这次是"暂停中就重置"）
-            database.timerPauseDao().openPause(existing)?.let { open ->
-                if (t > open.fromMillis) database.timerPauseDao().close(open.id, t)
+            dao.pauses().openPause(existing)?.let { open ->
+                if (t > open.fromMillis) dao.pauses().close(open.id, t)
             }
-            database.timerSessionDao().finishOngoing(
+            dao.sessions().finishOngoing(
                 id = existing,
                 endedAt = endedAt,
                 plannedMillis = planned,
@@ -149,7 +166,7 @@ class SessionArchiver(
         }
 
         // 没有占位行（例如直接就绪到点、或从未暂停过）：直接写一条完整的
-        val id = database.timerSessionDao().insert(
+        val id = dao.sessions().insert(
             TimerSession(
                 label = rt.label,
                 startedAt = startedAt,
@@ -174,7 +191,7 @@ class SessionArchiver(
             stopwatch = rt.stopwatch,
             stopwatchSegmentMillis = rt.stopwatchSegmentMillis,
         )
-        database.timerSessionDao().touchOngoing(sessionId, startedAt + elapsed)
+        dao.sessions().touchOngoing(sessionId, startedAt + elapsed)
     }
 
     /** [TimerRuntime] 只有 `stopwatch` 标志，归档里要存 [TimerKind] 的名字。 */
@@ -183,7 +200,7 @@ class SessionArchiver(
 
     private suspend fun sessionOf(id: Long?): TimerSession? {
         if (id == null) return null
-        return database.timerSessionDao().allOngoing().firstOrNull { it.id == id }
+        return dao.sessions().allOngoing().firstOrNull { it.id == id }
     }
 
     /** 计时器被彻底删除（卡片消失）时，清掉内存里的映射。 */
@@ -197,25 +214,25 @@ class SessionArchiver(
      * 不做的话归档页会一直挂着一条"进行中"，而对应的计时器可能早就不在了。
      */
     suspend fun settleLeftovers(hadRuntime: (Long) -> Boolean) {
-        database.timerPauseDao().deleteOrphans()
-        val leftovers = database.timerSessionDao().allOngoing()
+        dao.pauses().deleteOrphans()
+        val leftovers = dao.sessions().allOngoing()
         if (leftovers.isEmpty()) return
         for (s in leftovers) {
             // 封口还没结束的暂停区间
-            database.timerPauseDao().openPause(s.id)?.let { open ->
+            dao.pauses().openPause(s.id)?.let { open ->
                 if (s.endedAt > open.fromMillis) {
-                    database.timerPauseDao().close(open.id, s.endedAt)
+                    dao.pauses().close(open.id, s.endedAt)
                 } else {
-                    database.timerPauseDao().deleteById(open.id)
+                    dao.pauses().deleteById(open.id)
                 }
             }
             val elapsed = (s.endedAt - s.startedAt).coerceAtLeast(0L)
             val planned = s.plannedMillis
             if (!ArchiveRules.shouldArchive(s.kind == "Stopwatch", elapsed, planned)) {
-                database.timerSessionDao().deleteById(s.id)
-                database.timerPauseDao().deleteForSession(s.id)
+                dao.sessions().deleteById(s.id)
+                dao.pauses().deleteForSession(s.id)
             } else {
-                database.timerSessionDao().finishOngoing(
+                dao.sessions().finishOngoing(
                     id = s.id,
                     endedAt = s.endedAt,
                     plannedMillis = planned,
@@ -224,4 +241,25 @@ class SessionArchiver(
             }
         }
     }
+}
+
+/**
+ * [SessionArchiver] 真正需要的两个 DAO。
+ *
+ * 抽这层不是为了"架构好看"，是为了**能测**：项目不引入 mockk，
+ * 而 `AppDatabase` 是 Room 生成类、在纯 JVM 单测里造不出来。
+ * 有了这个接口，测试可以直接塞一份内存实现，把状态机完整跑一遍。
+ */
+interface SessionDao {
+    fun sessions(): TimerSessionDao
+    fun pauses(): TimerPauseDao
+}
+
+/** [SessionDao] 的函数式实现，只用两个 provider。 */
+internal class LambdaSessionDao(
+    private val sessionsProvider: () -> TimerSessionDao,
+    private val pausesProvider: () -> TimerPauseDao,
+) : SessionDao {
+    override fun sessions(): TimerSessionDao = sessionsProvider()
+    override fun pauses(): TimerPauseDao = pausesProvider()
 }
