@@ -111,8 +111,21 @@ class BackupManager(
 
         // 归档历史：全量带走。它没有 ref、也没有外键，
         // 和计时器行是脱钩的（行删了历史还在），所以照原样一条条存。
-        db.timerSessionDao().allOnce().forEach { s ->
-            sessions += s.toDto()
+        // 暂停区间随会话一起导出，否则导回来圆盘上的空隙全没了
+        val allSessions = db.timerSessionDao().allOnce()
+        val pausesBySession = if (allSessions.isEmpty()) {
+            emptyMap<Long, List<at.cwiesner.android.visualtimer.ext.data.TimerPause>>()
+        } else {
+            runCatching { db.timerPauseDao().forSessions(allSessions.map { it.id }) }
+                .getOrDefault(emptyList())
+                .groupBy { it.sessionId }
+        }
+        allSessions.forEach { s ->
+            sessions += s.toDto(
+                pauses = pausesBySession[s.id].orEmpty().map { pr ->
+                    PauseRangeDto(fromMillis = pr.fromMillis, toMillis = pr.toMillis)
+                },
+            )
         }
 
         return BackupFile(
@@ -272,7 +285,21 @@ class BackupManager(
                 // 归档历史：表本身是「只追加」，重复导入只会多出几份同样的历史，
                 // 不会覆盖或删掉别的记录，代价可以接受。
                 backup.sessions.forEach { dto ->
-                    db.timerSessionDao().insert(dto.toEntity())
+                    // 先插会话拿到新 id，再把暂停区间挂上去（id 会重映射）
+                    val newId = db.timerSessionDao().insert(dto.toEntity())
+                    dto.pauses.forEach { pr ->
+                        runCatching {
+                            db.timerPauseDao().insert(
+                                at.cwiesner.android.visualtimer.ext.data.TimerPause(
+                                    sessionId = newId,
+                                    fromMillis = pr.fromMillis,
+                                    // 导入的记录一律视为已完成，所以"仍在暂停中"的区间
+                                    // 统一按会话结束时刻封口，否则导进来又显示成进行中
+                                    toMillis = if (pr.toMillis > 0L) pr.toMillis else dto.endedAt,
+                                ),
+                            )
+                        }
+                    }
                 }
 
                 Result.Ok(
@@ -312,6 +339,9 @@ class BackupManager(
         // 归档历史也要清：这是"覆盖导入"，用户期望的是导入后的状态**完全等于**备份。
         // 不清的话旧记录会混在新记录里，归档页看起来像"多出一堆没见过的条"。
         db.timerSessionDao().allOnce().forEach { db.timerSessionDao().deleteById(it.id) }
+        // 暂停区间挂在会话下面，会话清完这些就全是孤儿 —— 必须一起清，
+        // 否则下次导入时旧区间可能挂到新会话 id 上（id 会重映射）
+        db.timerPauseDao().deleteOrphans()
         // 运行时快照：计时器行都删了，快照必然全成孤儿
         db.runtimeSnapshotDao().deleteOrphans()
     }

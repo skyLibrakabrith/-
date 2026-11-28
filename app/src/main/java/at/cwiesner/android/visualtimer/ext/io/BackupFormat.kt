@@ -183,6 +183,27 @@ data class TimerSessionDto(
     val plannedMillis: Long,
     val kind: String = "Countdown",
     val completed: Boolean = false,
+    /**
+     * 是否还在进行中（暂停时写的占位行）。
+     *
+     * 默认 `false`：v3 及更早的备份没有这个键，导入后按"已完成"处理 ——
+     * 旧备份里本来也不可能有进行中的记录。
+     */
+    val ongoing: Boolean = false,
+    /**
+     * 这条会话的暂停区间，`[from, to)`；`to = 0` 表示仍在暂停。
+     *
+     * 平铺在 DTO 里而不是单独一张顶层表：暂停区间永远属于某条 session，
+     * 平铺后导入时不需要再做 id 映射（本来就按 session 顺序一一对应）。
+     */
+    val pauses: List<PauseRangeDto> = emptyList(),
+)
+
+/** 一段暂停区间。 */
+@Serializable
+data class PauseRangeDto(
+    val fromMillis: Long,
+    val toMillis: Long = 0L,
 )
 
 /** 序列化器配置：忽略未知字段，容忍未来版本多出的键。 */
@@ -303,13 +324,15 @@ fun DeadlineReminder.toDto(timerRef: String) = DeadlineReminderDto(
     fired = fired,
 )
 
-fun TimerSession.toDto() = TimerSessionDto(
+fun TimerSession.toDto(pauses: List<PauseRangeDto> = emptyList()) = TimerSessionDto(
     label = label,
     startedAt = startedAt,
     endedAt = endedAt,
     plannedMillis = plannedMillis,
     kind = kind,
     completed = completed,
+    ongoing = ongoing,
+    pauses = pauses,
 )
 
 /**
@@ -324,5 +347,8 @@ fun TimerSessionDto.toEntity() = TimerSession(
     endedAt = endedAt,
     plannedMillis = plannedMillis,
     kind = kind,
-    completed = completed,
+    // 导入时一律落成"已完成"：进行中的记录跨设备/跨时间导入没有意义
+    // （它对应的运行时早已不存在，留着只会永远挂在归档页上）。
+    completed = completed || ongoing,
+    ongoing = false,
 )
