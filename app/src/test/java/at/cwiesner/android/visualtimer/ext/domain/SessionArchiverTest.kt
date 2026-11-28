@@ -430,6 +430,61 @@ class SessionArchiverTest {
         )
     }
 
+    /**
+     * `deleteTimerRows` 会在删除前统一调 `finishIfNeeded`，而「结束」按钮在那之前
+     * 已经调过一次 `finish`。两次都跑不能产生两条记录 —— 否则每次结束都会重复归档。
+     */
+    @Test
+    fun `finish 之后再 finishIfNeeded 不会多出一条`() = runTest {
+        val sessions = FakeSessionDao()
+        val pauses = FakePauseDao()
+        var clock = 30_000_000L
+        val archiver = SessionArchiver(dao(sessions, pauses)) { clock }
+
+        clock += 900_000L
+        val rt = rt(remainingMillis = 25 * 60_000L - 900_000L, startedAt = 30_000_000L)
+        archiver.finish(rt, completed = false)
+        assertEquals(1, sessions.rows.size)
+
+        // deleteTimerRows 里会再调一次
+        archiver.finishIfNeeded(rt)
+        assertEquals("**关键**：不应产生第二条", 1, sessions.rows.size)
+    }
+
+    /**
+     * 反过来：没归档就直接删（`deleteTimerRows` 的其余 4 个入口），
+     * 必须补出一条，否则跑了多久都白跑。
+     */
+    @Test
+    fun `没归档就删除时 finishIfNeeded 会补一条`() = runTest {
+        val sessions = FakeSessionDao()
+        val pauses = FakePauseDao()
+        var clock = 40_000_000L
+        val archiver = SessionArchiver(dao(sessions, pauses)) { clock }
+
+        clock += 900_000L
+        val rt = rt(remainingMillis = 25 * 60_000L - 900_000L, startedAt = 40_000_000L)
+        archiver.finishIfNeeded(rt)
+
+        assertEquals("跑了 15 分钟就删，应该留下一条", 1, sessions.rows.size)
+        assertEquals(900_000L, sessions.rows[0].endedAt - sessions.rows[0].startedAt)
+    }
+
+    @Test
+    fun `从未开始过不补归档`() = runTest {
+        val sessions = FakeSessionDao()
+        val pauses = FakePauseDao()
+        val archiver = SessionArchiver(dao(sessions, pauses)) { 50_000_000L }
+
+        // startedAt = 0：运行时还没真正开始
+        archiver.finishIfNeeded(rt(startedAt = 0L))
+        assertEquals(0, sessions.rows.size)
+
+        // 满格未跑：也没有可记的
+        archiver.finishIfNeeded(rt(remainingMillis = 25 * 60_000L, startedAt = 1_000L))
+        assertEquals("满格未跑不该产生记录", 0, sessions.rows.size)
+    }
+
     @Test
     fun `残留记录太短则删除`() = runTest {
         // 直接塞一条只有 3 秒的 ongoing（模拟异常退出）

@@ -333,6 +333,17 @@ fun PanelsScreen(
      */
     suspend fun deleteTimerRows(timerId: Long, removeRefPanelId: Long?) {
         try {
+            // 删之前先补归档：删掉计时器不等于"这次计时没发生过"。
+            //
+            // 这里原来直接 `runner.clear()`，正在跑的进度凭空消失 —— 走这条路的
+            // 有 5 个入口（结束、单条删除、卡片删除、拆解成序列、批量合并）。
+            // 其中「结束」在调用前已经归档过，`finishIfNeeded` 是幂等的
+            // （没有占位行且 finished 过的运行时不会有新记录），所以放在这里统一处理是安全的。
+            //
+            // 注意：拆解/合并会把计时器重新组织成序列，但那段时间确实计时过，
+            // 归档里留一条是正确的事实记录。
+            runCatching { app.sessionArchiver.finishIfNeeded(runner.get(timerId)) }
+            app.sessionArchiver.forget(timerId)
             runner.clear(timerId)
             // removeRef 只针对本次可见的那个面板；同一条计时器可能被多个面板引用，
             // 只删当前面板的关联是原有行为（别的面板仍显示它），这里不擅自扩大范围

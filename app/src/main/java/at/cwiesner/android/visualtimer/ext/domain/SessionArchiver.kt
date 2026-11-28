@@ -61,6 +61,17 @@ class SessionArchiver(
     private val ongoingSessionOf = mutableMapOf<Long, Long>()
 
     /**
+     * 已经归档过的轮次（timerId → 该轮的 `startedAt`）。
+     *
+     * 用来让 [finish] **幂等**：结束一个计时器的路径有多条
+     * （「结束」按钮自己归档一次，`deleteTimerRows` 删除前又调 `finishIfNeeded`），
+     * 同一轮被处理两次不能产生两条记录。
+     *
+     * 用 `startedAt` 而不是 bool：重置后重新开始是一轮新的，必须允许再归档一次。
+     */
+    private val archivedRoundOf = mutableMapOf<Long, Long>()
+
+    /**
      * 暂停：写一条进行中的记录，并开一个未封口的暂停区间。
      *
      * 已经有一条进行中记录时**不重复写**（重复点暂停不该刷出多条）。
@@ -137,6 +148,10 @@ class SessionArchiver(
         completed: Boolean,
     ): Long? {
         val t = now()
+        // 幂等：这一轮已经归档过了就直接返回，别再插一条。
+        // 多条入口都会走到 finish（「结束」按钮 + deleteTimerRows 里的 finishIfNeeded），
+        // 没有这个检查，每次结束都会写两条。
+        if (rt.startedAt > 0L && archivedRoundOf[rt.timerId] == rt.startedAt) return null
         val existing = ongoingSessionOf[rt.timerId]
         val startedAt = rt.startedAt.takeIf { it > 0L }
             ?: sessionOf(existing)?.startedAt
@@ -173,6 +188,7 @@ class SessionArchiver(
                 completed = completed,
             )
             ongoingSessionOf.remove(rt.timerId)
+            if (rt.startedAt > 0L) archivedRoundOf[rt.timerId] = rt.startedAt
             return existing
         }
 
@@ -188,6 +204,7 @@ class SessionArchiver(
                 ongoing = false,
             ),
         )
+        if (rt.startedAt > 0L) archivedRoundOf[rt.timerId] = rt.startedAt
         return id
     }
 
@@ -238,6 +255,9 @@ class SessionArchiver(
     /** 计时器被彻底删除（卡片消失）时，清掉内存里的映射。 */
     fun forget(timerId: Long) {
         ongoingSessionOf.remove(timerId)
+        // 轮次记录也要清：计时器删了之后这个 id 不会再用，
+        // 留着就是一条永久的泄漏（长时间用下来 map 会一直涨）。
+        archivedRoundOf.remove(timerId)
     }
 
     /**
