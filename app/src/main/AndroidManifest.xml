@@ -61,15 +61,6 @@
         </activity>
 
         <service
-            android:name=".service.SequenceService"
-            android:exported="false"
-            android:foregroundServiceType="specialUse">
-            <property
-                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="step-sequence-timer" />
-        </service>
-
-        <service
             android:name=".service.AlertOverlayService"
             android:exported="false"
             android:foregroundServiceType="specialUse">
@@ -96,10 +87,6 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="sequence-overlay" />
         </service>
-
-        <receiver
-            android:name=".service.SequenceAlarmReceiver"
-            android:exported="false" />
 
         <receiver
             android:name=".service.BootReceiver"

@@ -387,12 +387,15 @@ class SequenceOverlayService : Service() {
         private const val TAG = "SequenceOverlay"
 
         /**
-         * 渠道 id 刻意与其它三个服务区分开：
+         * 渠道 id 刻意与其它服务区分开：
          * - TimerOverlayService -> "timer_overlay" / 通知 2002
          * - AlertOverlayService -> "alert_flash" / 通知 2003
-         * - SequenceService     -> "sequence_running" / 通知 1001
+         * - KeepAliveService     -> "timer_keepalive" / 通知 1001
          * - ExtApplication      -> "timer_alerts"（到点提醒）
          * 这里用 "sequence_overlay" / 通知 2004，不会互相覆盖。
+         *
+         * （原来的 SequenceService -> "sequence_running" / 1001 已删除：
+         *  它依赖一个从未向 AlarmManager 注册过的 receiver，永远启动不了。）
          */
         private const val CHANNEL_ID = "sequence_overlay"
         private const val NOTIFICATION_ID = 2004
