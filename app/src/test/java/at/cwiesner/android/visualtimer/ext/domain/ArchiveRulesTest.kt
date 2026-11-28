@@ -139,4 +139,50 @@ class ArchiveRulesTest {
         assertEquals(listOf(0L to 600L), mergeIntervals(iv))
         assertEquals(600L, mergedDurationMillis(iv))
     }
+
+    // ---------------- 序列阶段：区间必须串行铺开 ----------------
+
+    /**
+     * 这条是**真 bug 的回归测试**。
+     *
+     * 最初实现让每段都 `endedAt = now; startedAt = endedAt - actual`，
+     * 3 个阶段会全部叠在末尾。归档合计按区间并集算，30 分钟会被算成 5 分钟。
+     */
+    @Test
+    fun `串行阶段铺成首尾相接且不重叠的区间`() {
+        val end = 1_760_000_000_000L
+        val durs = listOf(600_000L, 300_000L, 900_000L)   // 10 + 5 + 15 分钟
+        val iv = layOutSequentialIntervals(end, durs)
+
+        assertEquals(3, iv.size)
+        assertEquals("第一段从总长推回", end - 1_800_000L, iv[0].first)
+        assertEquals("首尾相接 1-2", iv[0].second, iv[1].first)
+        assertEquals("首尾相接 2-3", iv[1].second, iv[2].first)
+        assertEquals("最后一段结束于 end", end, iv[2].second)
+
+        // 不重叠：合并后总长应等于各段之和（1800 秒）
+        val merged = mergedDurationMillis(iv.map { it.first to it.second })
+        assertEquals("并集长度 = 实际总时长，不能被重叠吃掉", 1_800_000L, merged)
+    }
+
+    @Test
+    fun `不同时长组合的并集都等于总和`() {
+        val end = 2_000_000_000_000L
+        for (durs in listOf(
+            listOf(1_000L),
+            listOf(1_000L, 1_000L),
+            listOf(5_000L, 1L, 30_000L),
+            listOf(0L, 1_000L, 0L),
+        )) {
+            val iv = layOutSequentialIntervals(end, durs)
+            val merged = mergedDurationMillis(iv.map { it.first to it.second })
+            assertEquals("组合 $durs 的并集应等于总和", durs.sum(), merged)
+            assertEquals("最后一段结束于 end", end, iv.last().second)
+        }
+    }
+
+    @Test
+    fun `空阶段列表返回空`() {
+        assertEquals(emptyList<Pair<Long, Long>>(), layOutSequentialIntervals(1000L, emptyList()))
+    }
 }

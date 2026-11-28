@@ -130,8 +130,22 @@ class ExtApplication : Application() {
                 // 太短的阶段按 ArchiveRules 挡掉，避免跳步操作刷出一堆 0 秒记录。
                 val dao = database.timerSessionDao()
                 val now = System.currentTimeMillis()
-                for (r in runs) {
+                // 阶段是**串行**跑的，所以区间必须依次累加，不能让每段都"从 now 往回退"。
+                //
+                // 这里踩过一个坑：最初写成 `endedAt = now; startedAt = endedAt - actual`，
+                // 3 个阶段（10分/5分/15分）会算出
+                //     阶段1: 1200→1800  阶段2: 1500→1800  阶段3: 900→1800
+                // 三段**全部重叠在末尾** —— 而实际是 0→600 / 600→900 / 900→1800。
+                // 后果：归档合计按区间并集算，30 分钟的序列会被算成 5 分钟。
+                //
+                // 现在：从"序列结束时刻"倒推出序列起点，再按顺序往前推。
+                val intervals = at.cwiesner.android.visualtimer.ext.domain.layOutSequentialIntervals(
+                    endMillis = now,
+                    actualMillis = runs.map { it.actualMillis },
+                )
+                for ((idx, r) in runs.withIndex()) {
                     val planned = r.step.durationMillis
+                    val (startedAt, endedAt) = intervals[idx]
                     if (!at.cwiesner.android.visualtimer.ext.domain.ArchiveRules.shouldArchive(
                             stopwatch = false,
                             elapsedMillis = r.actualMillis,
@@ -140,9 +154,6 @@ class ExtApplication : Application() {
                     ) {
                         continue
                     }
-                    // 区间按"从结束时刻往回退实际用时"推，保证与盘面显示一致
-                    val endedAt = now
-                    val startedAt = endedAt - r.actualMillis
                     logCatching("archive-sequence-step") {
                         dao.insert(
                             TimerSession(

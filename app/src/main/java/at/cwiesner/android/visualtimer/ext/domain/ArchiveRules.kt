@@ -88,3 +88,36 @@ fun mergeIntervals(intervals: List<Pair<Long, Long>>): List<Pair<Long, Long>> {
 /** 区间并集的总长度（毫秒）。 */
 fun mergedDurationMillis(intervals: List<Pair<Long, Long>>): Long =
     mergeIntervals(intervals).sumOf { it.second - it.first }
+
+/**
+ * 把「串行跑过的若干阶段」铺成互不重叠、首尾相接的区间。
+ *
+ * ## 为什么需要这个
+ *
+ * 序列的每个阶段都是**依次**执行的。归档时如果每段都写成
+ * `endedAt = now; startedAt = endedAt - actual`，几段就会全部叠在末尾：
+ *
+ * ```
+ * 实际：0→600  600→900  900→1800
+ * 错误：1200→1800  1500→1800  900→1800
+ * ```
+ *
+ * 后果是归档合计（按区间并集算）把 30 分钟算成 5 分钟。
+ *
+ * @param endMillis 最后一个阶段的结束时刻
+ * @param actualMillis 各阶段实际用时，顺序即执行顺序
+ * @return 与输入等长的 `(start, end)` 列表
+ */
+fun layOutSequentialIntervals(
+    endMillis: Long,
+    actualMillis: List<Long>,
+): List<Pair<Long, Long>> {
+    val total = actualMillis.sumOf { it.coerceAtLeast(0L) }
+    var cursor = endMillis - total
+    return actualMillis.map { d ->
+        val len = d.coerceAtLeast(0L)
+        val start = cursor
+        cursor += len
+        start to cursor
+    }
+}
