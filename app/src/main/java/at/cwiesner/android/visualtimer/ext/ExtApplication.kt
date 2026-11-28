@@ -566,57 +566,6 @@ class ExtApplication : Application() {
      *
      * 用户主动删掉的东西说明他不在乎，不该污染历史。只有自然到点才算"发生过"。
      */
-    /**
-     * 正计时被暂停时写一条归档。
-     *
-     * ## 为什么正计时需要单独的归档路径
-     *
-     * 归档原本只接在「到点」事件（`panelRunner.alerts`）上。但正计时**永远不到点** ——
-     * 它只往上累加，没有终点。所以它走不到那条路径，归档里一条正计时都没有。
-     *
-     * 正计时唯一的"结束"方式就是用户按暂停，所以暂停才是最该落一条历史的时刻。
-     *
-     * ## 一条暂停 = 一条记录
-     *
-     * 继续之后再暂停会写**第二条**，各自对应时间轴上一段真实的计时区间。
-     * 为此 [PanelRunner.resume] 会在继续时把 `startedAt` 挪到当下、
-     * 并记下 `stopwatchBaseMillis`，所以这里能算出"这一段"的长度。
-     *
-     * ## 区间怎么算
-     *
-     * - `startedAt`：这一段开始的墙钟时刻（由 resume 维护）
-     * - `endedAt`：**暂停这一刻**的墙钟时刻。用 `startedAt + 这一段时长` 而不是
-     *   `System.currentTimeMillis()`：tick 是 200ms 一拍，暂停时算出的时长
-     *   比真实经过的时间最多少 200ms，两者相加会让区间终点比实际略早 ——
-     *   但这样**时长与盘面上显示的数字严格一致**，用户核对时不会觉得记错了。
-     * - `plannedMillis`：正计时没有"计划时长"，存这一段实际计时的长度
-     *   （归档页用它算"计划 vs 实际"的差；正计时本来就该是"实际 = 计划"）。
-     * - `completed = true`：正计时没有"到点"概念，不存在"提前结束"这种说法。
-     */
-    private suspend fun archiveStopwatchPause(rt: TimerRuntime) {
-        val timer = logCatching("archive-stopwatch-get-timer") {
-            database.timerDao().get(rt.timerId)
-        }
-        val startedAt = rt.startedAt.takeIf { it > 0L } ?: System.currentTimeMillis()
-        val segment = rt.stopwatchSegmentMillis
-        // 一暂停就立刻暂停（时长约等于 0）：没有意义，不写。
-        // 阈值取 1 秒，和 DeadlineCreator.MIN_DURATION_MILLIS 保持一致。
-        if (segment < 1000L) return
-
-        val endedAt = startedAt + segment
-        logCatching("archive-stopwatch-insert") {
-            database.timerSessionDao().insert(
-                TimerSession(
-                    label = rt.label ?: timer?.label,
-                    startedAt = startedAt,
-                    endedAt = endedAt,
-                    plannedMillis = segment,
-                    kind = timer?.kind?.name ?: TimerKind.Stopwatch.name,
-                    completed = true,
-                ),
-            )
-        }
-    }
 
     /**
      * 把当前运行时表写进 `runtime_snapshots`。
@@ -719,19 +668,28 @@ class ExtApplication : Application() {
             )
 
             if (stopwatch) {
-                // 正计时"重新进入"：上一段算结束了，写归档
-                val segment = (progress.remainingMillis - snap.stopwatchBaseMillis).coerceAtLeast(0L)
-                if (segment >= 1000L && snap.startedAt > 0L) {
+                // 正计时"重新进入"：上一段算结束了，写归档。
+                //
+                // 走 SessionArchiver 而不是直接 insert，原因有二：
+                // 1. 门槛统一由 ArchiveRules 判（正计时 30 秒），这里原来写死的 1 秒与它不一致；
+                // 2. 幂等 —— 如果这一轮已经有占位行（暂停时写的），应当更新而不是再插一条。
+                val segment = (progress.remainingMillis - snap.stopwatchBaseMillis)
+                    .coerceAtLeast(0L)
+                if (segment > 0L && snap.startedAt > 0L) {
                     logCatching("restore-stopwatch-archive") {
-                        database.timerSessionDao().insert(
-                            TimerSession(
+                        sessionArchiver.finish(
+                            TimerRuntime(
+                                timerId = timer.id,
                                 label = timer.label,
+                                totalMillis = 0L,
+                                remainingMillis = progress.remainingMillis,
+                                running = false,
+                                deadlineEpochMillis = null,
+                                stopwatch = true,
                                 startedAt = snap.startedAt,
-                                endedAt = snap.startedAt + segment,
-                                plannedMillis = segment,
-                                kind = TimerKind.Stopwatch.name,
-                                completed = true,
+                                stopwatchBaseMillis = snap.stopwatchBaseMillis,
                             ),
+                            completed = true,
                         )
                     }
                 }
