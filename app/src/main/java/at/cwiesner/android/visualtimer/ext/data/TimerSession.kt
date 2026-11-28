@@ -32,4 +32,16 @@ data class TimerSession(
     val kind: String,
     /** true = 正常到点（含超时）；false = 被用户提前结束。 */
     val completed: Boolean,
+    /**
+     * true = 这一条还没结束（暂停时先占位，等真正结束时原地更新）。
+     *
+     * ## 为什么要有「进行中」这种状态
+     *
+     * 用户要求「暂停也自动归档」，同时又要「一次计时在归档里只有一条」。
+     * 两者只能这样同时满足：暂停时**立刻**写一条 `ongoing = true` 的行
+     * （进程被杀也不丢），恢复/结束时把**同一条**更新成完整记录，而不是新增一行。
+     *
+     * 老记录（v10 及以前）一律为 false —— 迁移时 `DEFAULT 0` 回填，它们本来就都是已完成的。
+     */
+    val ongoing: Boolean = false,
 )

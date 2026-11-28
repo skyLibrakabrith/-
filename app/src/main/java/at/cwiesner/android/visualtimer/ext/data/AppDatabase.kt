@@ -301,6 +301,53 @@ interface TimerSessionDao {
 
     @Query("DELETE FROM timer_sessions WHERE id = :id")
     suspend fun deleteById(id: Long)
+
+    // ---------------- 「进行中」会话：暂停时占位，结束时原地更新 ----------------
+    //
+    // 为什么是 update 而不是"删掉重插"：会话行一旦换了 id，挂在它下面的
+    // timer_pauses 就变成孤儿。原地更新能保证暂停区间始终跟着同一条记录。
+
+    /** 把一条进行中的会话补成完整记录。 */
+    @Query(
+        "UPDATE timer_sessions SET endedAt = :endedAt, plannedMillis = :plannedMillis, " +
+            "completed = :completed, ongoing = 0 WHERE id = :id",
+    )
+    suspend fun finishOngoing(id: Long, endedAt: Long, plannedMillis: Long, completed: Boolean)
+
+    /** 更新进行中会话的 `endedAt`（每次暂停/恢复都要把区间推进）。 */
+    @Query("UPDATE timer_sessions SET endedAt = :endedAt WHERE id = :id")
+    suspend fun touchOngoing(id: Long, endedAt: Long)
+
+    /** 启动时清理：进程被杀留下的进行中记录一律收尾，否则归档页会一直挂着它。 */
+    @Query("SELECT * FROM timer_sessions WHERE ongoing = 1")
+    suspend fun allOngoing(): List<TimerSession>
+
+    @Query(
+        "SELECT * FROM timer_sessions WHERE startedAt >= :from AND startedAt < :to AND ongoing = 0 " +
+            "ORDER BY startedAt ASC",
+    )
+    suspend fun betweenFinished(from: Long, to: Long): List<TimerSession>
+}
+
+/** 暂停区间。与 `TimerSession` 一对一挂靠（多对一），按开始时刻排序。 */
+@Dao
+interface TimerPauseDao {
+    @Insert
+    suspend fun insert(p: TimerPause): Long
+
+    /** 封口：把「仍在暂停中」（`toMillis = 0`）的那条补上结束时刻。 */
+    @Query("UPDATE timer_pauses SET toMillis = :toMillis WHERE id = :id")
+    suspend fun close(id: Long, toMillis: Long)
+
+    /** 某条会话当前还在进行中的那段暂停（最多一条）。 */
+    @Query("SELECT * FROM timer_pauses WHERE sessionId = :sessionId AND toMillis = 0 LIMIT 1")
+    suspend fun openPause(sessionId: Long): TimerPause?
+
+    @Query("SELECT * FROM timer_pauses WHERE sessionId IN (:sessionIds) ORDER BY fromMillis ASC")
+    suspend fun forSessions(sessionIds: List<Long>): List<TimerPause>
+
+    @Query("DELETE FROM timer_pauses WHERE sessionId NOT IN (SELECT id FROM timer_sessions)")
+    suspend fun deleteOrphans()
 }
 
 @androidx.room.TypeConverters(Converters::class, TimerKindConverter::class)
@@ -317,8 +364,9 @@ interface TimerSessionDao {
         DeadlineReminder::class,
         TimerSession::class,
         RuntimeSnapshot::class,
+        TimerPause::class,
     ],
-    version = 10,
+    version = 11,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -329,6 +377,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun groupDao(): GroupDao
     abstract fun deadlineReminderDao(): DeadlineReminderDao
     abstract fun timerSessionDao(): TimerSessionDao
+
+    abstract fun timerPauseDao(): TimerPauseDao
 
     abstract fun runtimeSnapshotDao(): RuntimeSnapshotDao
 
@@ -509,6 +559,37 @@ abstract class AppDatabase : RoomDatabase() {
         }
 
         /**
+         * v10 → v11：归档支持「进行中 + 暂停区间」。
+         *
+         * 背景（用户需求）：暂停也要立刻归档（进程被杀不丢），但一次计时在归档里
+         * 只能有一条；并且圆盘上要把暂停那段空出来。
+         *
+         * - `timer_sessions.ongoing`：暂停时先写一条 `ongoing = 1` 占位，
+         *   结束时**原地更新**成完整记录，而不是新增一行。
+         *   老记录本来就都是已完成的，回填 0 是正确语义。
+         * - `timer_pauses`：一条会话下方挂若干 `[from, to)` 暂停区间，
+         *   `to = 0` 表示仍在暂停中。不建外键，与 `timer_sessions` 一贯做法一致。
+         */
+        private val MIGRATION_10_11 = object : androidx.room.migration.Migration(10, 11) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE `timer_sessions` ADD COLUMN `ongoing` INTEGER NOT NULL DEFAULT 0",
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `timer_pauses` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`sessionId` INTEGER NOT NULL, " +
+                        "`fromMillis` INTEGER NOT NULL, " +
+                        "`toMillis` INTEGER NOT NULL)",
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_timer_pauses_sessionId` " +
+                        "ON `timer_pauses` (`sessionId`)",
+                )
+            }
+        }
+
+        /**
          * 打开数据库。
          *
          * **刻意不用 `fallbackToDestructiveMigration()`**：那个兜底会在迁移写错、
@@ -537,6 +618,7 @@ abstract class AppDatabase : RoomDatabase() {
                     MIGRATION_7_8,
                     MIGRATION_8_9,
                     MIGRATION_9_10,
+                    MIGRATION_10_11,
                 )
                     .fallbackToDestructiveMigrationOnDowngrade()
                     .build()
