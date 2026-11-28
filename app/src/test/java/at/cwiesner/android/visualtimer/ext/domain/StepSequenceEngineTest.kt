@@ -29,9 +29,10 @@ class StepSequenceEngineTest {
     private fun seq(
         timeoutMillis: Long = 0L,
         autoAdvance: Boolean = false,
+        name: String = "测试序列",
     ) = StepSequence(
         id = 1L,
-        name = "测试序列",
+        name = name,
         timeoutMillis = timeoutMillis,
         timeoutAutoAdvance = autoAdvance,
     )
@@ -518,5 +519,91 @@ class StepSequenceEngineTest {
         advanceTimeBy(100L); runCurrent()
         assertFalse(engine.updateSteps(emptyList()))
         assertTrue(engine.phase.value is StepSequenceEngine.Phase.Running)
+    }
+
+    // ---------------- 暂停 / 继续事件（本轮新增）----------------
+
+    /** 建一个带暂停回调的引擎。 */
+    private fun TestScope.engineWithPauseEvents(
+        onPaused: suspend (SequencePause) -> Unit = {},
+        onResumed: suspend (SequencePause) -> Unit = {},
+    ) = StepSequenceEngine(
+        scope = backgroundScope,
+        onStepFinished = {},
+        onSequenceEnded = {},
+        onPaused = onPaused,
+        onResumed = onResumed,
+    )
+
+    @Test
+    fun `pause 发出 onPaused 且载荷含阶段与已跑时长`() = runTest {
+        val events = mutableListOf<SequencePause>()
+        val engine = engineWithPauseEvents(onPaused = { events += it })
+        engine.start(seq(name = "写周报"), steps(1_000L, 2_000L))
+        advanceTimeBy(300L); runCurrent()
+
+        engine.pause()
+        runCurrent()
+
+        assertEquals(1, events.size)
+        val e = events[0]
+        assertEquals("写周报", e.sequenceName)
+        assertEquals(0, e.stepIndex)
+        assertEquals("第1步", e.step.label)
+        // 已跑时长：至少 300ms（虚拟时钟推进了 300）
+        assertEquals(300L, e.stepElapsedMillis)
+    }
+
+    @Test
+    fun `resume 发出 onResumed`() = runTest {
+        val paused = mutableListOf<SequencePause>()
+        val resumed = mutableListOf<SequencePause>()
+        val engine = engineWithPauseEvents(
+            onPaused = { paused += it },
+            onResumed = { resumed += it },
+        )
+        engine.start(seq(), steps(1_000L))
+        advanceTimeBy(200L); runCurrent()
+        engine.pause(); runCurrent()
+        engine.resume(); runCurrent()
+
+        assertEquals(1, paused.size)
+        assertEquals(1, resumed.size)
+        assertEquals("继续事件的阶段应与暂停一致", paused[0].stepIndex, resumed[0].stepIndex)
+    }
+
+    @Test
+    fun `已暂停时再 pause 不重复发事件`() = runTest {
+        val events = mutableListOf<SequencePause>()
+        val engine = engineWithPauseEvents(onPaused = { events += it })
+        engine.start(seq(), steps(1_000L))
+        advanceTimeBy(100L); runCurrent()
+
+        engine.pause(); runCurrent()
+        engine.pause(); runCurrent()
+
+        assertEquals("重复暂停只应发一次", 1, events.size)
+    }
+
+    @Test
+    fun `Idle 状态 pause 不发事件`() = runTest {
+        val events = mutableListOf<SequencePause>()
+        val engine = engineWithPauseEvents(onPaused = { events += it })
+
+        engine.pause(); runCurrent()
+
+        assertEquals(0, events.size)
+    }
+
+    @Test
+    fun `stop 不发暂停事件`() = runTest {
+        val events = mutableListOf<SequencePause>()
+        val engine = engineWithPauseEvents(onPaused = { events += it })
+        engine.start(seq(), steps(1_000L))
+        advanceTimeBy(100L); runCurrent()
+
+        engine.stop(); runCurrent()
+
+        assertEquals("stop 不是暂停，不该发暂停事件", 0, events.size)
     }
 }

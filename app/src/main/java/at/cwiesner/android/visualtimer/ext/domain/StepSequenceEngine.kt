@@ -44,6 +44,19 @@ class StepSequenceEngine(
      * 界面层拿到的只是快照，自己再算一遍必然和引擎不一致。
      */
     private val onSequenceEnded: suspend (List<StepRun>) -> Unit = {},
+    /**
+     * 序列暂停 / 继续时回调。
+     *
+     * 为什么需要：引擎对外原本只有 [onSequenceEnded] 一个事件，暂停时只改
+     * `_phase.value`，什么也不发。于是**暂停这段时间没有任何归档痕迹** ——
+     * 与计时器侧（`PanelRunner.pauseEvents` / `resumeEvents`）不对称。
+     *
+     * 有了这两个回调，归档侧才能像处理计时器那样：暂停写一条 `ongoing` 占位行 +
+     * 开一个暂停区间，继续时封口，结束时原地更新 —— 一次序列运行在归档里
+     * 始终只有一条记录。
+     */
+    private val onPaused: suspend (SequencePause) -> Unit = {},
+    private val onResumed: suspend (SequencePause) -> Unit = {},
 ) {
     sealed interface Phase {
         data object Idle : Phase
@@ -154,6 +167,9 @@ class StepSequenceEngine(
         _paused.value = true
         // 不等循环下一拍才生效：UI 点击后要立刻看到「已暂停」，避免这 100ms 里继续跳秒
         _phase.value = current.copy(paused = true)
+        // **改完相位再发事件**：`snapshotOfCurrentStep()` 要从 `_phase.value`
+        // 读当前是哪一步（`stop()` 就是踩了这个顺序坑才导致阶段归档从未生效）。
+        emitPauseEvent(current.stepIndex, current.step, isPause = true)
     }
 
     /**
@@ -169,6 +185,9 @@ class StepSequenceEngine(
         if (current !is Phase.Running) return
         if (!current.paused) return
         _paused.value = false
+        // 相位上的 paused=false 由倒计时循环在下一拍写回（见上面的注释），
+        // 但事件要**立刻**发：归档侧需要马上封口暂停区间。
+        emitPauseEvent(current.stepIndex, current.step, isPause = false)
     }
 
     /** 用户点击「下一阶段」。仅在 [Phase.AwaitingConfirm] 状态下有效。 */
@@ -215,6 +234,36 @@ class StepSequenceEngine(
         val payload = stepRuns.toList()
         stepRuns.clear()
         scope.launch { runCatching { onSequenceEnded(payload) } }
+    }
+
+    /**
+     * 发出暂停 / 继续事件。
+     *
+     * `stepElapsedMillis` 用 `currentStepStartedNanos` 算 —— 那是**本阶段**的
+     * 实际已跑时长，归档侧据此写 `ongoing` 占位行的区间终点。
+     */
+    private fun emitPauseEvent(stepIndex: Int, step: Step, isPause: Boolean) {
+        val seq = sequence ?: return
+        // 已跑时长从**相位**算，不用 `currentStepStartedNanos`：
+        // 那个是 `System.nanoTime()` 基准，在 `runTest` 的虚拟时钟下恒差 ~0
+        // （单测里根本推进不了），会得到一个恒为 0 的字段。
+        // 相位里的 `totalMillis - remainingMillis` 是引擎自己维护的权威值，
+        // 与盘面显示完全一致。
+        val elapsed = when (val ph = _phase.value) {
+            is Phase.Running -> (ph.totalMillis - ph.remainingMillis).coerceAtLeast(0L)
+            else -> 0L
+        }
+        val snapshot = SequencePause(
+            sequenceId = seq.id,
+            sequenceName = seq.name,
+            stepIndex = stepIndex,
+            step = step,
+            stepElapsedMillis = elapsed,
+            eventAtMillis = System.currentTimeMillis(),
+        )
+        scope.launch {
+            runCatching { if (isPause) onPaused(snapshot) else onResumed(snapshot) }
+        }
     }
 
     /** 把「当前正在跑的那一步」按已过时间结算进 [stepRuns]。 */
@@ -447,4 +496,19 @@ data class StepRun(
     val stepIndex: Int,
     val step: Step,
     val actualMillis: Long,
+)
+
+/**
+ * 序列暂停 / 继续时的快照，作为 `onPaused` / `onResumed` 的载荷。
+ *
+ * @property stepElapsedMillis **本阶段**从开始到暂停时刻的实际经过时间
+ * @property eventAtMillis 暂停 / 继续发生的墙钟时刻，归档侧用它作区间端点
+ */
+data class SequencePause(
+    val sequenceId: Long,
+    val sequenceName: String,
+    val stepIndex: Int,
+    val step: Step,
+    val stepElapsedMillis: Long,
+    val eventAtMillis: Long,
 )
