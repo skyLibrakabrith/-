@@ -408,10 +408,20 @@ private fun SessionListRow(
             maxLines = 1,
             modifier = Modifier.weight(1f),
         )
+        // 进行中的记录要一眼看出来，否则用户会以为那条永远不结束
+        if (session.ongoing) {
+            Text(
+                text = "进行中",
+                fontSize = 11.sp,
+                color = ExtColors.Primary,
+                modifier = Modifier.padding(start = 6.dp),
+            )
+        }
         Text(
             text = describeDuration(actualMillisInDay(session, dayStart, dayEnd)),
             fontSize = 12.sp,
             color = ExtColors.TextDim,
+            modifier = Modifier.padding(start = 6.dp),
         )
     }
 }

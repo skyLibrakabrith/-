@@ -107,7 +107,19 @@ internal fun SessionDetailDialog(
                         color = ExtColors.TextDim,
                     )
                 }
-                DetailRow("结果", completionLabel(session) + " · " + planDeltaText(session))
+                if (session.ongoing) {
+                    // 暂停时先写下的是占位行，这一轮还没结束。
+                    // 结果/差值对未完成的记录没有意义（既没到点也没被提前结束），
+                    // 所以整行换成状态说明，避免显示成「提前结束 23 分钟」这种误导。
+                    DetailRow("结果", "进行中（暂停中，还没结束）")
+                    Text(
+                        text = "恢复计时后这一条会继续变长；结束后原地更新，不会变成两条。",
+                        fontSize = 11.sp,
+                        color = ExtColors.TextDim,
+                    )
+                } else {
+                    DetailRow("结果", completionLabel(session) + " · " + planDeltaText(session))
+                }
                 DetailRow("计划", describeDuration(session.plannedMillis))
             }
         },
