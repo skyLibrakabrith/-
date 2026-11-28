@@ -321,7 +321,8 @@ class SequenceOverlayService : Service() {
             view.background = cardBackground(COLOR_BG_RUNNING)
             timeView?.setTextColor(Color.WHITE)
             stepView?.setTextColor(COLOR_TEXT_DIM)
-            stepView?.text = info.stepCaption
+            // 暂停时明确写出来：否则数字冻在那里，用户分不清是暂停了还是卡住了
+            stepView?.text = if (info.paused) info.stepCaption + " · 已暂停" else info.stepCaption
             timeView?.text = info.countdownText
             timeView?.textSize = 24f
         }

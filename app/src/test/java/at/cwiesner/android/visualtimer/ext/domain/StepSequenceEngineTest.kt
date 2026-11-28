@@ -8,6 +8,7 @@ import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -362,5 +363,160 @@ class StepSequenceEngineTest {
 
         assertEquals(StepSequenceEngine.Phase.Finished, engine.phase.value)
         assertNull("结束时必须清掉 activeSequenceId", engine.activeSequenceId)
+    }
+
+    // ---------------- 暂停 / 继续（原来零覆盖）----------------
+
+    @Test
+    fun `pause 冻结倒计时`() = runTest {
+        val engine = newEngine()
+        engine.start(seq(), steps(1_000L, 1_000L))
+        advanceTimeBy(200L); runCurrent()
+
+        engine.pause()
+        val frozen = (engine.phase.value as StepSequenceEngine.Phase.Running).remainingMillis
+
+        // 再推进 500ms，剩余时间不能变
+        advanceTimeBy(500L); runCurrent()
+        assertEquals(
+            "暂停后倒计时必须冻结",
+            frozen,
+            (engine.phase.value as StepSequenceEngine.Phase.Running).remainingMillis,
+        )
+    }
+
+    @Test
+    fun `resume 从原处继续而不是重置`() = runTest {
+        val engine = newEngine()
+        engine.start(seq(), steps(1_000L))
+        advanceTimeBy(400L); runCurrent()
+        engine.pause()
+        val frozen = (engine.phase.value as StepSequenceEngine.Phase.Running).remainingMillis
+
+        engine.resume()
+        runCurrent()
+        assertEquals("恢复后仍从冻结处开始", frozen,
+            (engine.phase.value as StepSequenceEngine.Phase.Running).remainingMillis)
+
+        advanceTimeBy(100L); runCurrent()
+        assertEquals("恢复后继续扣时间", frozen - 100L,
+            (engine.phase.value as StepSequenceEngine.Phase.Running).remainingMillis)
+    }
+
+    @Test
+    fun `pause 保留 activeSequenceId 而 stop 清空`() = runTest {
+        val engine = newEngine()
+        engine.start(seq(), steps(1_000L))
+        advanceTimeBy(100L); runCurrent()
+
+        engine.pause()
+        assertEquals("暂停不结束序列", 1L, engine.activeSequenceId)
+
+        engine.stop()
+        assertNull("stop 才清空", engine.activeSequenceId)
+        assertEquals(StepSequenceEngine.Phase.Idle, engine.phase.value)
+    }
+
+    @Test
+    fun `pause 不触发 onSequenceEnded 而 stop 会`() = runTest {
+        val endedA = mutableListOf<List<StepRun>>()
+        val engineA = StepSequenceEngine(
+            scope = backgroundScope,
+            onStepFinished = {},
+            onSequenceEnded = { endedA += it },
+        )
+        engineA.start(seq(), steps(1_000L))
+        advanceTimeBy(400L); runCurrent()
+        engineA.pause()
+        runCurrent()
+        assertEquals("暂停不等于结束，不该归档", 0, endedA.size)
+
+        engineA.stop()
+        runCurrent()
+        assertEquals("stop 才归档", 1, endedA.size)
+    }
+
+    @Test
+    fun `AwaitingConfirm 下 pause 无效`() = runTest {
+        val engine = newEngine()
+        engine.start(seq(), steps(100L))
+        advanceTimeBy(200L); runCurrent()
+        assertTrue(engine.phase.value is StepSequenceEngine.Phase.AwaitingConfirm)
+
+        engine.pause()
+        assertTrue("该相位本来就在等用户，没有可冻结的",
+            engine.phase.value is StepSequenceEngine.Phase.AwaitingConfirm)
+    }
+
+    // ---------------- updateSteps：编辑序列时同步引擎 ----------------
+
+    @Test
+    fun `updateSteps 插入新阶段后当前步下标随之改变`() = runTest {
+        val engine = newEngine()
+        val original = steps(1_000L, 1_000L)      // id 1,2
+        engine.start(seq(), original)
+        advanceTimeBy(400L); runCurrent()
+        assertEquals(0, (engine.phase.value as StepSequenceEngine.Phase.Running).stepIndex)
+
+        // 在第一步前面插一个 id=99 的「1.5 阶段」
+        val inserted = listOf(
+            Step(id = 99L, sequenceId = 1L, durationMillis = 500L, label = "1.5", order = 0),
+            original[0].copy(order = 1),
+            original[1].copy(order = 2),
+        )
+        assertTrue(engine.updateSteps(inserted))
+
+        val phase = engine.phase.value as StepSequenceEngine.Phase.Running
+        assertEquals("当前步原来是下标 0，插到前面后应变 1", 1, phase.stepIndex)
+        assertEquals("阶段总数应变成 3", 3, inserted.size)
+    }
+
+    @Test
+    fun `updateSteps 不重置倒计时进度`() = runTest {
+        val engine = newEngine()
+        val original = steps(1_000L, 1_000L)
+        engine.start(seq(), original)
+        advanceTimeBy(400L); runCurrent()
+        val before = (engine.phase.value as StepSequenceEngine.Phase.Running).remainingMillis
+
+        engine.updateSteps(
+            listOf(
+                Step(id = 99L, sequenceId = 1L, durationMillis = 500L, label = "1.5", order = 0),
+                original[0], original[1],
+            ),
+        )
+        assertEquals("加阶段不能让当前倒计时重来",
+            before, (engine.phase.value as StepSequenceEngine.Phase.Running).remainingMillis)
+    }
+
+    @Test
+    fun `updateSteps 当前步被删掉时不崩`() = runTest {
+        val engine = newEngine()
+        val original = steps(1_000L, 1_000L)
+        engine.start(seq(), original)
+        advanceTimeBy(400L); runCurrent()
+
+        // 把正在跑的 id=1 删掉，只留 id=2
+        assertTrue(engine.updateSteps(listOf(original[1])))
+        val phase = engine.phase.value
+        assertTrue("必须仍处于 Running，不能崩或卡住",
+            phase is StepSequenceEngine.Phase.Running)
+        assertEquals(0, (phase as StepSequenceEngine.Phase.Running).stepIndex)
+    }
+
+    @Test
+    fun `updateSteps 在 Idle 时不生效`() = runTest {
+        val engine = newEngine()
+        assertFalse("没有活动序列就不该应用", engine.updateSteps(steps(1_000L)))
+        assertEquals(StepSequenceEngine.Phase.Idle, engine.phase.value)
+    }
+
+    @Test
+    fun `updateSteps 空列表不生效`() = runTest {
+        val engine = newEngine()
+        engine.start(seq(), steps(1_000L))
+        advanceTimeBy(100L); runCurrent()
+        assertFalse(engine.updateSteps(emptyList()))
+        assertTrue(engine.phase.value is StepSequenceEngine.Phase.Running)
     }
 }

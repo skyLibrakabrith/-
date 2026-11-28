@@ -501,6 +501,14 @@ fun PanelsScreen(
                     editingSequenceId = null
                     // 重读步骤，否则退回面板时卡片上的阶段数/总时长是旧的
                     state.refreshSteps()
+                    // 引擎也要同步：它 start() 时把步骤拷贝进了私有字段，之后不再重读，
+                    // 所以「卡片显示 3 个阶段、悬浮窗还是 2 个」。
+                    // updateSteps 保留当前阶段进度（按 step.id 认），不会重新开始序列。
+                    if (app.sequenceEngine.activeSequenceId == seqId) {
+                        runCatching {
+                            app.sequenceEngine.updateSteps(db.sequenceDao().steps(seqId))
+                        }
+                    }
                     toast("序列「" + name + "」已保存，" + stepDrafts.size + " 个阶段")
                 }
             },
@@ -631,10 +639,20 @@ fun PanelsScreen(
                     // `skip()` 对两种相位都有效，且 AwaitingConfirm 下走的是同一条
                     // `runStep(next)`，语义正好是"现在就进入下一步"。
                     onNext = { app.sequenceEngine.skip() },
-                    onStop = {
-                        app.sequenceEngine.stop()
-                        toast("已停止")
+                    // 暂停 ≠ 停止。原来这里是 `stop()`，而 `stop()` 会清掉
+                    // activeSequenceId、置 Idle 并 emitEnded() 写归档 ——
+                    // 和下面「重置」做的事完全一样，用户点了才发现序列直接结束了。
+                    //
+                    // `pause()` 只冻结倒计时，进度和活动序列都保留，随时可以继续。
+                    onPause = {
+                        app.sequenceEngine.pause()
+                        toast("已暂停")
                     },
+                    onResume = {
+                        app.sequenceEngine.resume()
+                        toast("继续计时")
+                    },
+                    // 重置 = 真的结束这一轮（会归档），与暂停可区分
                     onReset = {
                         app.sequenceEngine.stop()
                         toast("序列已重置")

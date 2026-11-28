@@ -196,8 +196,14 @@ class SettingsRepo(
     /** 后台运行：退出界面后继续走表并报警。 */
     val backgroundEnabled: Flow<Boolean> = prefs.map { it[KEY_BACKGROUND] ?: true }
 
-    /** 屏幕常亮：计时界面不自动熄屏。 */
-    val keepScreenOn: Flow<Boolean> = prefs.map { it[KEY_KEEP_SCREEN_ON] ?: false }
+    /**
+     * 屏幕常亮：**计时中**不让屏幕自动熄灭。
+     *
+     * 默认 `true`（用户要求）：装完就能用，想省电自己去设置里关。
+     * 注意"只在计时中"这个限定由 `shouldKeepScreenOn` 实现 ——
+     * 开关开着但没在计时时，屏幕照常熄灭。
+     */
+    val keepScreenOn: Flow<Boolean> = prefs.map { it[KEY_KEEP_SCREEN_ON] ?: true }
 
     /** 网格列数：1=单列大表盘，2=两列，3=三列小表盘。 */
     val gridColumns: Flow<Int> = prefs.map {

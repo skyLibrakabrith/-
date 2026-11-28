@@ -483,6 +483,7 @@ class ExtApplication : Application() {
                 overtimeMillis = 0L,
                 timeoutRemainingMillis = 0L,
                 overdue = false,
+                paused = phase.paused,
             )
         }
 
@@ -1077,4 +1078,12 @@ internal data class SequenceOverlayInfo(
     val timeoutRemainingMillis: Long,
     /** 是否已经超时（界面切强调色）。 */
     val overdue: Boolean,
+    /**
+     * 是否处于暂停态。
+     *
+     * 悬浮窗要据此显示「已暂停」—— 否则数字冻结时用户分不清是暂停了还是卡住了。
+     * 序列暂停后 `activeSequenceId` 仍在、相位仍是 `Running(paused = true)`，
+     * 所以悬浮窗会继续显示（这是期望行为：能看见"我暂停在第几阶段"）。
+     */
+    val paused: Boolean = false,
 )

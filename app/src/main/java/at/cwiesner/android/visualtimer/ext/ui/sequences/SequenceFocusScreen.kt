@@ -43,7 +43,15 @@ fun SequenceFocusScreen(
     isActive: Boolean,
     onStart: () -> Unit,
     onNext: () -> Unit,
-    onStop: () -> Unit,
+    /**
+     * 暂停：冻结倒计时但**保留进度与活动序列**，不归档。
+     *
+     * 用户反馈「停止和重置一样」—— 原来这里接的是 `stop()`，那会结束序列并写归档，
+     * 和「重置」行为完全一致。暂停才是"先停一下、等下接着"的正确语义。
+     */
+    onPause: () -> Unit,
+    /** 从暂停处继续。 */
+    onResume: () -> Unit,
     onReset: () -> Unit,
     onClose: () -> Unit,
     /**
@@ -186,7 +194,18 @@ fun SequenceFocusScreen(
                 TextButton(onClick = onStart, modifier = Modifier.weight(1f)) { Text("开始") }
             } else {
                 TextButton(onClick = onNext, modifier = Modifier.weight(1f)) { Text("下一阶段") }
-                TextButton(onClick = onStop, modifier = Modifier.weight(1f)) { Text("停止") }
+                // 暂停 / 继续 二合一：
+                //
+                // `pause()` 只对 Running 生效（AwaitingConfirm 是"在等你点下一阶段"，
+                // 没有在跑的东西需要冻结）。所以按钮文案按相位判断，而不是等用户点了
+                // 才发现"没反应"。
+                val canPause = phase is StepSequenceEngine.Phase.Running
+                val paused = (phase as? StepSequenceEngine.Phase.Running)?.paused == true
+                TextButton(
+                    onClick = { if (paused) onResume() else onPause() },
+                    enabled = canPause,
+                    modifier = Modifier.weight(1f),
+                ) { Text(if (paused) "继续" else "暂停") }
             }
             TextButton(onClick = onReset, modifier = Modifier.weight(1f)) { Text("重置") }
         }

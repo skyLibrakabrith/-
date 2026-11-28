@@ -196,9 +196,11 @@ class StepSequenceEngine(
     private fun finish() {
         tickJob?.cancel()
         tickJob = null
+        // 与 stop() 同理：先把当前阶段结算掉再改相位，
+        // 否则最后一个阶段永远不会进归档。
+        emitEnded()
         activeSequenceId = null
         _phase.value = Phase.Finished
-        emitEnded()
     }
 
     /**
@@ -255,13 +257,81 @@ class StepSequenceEngine(
     fun stop() {
         tickJob?.cancel()
         tickJob = null
+        // **必须在改相位之前结算**：`settleCurrentStep()` 要从 `_phase.value` 读
+        // 当前是哪一步。原来先置 Idle 再 emitEnded，于是它在 Idle 上直接 return，
+        // `stepRuns` 为空 → emitEnded 里的 `if (stepRuns.isEmpty()) return` 命中 →
+        // **停止序列时根本没有归档**（用户要求的「每个跑过的阶段记一条」失效）。
+        emitEnded()
         // 清掉暂停标志：否则暂停中停机、下次 start 第一步会一出生就是"暂停"，
         // 表现为序列不动，像死机一样（停了就该回到干净状态）
         _paused.value = false
         activeSequenceId = null
         _phase.value = Phase.Idle
-        // 中途停掉：已经跑过的时间同样要记进归档（用户要求"每个跑过的阶段记一条"）
-        emitEnded()
+    }
+
+    /**
+     * 序列正在跑的时候，用户编辑了它的步骤 —— 就地替换，**不重新开始**。
+     *
+     * ## 为什么需要
+     *
+     * 引擎在 [start] 时把步骤**拷贝**进私有 [steps]，之后再不重读。
+     * 原来编辑保存后只写库、只刷新卡片用的 `stepsBySequence`，
+     * 引擎（以及由它驱动的悬浮窗）还拿着旧列表。
+     * 用户就是在序列 A 的第一阶段时插了个「1.5 阶段」，卡片变成 3 个阶段，
+     * 悬浮窗和引擎却还是 2 个 —— 这就是那条反馈。
+     *
+     * ## 进度怎么保
+     *
+     * 按 **`Step.id`** 找当前正在跑的那一步在新列表里的下标，用它作新的 `stepIndex`：
+     * - 找到 → 保留进度，只更新 `steps` 与相位里的 `step` 快照
+     * - 当前步被删了 → 退到"原下标位置的那一步"（越界则取最后一步），
+     *   并让倒计时按新步骤的时长重新开始 —— 原来那一步已经不存在，没法续
+     *
+     * 加阶段不会重新开始序列：用户只是想插一步，不是想从头再来。
+     *
+     * @return 是否真的应用了（无活动序列、或新列表为空时返回 false）
+     */
+    fun updateSteps(newSteps: List<Step>): Boolean {
+        val current = _phase.value
+        val runningIndex = when (current) {
+            is Phase.Running -> current.stepIndex
+            is Phase.AwaitingConfirm -> current.finishedStepIndex
+            else -> return false   // Idle / Finished：没有活动序列，交给下次 start
+        }
+        if (newSteps.isEmpty()) return false
+
+        val oldCurrentStep = steps.getOrNull(runningIndex)
+        this.steps = newSteps
+
+        // 当前步还在吗？（按 id 认，不按下标 —— 用户可能只看顺序变了）
+        val idx = if (oldCurrentStep != null) {
+            newSteps.indexOfFirst { it.id == oldCurrentStep.id }
+        } else {
+            -1
+        }
+
+        if (idx >= 0) {
+            // 保留了进度：只把相位里的 step 快照换成新的那份描述
+            // （label / 时长可能都改过），倒计时剩余时间不动。
+            when (current) {
+                is Phase.Running -> _phase.value = current.copy(
+                    stepIndex = idx,
+                    step = newSteps[idx],
+                )
+                is Phase.AwaitingConfirm -> _phase.value = current.copy(
+                    finishedStepIndex = idx,
+                    finishedStep = newSteps[idx],
+                    nextStep = newSteps.getOrNull(idx + 1),
+                )
+                else -> Unit
+            }
+            return true
+        }
+
+        // 当前步被删掉了：原下标位置有就用它，越界取最后一步，按新步骤重开这一段计时。
+        val fallback = runningIndex.coerceIn(0, newSteps.size - 1)
+        runStep(fallback)
+        return true
     }
 
     private fun runStep(index: Int) {

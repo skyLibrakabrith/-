@@ -64,6 +64,7 @@ import at.cwiesner.android.visualtimer.ext.ui.home.HomeScreen
 import at.cwiesner.android.visualtimer.ext.ui.panels.PanelAction
 import at.cwiesner.android.visualtimer.ext.ui.panels.PanelsScreen
 import at.cwiesner.android.visualtimer.ext.ui.settings.SettingsScreen
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -104,9 +105,23 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // 屏幕常亮：按设置决定是否加 FLAG_KEEP_SCREEN_ON
+        // 屏幕常亮：**只在真正计时时**才加 FLAG_KEEP_SCREEN_ON。
+        //
+        // 原来是"开关一开就一直亮"，翻设置页、看归档也让屏幕永不熄灭，纯费电。
+        // 现在把「开关 + 是否有计时在跑 + 序列相位」三者组合起来判断
+        // （判据收在 `shouldKeepScreenOn` 里，可以单测）。
         lifecycleScope.launch {
-            settings.keepScreenOn.collect { on ->
+            combine(
+                settings.keepScreenOn,
+                app.panelRunner.runtimes,
+                app.sequenceEngine.phase,
+            ) { keepOn, runtimes, phase ->
+                at.cwiesner.android.visualtimer.ext.domain.shouldKeepScreenOn(
+                    enabled = keepOn,
+                    anyTimerRunning = runtimes.values.any { it.running },
+                    sequencePhase = phase,
+                )
+            }.collect { on ->
                 if (on) {
                     window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
                 } else {
