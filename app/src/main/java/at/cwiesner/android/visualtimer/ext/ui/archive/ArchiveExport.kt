@@ -97,10 +97,18 @@ internal fun buildExportText(
         .filter { it.startedAt < untilMillis && it.endedAt > fromMillis }
         .sortedWith(compareBy({ it.startedAt }, { it.id }))
 
-    val total = inRange.sumOf { s ->
-        (s.endedAt.coerceIn(fromMillis, untilMillis) - s.startedAt.coerceIn(fromMillis, untilMillis))
-            .coerceAtLeast(0L)
-    }
+    // 合计按**区间并集**算，不是逐条相加。
+    //
+    // 逐条相加在两种情况下会把时间重复计入：
+    // 1. 一次计时被拆成多段（暂停占位行被后续区间覆盖时可能出现相邻/重叠）；
+    // 2. 跨午夜拆分后同一个小时被两条记录同时覆盖。
+    // 用 mergeIntervals 把重叠/相邻的并起来再求长度，结果只与"哪些时刻在计时"有关。
+    val total = at.cwiesner.android.visualtimer.ext.domain.mergedDurationMillis(
+        inRange.map { s ->
+            s.startedAt.coerceIn(fromMillis, untilMillis) to
+                s.endedAt.coerceIn(fromMillis, untilMillis)
+        },
+    )
 
     // 跨窗口的记录在「开始/结束」列里必须带上日期，否则看不出是前一天还是后一天
     fun stamp(millis: Long): String =

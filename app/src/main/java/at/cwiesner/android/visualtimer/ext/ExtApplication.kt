@@ -21,7 +21,6 @@ import at.cwiesner.android.visualtimer.ext.domain.DeadlineCalculator
 import at.cwiesner.android.visualtimer.ext.domain.DeadlineRestore
 import at.cwiesner.android.visualtimer.ext.domain.PanelRunner
 import at.cwiesner.android.visualtimer.ext.domain.TimerRuntime
-import at.cwiesner.android.visualtimer.ext.domain.elapsedMillisForArchive
 import at.cwiesner.android.visualtimer.ext.service.AlertOverlayService
 import at.cwiesner.android.visualtimer.ext.service.TimerOverlayService
 import at.cwiesner.android.visualtimer.ext.settings.SettingsRepo
@@ -56,6 +55,16 @@ class ExtApplication : Application() {
     }
 
     val database: AppDatabase by lazy { AppDatabase.get(this) }
+
+    /**
+     * 一次计时归档的唯一写入者。
+     *
+     * 所有归档路径（暂停 / 恢复 / 重置 / 停到点 / 用户结束）都走它，
+     * 语义只有一份，避免再次出现"两条路径各算一遍、结果不一致"。
+     */
+    val sessionArchiver by lazy {
+        at.cwiesner.android.visualtimer.ext.domain.SessionArchiver(database)
+    }
 
     /**
      * 警报配置（振动模式）的**应用级共享订阅**。
@@ -110,6 +119,43 @@ class ExtApplication : Application() {
                     step.id,
                     sequenceId = step.sequenceId,
                 )
+            },
+            onSequenceEnded = { runs ->
+                // 序列结束（跑完或被停掉）：每个**跑过的**阶段写一条归档。
+                //
+                // 用户要求：「序列被停止或跑完时，每个跑过的阶段记一条」。
+                // 为什么按阶段而不是按序列：序列里的阶段本身就是一次次计时
+                // （各有计划时长），分开记才能在归档里看出"哪一步超时了"。
+                //
+                // 太短的阶段按 ArchiveRules 挡掉，避免跳步操作刷出一堆 0 秒记录。
+                val dao = database.timerSessionDao()
+                val now = System.currentTimeMillis()
+                for (r in runs) {
+                    val planned = r.step.durationMillis
+                    if (!at.cwiesner.android.visualtimer.ext.domain.ArchiveRules.shouldArchive(
+                            stopwatch = false,
+                            elapsedMillis = r.actualMillis,
+                            plannedMillis = planned,
+                        )
+                    ) {
+                        continue
+                    }
+                    // 区间按"从结束时刻往回退实际用时"推，保证与盘面显示一致
+                    val endedAt = now
+                    val startedAt = endedAt - r.actualMillis
+                    logCatching("archive-sequence-step") {
+                        dao.insert(
+                            TimerSession(
+                                label = r.step.label ?: "阶段 ${r.stepIndex + 1}",
+                                startedAt = startedAt,
+                                endedAt = endedAt,
+                                plannedMillis = planned,
+                                kind = TimerKind.Countdown.name,
+                                completed = r.actualMillis >= planned,
+                            ),
+                        )
+                    }
+                }
             },
         )
     }
@@ -720,45 +766,21 @@ class ExtApplication : Application() {
         // 归档是"当时发生了什么"的事实记录，不能只记计划。
         // plannedMillis 仍然存 rt.totalMillis（计划值），所以归档能同时给出
         // "计划 5 分 / 实际 8 分"这个对比。
-        val startedAt = rt.startedAt.takeIf { it > 0L } ?: System.currentTimeMillis()
-        // 实际走了多久（含超时）—— 算式收在 elapsedMillisForArchive 里，
-        // 与「结束」按钮那条路径共用，避免两边各算一份以后漂移。
-        val elapsed = elapsedMillisForArchive(
-            totalMillis = rt.totalMillis,
-            remainingMillis = rt.remainingMillis,
-            overdueMillis = rt.overdueMillis,
-            stopwatch = rt.stopwatch,
-            stopwatchSegmentMillis = rt.stopwatchSegmentMillis,
-        )
-        val endedAt = (startedAt + elapsed).coerceAtLeast(startedAt)
-
         // **只在"这一轮计时真的结束了"时归档**：也就是它即将被移出面板（未固定）。
         //
-        // 固定的计时器到点后并没有结束 —— 它转入超时继续走，盘面还在转
-        // （见 PieTimerView 的超时旋转弧），用户随时可能回来继续。
-        // 如果到期就归档一条，等用户之后取消固定再点「结束」，同一次计时会出现
-        // **两条**记录（到期一条 60s + 结束一条 110s），归档合计重复计算。
-        //
+        // 固定的计时器到点后并没有结束 —— 它转入超时继续走，盘面还在转，
+        // 用户随时可能回来继续。如果到期就归档一条，等用户之后取消固定再点「结束」，
+        // 同一次计时会出现**两条**记录（到期一条 60s + 结束一条 110s），合计重复计算。
         // 真机上确认过这个重复：同一个 startedAt 落了两行。
-        //
-        // 反过来，未固定 = 一次性计时，到点即结束，归档 + 移除一起做，
-        // 语义干净且只有一条记录。
         //
         // `timer == null` 说明计时器行已经被删了（用户直接删掉卡片），
         // 这时也该留一条历史，否则那次计时凭空消失。
         val willBeRemoved = timer == null || !timer.pinned
         if (willBeRemoved) {
-            logCatching("archive-insert") {
-                dao.insert(
-                    TimerSession(
-                        label = rt.label ?: timer?.label,
-                        startedAt = startedAt,
-                        endedAt = endedAt,
-                        plannedMillis = rt.totalMillis,
-                        kind = timer?.kind?.name ?: TimerKind.Countdown.name,
-                        completed = true,
-                    ),
-                )
+            // 交给 SessionArchiver：它会自动处理「暂停时已有占位行」的情况 ——
+            // 有占位行就原地更新那一条（保持"一次计时一条记录"），没有就新插一条。
+            logCatching("archive-finish") {
+                sessionArchiver.finish(rt.copy(label = rt.label ?: timer?.label), completed = true)
             }
         }
 
@@ -818,13 +840,19 @@ class ExtApplication : Application() {
             }
         }
 
-        // 1.2) 正计时暂停：写一条归档
+        // 1.2) 暂停 / 恢复：开、封暂停区间
         //
-        // 正计时永远不到点，走不到上面那条 alerts 路径，所以必须单独接一个事件源。
-        // 详见 archiveStopwatchPause 的注释。
+        // 用户要求"暂停也自动归档，但一整条 + 圆盘上空出暂停段"。
+        // 所以暂停不是写一条新记录，而是：写一条 ongoing 占位行（进程被杀也不丢）
+        // + 开一个未封口的暂停区间；恢复时封口；真正结束时原地更新那条占位行。
         appScope.launch {
             panelRunner.pauseEvents.collect { rt ->
-                archiveStopwatchPause(rt)
+                logCatching("archive-pause") { sessionArchiver.onPause(rt) }
+            }
+        }
+        appScope.launch {
+            panelRunner.resumeEvents.collect { timerId ->
+                logCatching("archive-resume") { sessionArchiver.onResume(timerId) }
             }
         }
 

@@ -348,6 +348,12 @@ interface TimerPauseDao {
 
     @Query("DELETE FROM timer_pauses WHERE sessionId NOT IN (SELECT id FROM timer_sessions)")
     suspend fun deleteOrphans()
+
+    @Query("DELETE FROM timer_pauses WHERE sessionId = :sessionId")
+    suspend fun deleteForSession(sessionId: Long)
+
+    @Query("DELETE FROM timer_pauses WHERE id = :id")
+    suspend fun deleteById(id: Long)
 }
 
 @androidx.room.TypeConverters(Converters::class, TimerKindConverter::class)

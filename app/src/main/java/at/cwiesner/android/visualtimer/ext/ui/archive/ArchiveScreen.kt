@@ -114,6 +114,26 @@ fun ArchiveScreen(modifier: Modifier = Modifier) {
     val sessionsFlow = remember(dayStart, dayEnd) { db.timerSessionDao().observeBetween(dayStart, dayEnd) }
     val sessions by sessionsFlow.collectAsState(initial = emptyList<TimerSession>())
 
+    // 暂停区间：圆盘要把暂停那几段空出来。
+    // 一次性查库（不是 Flow）—— 暂停区间不会在用户盯着归档页时变化，
+    // 而且它只按当天这批 sessionId 查，量大不到哪去。
+    var pausesBySession by remember { mutableStateOf<Map<Long, List<Pair<Long, Long>>>>(emptyMap()) }
+    LaunchedEffect(sessions) {
+        val ids = sessions.map { it.id }
+        pausesBySession = if (ids.isEmpty()) {
+            emptyMap()
+        } else {
+            runCatching {
+                db.timerPauseDao().forSessions(ids)
+                    .groupBy { it.sessionId }
+                    .mapValues { (_, list) ->
+                        // toMillis = 0 表示仍在暂停中：留 0，由 buildDialArcs 当作"停到会话结束"
+                        list.map { it.fromMillis to it.toMillis }
+                    }
+            }.getOrDefault(emptyMap())
+        }
+    }
+
     // ---- 详情对话框 ----
     var detail by remember { mutableStateOf<TimerSession?>(null) }
 
@@ -203,6 +223,7 @@ fun ArchiveScreen(modifier: Modifier = Modifier) {
         // ---------------- 中部：表盘 ----------------
         DayPieChart(
             sessions = sessions,
+            pausesBySession = pausesBySession,
             dayStart = dayStart,
             dayEnd = dayEnd,
             onArcTap = { detail = it },

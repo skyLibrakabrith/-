@@ -90,8 +90,18 @@ class PanelRunnerPauseArchiveTest {
         job.cancel()
     }
 
+    /**
+     * 这条规则**在 2026-11-28 被用户明确改掉了**，旧断言是「倒计时暂停不发事件」。
+     *
+     * 原主意：倒计时暂停后还能继续走完，半途暂停不该算一次完整计时。
+     * 用户新要求：「暂停也自动归档，但一整条 + 圆盘上空出暂停段」。
+     *
+     * 实现方式让两者不再冲突：暂停时写一条 `ongoing = 1` 的**占位**行，
+     * 结束时原地更新它，归档里始终只有一条；暂停区间单独记在 timer_pauses 里。
+     * 所以引擎这边必须发事件 —— 否则占位行和暂停区间都无从产生。
+     */
     @Test
-    fun `倒计时暂停不发事件`() {
+    fun `倒计时暂停也发事件`() {
         val runner = runner()
         val events = mutableListOf<TimerRuntime>()
         val job = scope.launch { runner.pauseEvents.collect { events += it } }
@@ -99,11 +109,21 @@ class PanelRunnerPauseArchiveTest {
         runner.tick(10_000L, System.currentTimeMillis())
         runner.stop(2L)
 
-        assertEquals(
-            "倒计时暂停后还能继续走到点，半途暂停不该算一次完整计时",
-            0,
-            events.size,
-        )
+        assertEquals("倒计时暂停现在也要归档（占位行 + 暂停区间）", 1, events.size)
+        assertEquals("载荷应是已停止的快照", false, events[0].running)
+        job.cancel()
+    }
+
+    @Test
+    fun `恢复会发 resume 事件`() {
+        val runner = runner()
+        val resumes = mutableListOf<Long>()
+        val job = scope.launch { runner.resumeEvents.collect { resumes += it } }
+        runner.start(countdown())
+        runner.stop(2L)
+        runner.resume(2L)
+
+        assertEquals("恢复时要封口暂停区间", listOf(2L), resumes)
         job.cancel()
     }
 

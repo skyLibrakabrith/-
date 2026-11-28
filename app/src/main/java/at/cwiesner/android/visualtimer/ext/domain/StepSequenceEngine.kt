@@ -35,6 +35,15 @@ import kotlinx.coroutines.launch
 class StepSequenceEngine(
     private val scope: CoroutineScope,
     private val onStepFinished: suspend (Step) -> Unit,
+    /**
+     * 序列被停止或正常跑完时回调，载荷是**真正跑过的阶段**及其实际用时。
+     *
+     * 用户要求：「序列被停止或跑完时，每个跑过的阶段记一条归档」。
+     *
+     * 为什么由引擎提供：只有它知道每一步实际走了多久（含暂停、含超时）。
+     * 界面层拿到的只是快照，自己再算一遍必然和引擎不一致。
+     */
+    private val onSequenceEnded: suspend (List<StepRun>) -> Unit = {},
 ) {
     sealed interface Phase {
         data object Idle : Phase
@@ -103,6 +112,17 @@ class StepSequenceEngine(
     private var sequence: StepSequence? = null
     private var steps: List<Step> = emptyList()
 
+    /**
+     * 本次运行中每个阶段的实际所用时长（毫秒），按阶段顺序。
+     *
+     * 在 [runStep] 进入时开始计时，在阶段结束时结算；`stop()` / `finish()`
+     * 会把还没结算的那一步也结算进去 —— 用户中途停掉序列，那一步跑过的时间
+     * 同样发生过，不能丢。
+     */
+    private val stepRuns = mutableListOf<StepRun>()
+    /** 当前阶段开始计时的时刻（`System.nanoTime()` 基准，避免墙钟跳变）。 */
+    private var currentStepStartedNanos = 0L
+
     /** 启动一个序列。若已有运行中的序列，先停止。 */
     fun start(seq: StepSequence, steps: List<Step>) {
         stop()
@@ -113,6 +133,7 @@ class StepSequenceEngine(
         this.sequence = seq
         this.steps = steps
         this.activeSequenceId = seq.id
+        stepRuns.clear()
         runStep(0)
     }
 
@@ -177,6 +198,41 @@ class StepSequenceEngine(
         tickJob = null
         activeSequenceId = null
         _phase.value = Phase.Finished
+        emitEnded()
+    }
+
+    /**
+     * 结算当前阶段并回调 [onSequenceEnded]，然后清空记录。
+     *
+     * `stop()` 与 `finish()` 是两个独立终点（正常跑完 / 用户停掉），
+     * 两者都要把"跑过的阶段"交出去，否则中途停掉的那次序列在归档里不留痕迹。
+     */
+    private fun emitEnded() {
+        settleCurrentStep()
+        if (stepRuns.isEmpty()) return
+        val payload = stepRuns.toList()
+        stepRuns.clear()
+        scope.launch { runCatching { onSequenceEnded(payload) } }
+    }
+
+    /** 把「当前正在跑的那一步」按已过时间结算进 [stepRuns]。 */
+    private fun settleCurrentStep() {
+        if (currentStepStartedNanos == 0L) return
+        val elapsed = (System.nanoTime() - currentStepStartedNanos) / 1_000_000L
+        currentStepStartedNanos = 0L
+        val phase = _phase.value
+        val (idx, step) = when (phase) {
+            is Phase.Running -> phase.stepIndex to phase.step
+            is Phase.AwaitingConfirm -> phase.finishedStepIndex to phase.finishedStep
+            else -> return
+        }
+        // 已经结算过这一步就不再重复（finish/stop 可能前后脚都被调用）
+        if (stepRuns.any { it.stepIndex == idx }) return
+        stepRuns += StepRun(
+            stepIndex = idx,
+            step = step,
+            actualMillis = elapsed.coerceAtLeast(0L),
+        )
     }
 
     /** 跳过当前步，直接进入下一步（不触发警报）。 */
@@ -204,6 +260,8 @@ class StepSequenceEngine(
         _paused.value = false
         activeSequenceId = null
         _phase.value = Phase.Idle
+        // 中途停掉：已经跑过的时间同样要记进归档（用户要求"每个跑过的阶段记一条"）
+        emitEnded()
     }
 
     private fun runStep(index: Int) {
@@ -211,6 +269,10 @@ class StepSequenceEngine(
         val step = steps[index]
         val seq = sequence ?: return
         val total = step.durationMillis
+
+        // 上一阶段若还没结算（比如 skip 直接跳过来），先补上
+        settleCurrentStep()
+        currentStepStartedNanos = System.nanoTime()
 
         // 新的一步从"未暂停"开始：同一趟序列里暂停第 2 步，不应让第 3 步一出生就冻住。
         // 放在 launch 外面而不是协程内部，是为了让它同步生效 —— 新协程真正开跑之前
@@ -301,3 +363,18 @@ class StepSequenceEngine(
         const val TICK_MILLIS: Long = 100L
     }
 }
+
+/**
+ * 一个阶段在**某一次序列运行**中的实际执行情况。
+ *
+ * 为什么不直接给 `Step`：`Step.durationMillis` 是**计划**时长，
+ * 归档要的是"实际跑了多久"（可能因为暂停更久、也可能被用户提前跳过）。
+ *
+ * @property stepIndex 在序列里的序号（0 起），用于排序和定位
+ * @property actualMillis 实际经过的时间（含暂停、含超时）
+ */
+data class StepRun(
+    val stepIndex: Int,
+    val step: Step,
+    val actualMillis: Long,
+)

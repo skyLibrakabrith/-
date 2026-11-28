@@ -42,7 +42,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import at.cwiesner.android.visualtimer.ext.data.TimerSession
 import at.cwiesner.android.visualtimer.ext.data.saveAndGetId
 import at.cwiesner.android.visualtimer.ext.data.AlertProfile
 import at.cwiesner.android.visualtimer.ext.data.GroupMember
@@ -55,7 +54,6 @@ import at.cwiesner.android.visualtimer.ext.data.TimerGroup
 import at.cwiesner.android.visualtimer.ext.data.TimerItem
 import at.cwiesner.android.visualtimer.ext.data.TimerKind
 import at.cwiesner.android.visualtimer.ext.domain.DeadlineCalculator
-import at.cwiesner.android.visualtimer.ext.domain.elapsedMillisForArchive
 import at.cwiesner.android.visualtimer.ext.domain.DeadlineCreator
 import at.cwiesner.android.visualtimer.ext.domain.StepSequenceEngine
 import at.cwiesner.android.visualtimer.ext.ui.ExtColors
@@ -389,40 +387,17 @@ fun PanelsScreen(
      */
     suspend fun archiveAndEndTimer(t: TimerItem) {
         val rt = runner.get(t.id)
-        val now = System.currentTimeMillis()
-        val elapsed = if (rt == null) {
-            0L
-        } else {
-            // 实际时长（含超时）。算式收在 elapsedMillisForArchive 里，
-            // 与「到点自动归档」那条路径共用。
-            elapsedMillisForArchive(
-                totalMillis = rt.totalMillis,
-                remainingMillis = rt.remainingMillis,
-                overdueMillis = rt.overdueMillis,
-                stopwatch = rt.stopwatch,
-                stopwatchSegmentMillis = rt.stopwatchSegmentMillis,
-            )
-        }
-        val startedAt = rt?.startedAt?.takeIf { it > 0L } ?: (now - elapsed).coerceAtLeast(0L)
-        // 时长为 0（从没跑过就点结束）不写归档 —— 那不是"发生过一次计时"
-        if (elapsed >= 1000L) {
+        // 交给 SessionArchiver 收尾：它会原地更新暂停时写下的那条占位行
+        // （保证"一次计时只有一条记录"），并按 ArchiveRules 判断这段是否太短。
+        if (rt != null) {
             runCatching {
-                db.timerSessionDao().insert(
-                    TimerSession(
-                        label = t.label,
-                        startedAt = startedAt,
-                        endedAt = now,
-                        plannedMillis = if (rt?.stopwatch == true) elapsed else rt?.totalMillis ?: t.durationMillis,
-                        kind = t.kind.name,
-                        completed = false,
-                    ),
-                )
+                app.sessionArchiver.finish(rt.copy(label = rt.label ?: t.label), completed = false)
             }
         }
+        app.sessionArchiver.forget(t.id)
         deleteTimerRows(t.id, removeRefPanelId = currentPanel?.id)
         toast("已结束并归档" + t.label?.let { "：$it" }.orEmpty())
     }
-
 
     /**
      * 删除一个面板，并级联清掉它的全部从属行。
@@ -712,9 +687,22 @@ fun PanelsScreen(
                         toast("已暂停")
                     },
                     onReset = {
-                        // 与网格卡片同一套语义：未固定 = 结束并归档，固定 = 重置
+                        // 未固定 = 结束并归档 + 移除卡片；固定 = 重置（回到原始时长，卡片留着）。
+                        //
+                        // **两种都归档**（用户要求）：重置也是一次计时的结束 ——
+                        // 前面跑过的那段时间确实发生过。区别只在收尾之后卡片留不留。
+                        // 归档走 SessionArchiver：会按 ArchiveRules 挡掉"不到 1/10 的误触"。
                         scope.launch {
                             if (focused.pinned) {
+                                runner.get(focused.id)?.let { rt ->
+                                    runCatching {
+                                        app.sessionArchiver.finish(
+                                            rt.copy(label = rt.label ?: focused.label),
+                                            completed = false,
+                                        )
+                                    }
+                                }
+                                app.sessionArchiver.forget(focused.id)
                                 runner.reset(focused.id)
                             } else {
                                 archiveAndEndTimer(focused)
@@ -968,6 +956,16 @@ fun PanelsScreen(
                                             // 固定 = 「重置」：回到满格接着用，不写归档。
                                             scope.launch {
                                                 if (t.pinned) {
+                                                    // 重置也归档（理由见全屏页那段注释）
+                                                    runner.get(t.id)?.let { rt ->
+                                                        runCatching {
+                                                            app.sessionArchiver.finish(
+                                                                rt.copy(label = rt.label ?: t.label),
+                                                                completed = false,
+                                                            )
+                                                        }
+                                                    }
+                                                    app.sessionArchiver.forget(t.id)
                                                     runner.reset(t.id)
                                                 } else {
                                                     archiveAndEndTimer(t)

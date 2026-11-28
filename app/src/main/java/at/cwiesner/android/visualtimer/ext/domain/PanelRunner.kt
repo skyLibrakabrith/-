@@ -215,6 +215,17 @@ class PanelRunner(private val scope: CoroutineScope) {
     val pauseEvents: kotlinx.coroutines.flow.SharedFlow<TimerRuntime> =
         _pauseEvents.asSharedFlow()
 
+    /**
+     * 「恢复计时」事件，载荷是**恢复前**的 id 列表 —— 只需要 id 去封口暂停区间。
+     *
+     * 与 [pauseEvents] 成对：暂停开一个区间，恢复封口。少了这一半，
+     * 归档页的圆盘会把暂停一直画到会话结束。
+     */
+    private val _resumeEvents = kotlinx.coroutines.flow.MutableSharedFlow<Long>(
+        extraBufferCapacity = 16,
+    )
+    val resumeEvents: kotlinx.coroutines.flow.SharedFlow<Long> = _resumeEvents.asSharedFlow()
+
     fun setLeadMinutes(timerId: Long, minutes: List<Long>) {
         leadMinutesOf[timerId] = minutes.sortedDescending()
     }
@@ -462,6 +473,8 @@ class PanelRunner(private val scope: CoroutineScope) {
                 r.copy(running = true)
             }
             )
+        // 告知归档侧「暂停区间到此为止」
+        _resumeEvents.tryEmit(timerId)
         // 继续也是关键边界：立即落盘，保证"继续后马上杀进程"也不丢
         requestSnapshotNow()
     }
@@ -561,12 +574,16 @@ class PanelRunner(private val scope: CoroutineScope) {
         val stopped = r.copy(running = false)
         _runtimes.value = _runtimes.value + (timerId to stopped)
 
-        // 正计时暂停 = 这一轮"结束"了（它永远不到点，走不到 alerts）。
-        // 用停止后的快照发事件，调用方据此写一条归档。
+        // 暂停一律发事件 —— 正计时和倒计时都发。
         //
-        // 倒计时**不**在这里归档：它暂停后还能继续走完，到点时 alerts 会写，
-        // 提前暂停不该算"发生过一次完整计时"，否则归档会被半途暂停刷满。
-        if (wasRunning && r.stopwatch) {
+        // 早先这里只发正计时，理由写的是"倒计时暂停后还能继续走完，到点时 alerts
+        // 会写，提前暂停不该算一次完整计时"。用户明确要求改成：**暂停也自动归档**，
+        // 且语义是"一整条记录 + 圆盘上空出暂停段"。
+        //
+        // 所以现在的做法不是"暂停写一条、结束再写一条"（那样一次计时会变成两条），
+        // 而是暂停时写一条 `ongoing = 1` 的占位行，结束时**原地更新**它 ——
+        // 归档里始终只有一条，暂停区间挂在 timer_pauses 上供圆盘画空隙。
+        if (wasRunning) {
             _pauseEvents.tryEmit(stopped)
         }
         // 暂停是"状态变了"的关键边界，立即落盘，不节流：

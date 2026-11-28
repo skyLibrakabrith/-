@@ -186,6 +186,14 @@ internal fun buildDialArcs(
     sessions: List<TimerSession>,
     dayStart: Long,
     dayEnd: Long,
+    /**
+     * 每条会话的暂停区间（sessionId → `[from, to)` 列表）。
+     *
+     * 用户要求「圆盘上把暂停的那段空出来」。做法是把一条记录的弧按暂停区间
+     * **切成多段连续的子弧**，中间留空 —— 环位（`ring`）仍然按记录算，
+     * 所以同一次计时切开的几段看起来还是同一圈。
+     */
+    pausesBySession: Map<Long, List<Pair<Long, Long>>> = emptyMap(),
 ): List<DialArc> {
     val span = (dayEnd - dayStart).coerceAtLeast(1L)
     val sorted = sessions.sortedWith(compareBy({ it.startedAt }, { it.id }))
@@ -197,14 +205,47 @@ internal fun buildDialArcs(
         val from = s.startedAt.coerceIn(dayStart, dayEnd)
         val to = s.endedAt.coerceIn(dayStart, dayEnd)
         if (to <= from) return@forEachIndexed
-        out += DialArc(
-            session = s,
-            orderIdx = idx,
-            ring = DayDialGeometry.ringOf(idx, count),
-            alpha = DayDialGeometry.alphaOf(idx, count),
-            startAngle = DayDialGeometry.angleOf(from - dayStart, span),
-            sweepAngle = (to - from).toFloat() / span.toFloat() * DayDialGeometry.FULL_SWEEP,
-        )
+        val ring = DayDialGeometry.ringOf(idx, count)
+        val alpha = DayDialGeometry.alphaOf(idx, count)
+
+        // 没有暂停信息：保持原样，一条记录一段弧
+        val pauses = pausesBySession[s.id].orEmpty()
+        if (pauses.isEmpty()) {
+            out += DialArc(
+                session = s,
+                orderIdx = idx,
+                ring = ring,
+                alpha = alpha,
+                startAngle = DayDialGeometry.angleOf(from - dayStart, span),
+                sweepAngle = (to - from).toFloat() / span.toFloat() * DayDialGeometry.FULL_SWEEP,
+            )
+            return@forEachIndexed
+        }
+
+        // 有暂停：把 [from, to) 减去暂停区间，得到若干"真正在计时"的片段
+        var cursor = from
+        val pieces = mutableListOf<Pair<Long, Long>>()
+        for ((pf, pt) in pauses.sortedBy { it.first }) {
+            val a = pf.coerceIn(from, to)
+            // to = 0（仍在暂停中）视为一直停到会话结束
+            val b = (if (pt <= 0L) to else pt).coerceIn(from, to)
+            if (b <= a) continue
+            if (a > cursor) pieces += cursor to a
+            if (b > cursor) cursor = b
+        }
+        if (cursor < to) pieces += cursor to to
+        if (pieces.isEmpty()) return@forEachIndexed
+
+        pieces.forEach { (a, b) ->
+            out += DialArc(
+                session = s,
+                orderIdx = idx,
+                ring = ring,
+                alpha = alpha,
+                startAngle = DayDialGeometry.angleOf(a - dayStart, span),
+                sweepAngle = (b - a).toFloat() / span.toFloat() * DayDialGeometry.FULL_SWEEP,
+            )
+        }
     }
     return out
 }

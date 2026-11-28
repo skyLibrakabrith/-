@@ -73,6 +73,8 @@ import kotlin.math.sin
 @Composable
 internal fun DayPieChart(
     sessions: List<TimerSession>,
+    /** 每条会话的暂停区间，供圆盘空出暂停段（见 buildDialArcs）。 */
+    pausesBySession: Map<Long, List<Pair<Long, Long>>> = emptyMap(),
     dayStart: Long,
     dayEnd: Long,
     onArcTap: (TimerSession) -> Unit,
@@ -80,9 +82,16 @@ internal fun DayPieChart(
 ) {
     // 几何在这里一次算好后固定下来。重点是 hits 和绘制用**同一批** DialArc 对象，
     // 保证"看到的那一段"和"点中的那一段"严格是同一个。
-    val arcs = remember(sessions, dayStart, dayEnd) { buildDialArcs(sessions, dayStart, dayEnd) }
+    val arcs = remember(sessions, dayStart, dayEnd, pausesBySession) {
+        buildDialArcs(sessions, dayStart, dayEnd, pausesBySession)
+    }
+    // 与 ArchiveExport 同一套去重口径：并集长度而不是逐条相加。
     val totalMillis = remember(sessions, dayStart, dayEnd) {
-        sessions.sumOf { actualMillisInDay(it, dayStart, dayEnd) }
+        at.cwiesner.android.visualtimer.ext.domain.mergedDurationMillis(
+            sessions.map { s ->
+                s.startedAt.coerceIn(dayStart, dayEnd) to s.endedAt.coerceIn(dayStart, dayEnd)
+            },
+        )
     }
 
     // pointerInput 的 key 是 Unit（否则每次数据变化都要重建手势，AGENTS.md 铁律 4），
