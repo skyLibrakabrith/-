@@ -69,6 +69,13 @@ jobs:
         timeout-minutes: 10
         run: gradle :app:testDebugUnitTest --no-daemon --stacktrace
 
+      # 单测用的是内存假 DAO，**不会执行 Room 的 @Query SQL**。
+      # 这个脚本把真实 SQL 与真实迁移语句放到真实 SQLite 上跑一遍，
+      # 覆盖「SQL 写错」和「迁移跑不通」这两类单测抓不到的问题。
+      - name: Verify archive DB (real SQLite)
+        timeout-minutes: 5
+        run: python3 tools/verify_archive_db.py
+
       - name: Upload test reports on failure
         if: failure()
         uses: actions/upload-artifact@v5
