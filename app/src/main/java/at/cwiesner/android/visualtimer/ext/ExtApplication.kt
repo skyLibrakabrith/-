@@ -22,6 +22,7 @@ import at.cwiesner.android.visualtimer.ext.domain.DeadlineRestore
 import at.cwiesner.android.visualtimer.ext.domain.PanelRunner
 import at.cwiesner.android.visualtimer.ext.domain.TimerRuntime
 import at.cwiesner.android.visualtimer.ext.service.AlertOverlayService
+import at.cwiesner.android.visualtimer.ext.service.KeepAliveService
 import at.cwiesner.android.visualtimer.ext.service.TimerOverlayService
 import at.cwiesner.android.visualtimer.ext.settings.SettingsRepo
 import at.cwiesner.android.visualtimer.ext.util.logCatching
@@ -300,6 +301,25 @@ class ExtApplication : Application() {
             }
         }
     }
+
+    /**
+     * 把「开关 + 在跑数量」与「序列相位」合成一个布尔流：是否该保活。
+     *
+     * 单独抽成方法是为了让 `combine` 的类型标注写得下 —— 内联在
+     * `observeAlerts` 里时，Kotlin 会因为 `Map` 与 `sealed interface` 的
+     * 联合推断失败而报 "Not enough information to infer type argument for 'K'"。
+     */
+    private fun keepAliveFlow(
+        runningFlow: kotlinx.coroutines.flow.Flow<Pair<Boolean, Int>>,
+        phaseFlow: kotlinx.coroutines.flow.Flow<at.cwiesner.android.visualtimer.ext.domain.StepSequenceEngine.Phase>,
+    ): kotlinx.coroutines.flow.Flow<Boolean> =
+        kotlinx.coroutines.flow.combine(runningFlow, phaseFlow) { pair, phase ->
+            at.cwiesner.android.visualtimer.ext.domain.shouldKeepAlive(
+                backgroundEnabled = pair.first,
+                anyTimerRunning = pair.second > 0,
+                sequencePhase = phase,
+            )
+        }
 
     private fun observeFlashSetting() {
         appScope.launch {
@@ -908,6 +928,38 @@ class ExtApplication : Application() {
                         withContext(Dispatchers.IO) {
                             database.deadlineReminderDao().markFired(rowId)
                         }
+                    }
+                }
+            }
+        }
+
+        // 1.9) 保活：计时进行中挂一个前台服务，避免被系统优先回收
+        //
+        // **必须 combine 三个源**，不能在其中任何一个的 collect 里 `first()` 取另外两个：
+        // 上面悬浮窗那段注释（见 3) 处）已经踩过这个坑 —— `first()` 是一次性取值，
+        // 而 collect 只在**它自己那个 flow** 变化时才重跑。表现就是
+        // 「先启动计时器、再去开关里打开后台运行」永远不生效。
+        appScope.launch {
+            // 三个源合成一个：先用一个 flow 承载「开关 + 在跑数量」，再与相位合并。
+            //
+            // 直接用 `combine(a, b, c) { ... }` 三参重载在这里会因为
+            // `Map` 与 `sealed interface` 的类型推断失败而编译不过，所以拆开写。
+            val runningFlow: kotlinx.coroutines.flow.Flow<Pair<Boolean, Int>> =
+                combine(settings.backgroundEnabled, panelRunner.runtimes) { enabled, runtimes ->
+                    Pair(enabled, runtimes.values.count { it.running })
+                }
+            val keepFlow: kotlinx.coroutines.flow.Flow<Boolean> = keepAliveFlow(
+                runningFlow = runningFlow,
+                phaseFlow = sequenceEngine.phase,
+            )
+            keepFlow.collect { keep ->
+                if (keep) {
+                    logCatching("keepalive-start") {
+                        KeepAliveService.start(this@ExtApplication, "计时进行中")
+                    }
+                } else {
+                    logCatching("keepalive-stop") {
+                        KeepAliveService.stop(this@ExtApplication)
                     }
                 }
             }
