@@ -356,6 +356,80 @@ class SessionArchiverTest {
         assertEquals("暂停区间也不该被封口", 1, pauses.rows.count { it.toMillis == 0L })
     }
 
+    /**
+     * **跨轮复用的坑**：`PanelRunner.reset()` 把计时复位，用户接着再跑一轮
+     * （`start()` 会重写 `startedAt`）。如果 `onPause` 只按 timerId 查占位行，
+     * 新一轮的暂停会挂到上一轮那条**已经收尾**的会话上 ——
+     * 表现为"重置过一次之后，暂停就不产生新记录了"。
+     */
+    @Test
+    fun `重置后新一轮的暂停会新建记录而不是复用旧会话`() = runTest {
+        val sessions = FakeSessionDao()
+        val pauses = FakePauseDao()
+        var clock = 10_000_000L
+        val archiver = SessionArchiver(dao(sessions, pauses)) { clock }
+
+        // 第一轮：跑 10 分钟 → 暂停 → 重置（收尾）
+        clock += 600_000L
+        archiver.onPause(rt(remainingMillis = 25 * 60_000L - 600_000L, startedAt = 10_000_000L))
+        clock += 1_000L
+        archiver.finish(
+            rt(remainingMillis = 25 * 60_000L - 600_000L, startedAt = 10_000_000L),
+            completed = false,
+        )
+        assertEquals("第一轮一条", 1, sessions.rows.size)
+
+        // 第二轮：重置后重新开始，startedAt 变了
+        clock += 120_000L
+        val secondStart = clock
+        clock += 600_000L
+        archiver.onPause(
+            rt(remainingMillis = 25 * 60_000L - 600_000L, startedAt = secondStart),
+        )
+
+        assertEquals("**关键**：第二轮要新建一条，不能复用第一轮", 2, sessions.rows.size)
+        assertTrue("新一轮那条应是 ongoing", sessions.rows[1].ongoing)
+        assertEquals("新一轮的 startedAt 是新的", secondStart, sessions.rows[1].startedAt)
+        assertTrue("第一轮那条保持已完成", !sessions.rows[0].ongoing)
+    }
+
+    /**
+     * 真实路径：全屏页的「开始」在已暂停状态下走的是 `clear + start`，
+     * **不会先调 finish**。于是上一轮的占位行留在库里、映射也还在，
+     * 新一轮暂停若按 timerId 直接复用，就会把新数据写进旧会话。
+     *
+     * 防护靠 onPause 比较 `startedAt`：不一致就丢弃映射、新建一条。
+     */
+    @Test
+    fun `未收尾就重新开始时 新一轮暂停不复用旧会话`() = runTest {
+        val sessions = FakeSessionDao()
+        val pauses = FakePauseDao()
+        var clock = 20_000_000L
+        val archiver = SessionArchiver(dao(sessions, pauses)) { clock }
+
+        // 第一轮：暂停（写占位行），但**不 finish**
+        clock += 600_000L
+        archiver.onPause(rt(remainingMillis = 25 * 60_000L - 600_000L, startedAt = 20_000_000L))
+        assertEquals(1, sessions.rows.size)
+        assertTrue(sessions.rows[0].ongoing)
+
+        // 用户没点结束，直接「开始」→ clear + start，startedAt 变了
+        clock += 60_000L
+        val newStart = clock
+        clock += 600_000L
+        archiver.onPause(
+            rt(remainingMillis = 25 * 60_000L - 600_000L, startedAt = newStart),
+        )
+
+        assertEquals("必须新建一条，而不是复用第一轮", 2, sessions.rows.size)
+        assertEquals("新记录的 startedAt 是新的", newStart, sessions.rows[1].startedAt)
+        assertEquals(
+            "旧那条仍是第一轮的区间",
+            20_000_000L,
+            sessions.rows[0].startedAt,
+        )
+    }
+
     @Test
     fun `残留记录太短则删除`() = runTest {
         // 直接塞一条只有 3 秒的 ongoing（模拟异常退出）

@@ -676,6 +676,9 @@ fun PanelsScreen(
                                 runner.resume(focused.id)
                                 toast("继续计时")
                             } else {
+                                // 上一轮还没归档就先补一条（start 会重建运行时，进度直接丢）
+                                app.sessionArchiver.finishIfNeeded(runner.get(focused.id))
+                                app.sessionArchiver.forget(focused.id)
                                 runner.clear(focused.id)
                                 runner.start(focused)
                                 toast("开始计时")
@@ -793,7 +796,13 @@ fun PanelsScreen(
                     onBatchStart = {
                         scope.launch {
                             val chosen = timers.filter { it.id in selectedIds }
-                            chosen.forEach { t -> runner.clear(t.id); runner.start(t) }
+                            chosen.forEach { t ->
+                                // 同上：重新开始前把没归档的那一轮补上
+                                app.sessionArchiver.finishIfNeeded(runner.get(t.id))
+                                app.sessionArchiver.forget(t.id)
+                                runner.clear(t.id)
+                                runner.start(t)
+                            }
                             toast("已启动 ${chosen.size} 个计时器")
                         }
                     },

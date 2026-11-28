@@ -68,10 +68,21 @@ class SessionArchiver(
      * @return 是否新建了一条
      */
     suspend fun onPause(rt: TimerRuntime): Boolean {
-        if (ongoingSessionOf.containsKey(rt.timerId)) {
-            // 已经有占位行了，只把暂停区间推进（理论上不该发生，防御一下）
-            touch(rt)
-            return false
+        val existing = ongoingSessionOf[rt.timerId]
+        if (existing != null) {
+            // 已有占位行：确认它属于**同一轮**计时（startedAt 一致）才复用。
+            //
+            // 为什么要判断：`PanelRunner.reset()` 会把 remainingMillis 复位、
+            // 用户接着再跑一轮（`start()` 会重写 startedAt）。如果这里不比较，
+            // 新一轮的暂停会挂到上一轮那条已经收尾的会话上 —— 表现为
+            // "重置过一次之后，暂停就不产生新记录了"。
+            val row = sessionOf(existing)
+            if (row != null && row.startedAt == rt.startedAt && row.ongoing) {
+                touch(rt)
+                return false
+            }
+            // 是上一轮的残留：丢掉映射，下面按新一轮处理
+            ongoingSessionOf.remove(rt.timerId)
         }
         val startedAt = rt.startedAt.takeIf { it > 0L } ?: return false
         val t = now()
@@ -201,6 +212,27 @@ class SessionArchiver(
     private suspend fun sessionOf(id: Long?): TimerSession? {
         if (id == null) return null
         return dao.sessions().allOngoing().firstOrNull { it.id == id }
+    }
+
+    /**
+     * 「重新开始」前的收尾：如果上一轮还没归档，补一条。
+     *
+     * 为什么需要：`PanelRunner.start(timer)` 会重建整个运行时（`clear` +
+     * `start`），上一轮的进度直接消失。多条入口会走到这里 ——
+     * 全屏页的「开始」（非暂停态）、列表视图的「开始」、首页快速开始。
+     * 不补的话，用户跑了 20 分钟没暂停就点「开始 」，那 20 分钟凭空消失。
+     *
+     * 没有占位行且从未运行过（`startedAt == 0`）时什么也不做，
+     * 所以对"第一次开始"是零影响。
+     */
+    suspend fun finishIfNeeded(rt: TimerRuntime?) {
+        if (rt == null) return
+        if (rt.startedAt <= 0L) return
+        // 从没跑过（remaining 满格且没有超时、也不是正计时）就没东西可记
+        val hasProgress = rt.stopwatch || rt.overdueMillis > 0L ||
+            rt.remainingMillis < rt.totalMillis
+        if (!hasProgress) return
+        runCatching { finish(rt, completed = false) }
     }
 
     /** 计时器被彻底删除（卡片消失）时，清掉内存里的映射。 */
