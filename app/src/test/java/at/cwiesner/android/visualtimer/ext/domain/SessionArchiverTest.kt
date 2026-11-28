@@ -6,6 +6,7 @@ import at.cwiesner.android.visualtimer.ext.data.TimerSession
 import at.cwiesner.android.visualtimer.ext.data.TimerSessionDao
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -483,6 +484,110 @@ class SessionArchiverTest {
         // 满格未跑：也没有可记的
         archiver.finishIfNeeded(rt(remainingMillis = 25 * 60_000L, startedAt = 1_000L))
         assertEquals("满格未跑不该产生记录", 0, sessions.rows.size)
+    }
+
+    /**
+     * **真机抓到的重复归档**。
+     *
+     * 正计时暂停 → 恢复 → 结束，归档里出现了两条区间**完全相同**的记录
+     * （id=10 与 id=11）。根因：`PanelRunner.resume()` 会把 `startedAt` 挪到"现在"
+     * （为了让每一段的区间不重叠），于是「结束」按钮与 `deleteTimerRows` 里的
+     * `finishIfNeeded` 两次调用拿到的是**不同**的 `startedAt`，
+     * 原来用 `startedAt` 当幂等键的检查不命中 → 又插一条。
+     *
+     * 现在：有占位行时以**占位行**为准，`startedAt` 怎么变都不影响。
+     */
+    @Test
+    fun `恢复后 startedAt 被挪动 结束时仍然只有一条`() = runTest {
+        val sessions = FakeSessionDao()
+        val pauses = FakePauseDao()
+        var clock = 60_000_000L
+        val archiver = SessionArchiver(dao(sessions, pauses)) { clock }
+
+        // 第一段：跑 200 秒 → 暂停（必须超过 25 分钟的 1/10 = 150 秒门槛，
+        // 否则会被 ArchiveRules 判为"太短"而删掉，测不到幂等）
+        clock += 200_000L
+        val roundStart = 60_000_000L
+        archiver.onPause(rt(remainingMillis = 25 * 60_000L - 200_000L, startedAt = roundStart))
+        assertEquals(1, sessions.rows.size)
+
+        // 恢复：真实代码里正计时 resume() 会把 startedAt 挪到"现在"。
+        // 这里直接构造一个"startedAt 已被挪动"的运行时 —— 关键点是
+        // 两次 finish 调用拿到**不同**的 startedAt 时不能再插一条。
+        clock += 30_000L
+        archiver.onResume(1L)
+        val resumedStart = clock
+        clock += 100_000L
+
+        // 结束（第一次：archiveAndEndTimer）
+        archiver.finish(
+            rt(remainingMillis = 25 * 60_000L - 300_000L, startedAt = resumedStart),
+            completed = false,
+        )
+        assertEquals("结束后仍只有一条", 1, sessions.rows.size)
+        assertFalse("不再进行中", sessions.rows[0].ongoing)
+
+        // 结束（第二次：deleteTimerRows → finishIfNeeded）
+        // 注意 startedAt 与第一次相同（真实代码里同一个 runtime 对象），
+        // 但即便不同也必须幂等 —— 有占位行时以占位行为准。
+        archiver.finishIfNeeded(
+            rt(remainingMillis = 25 * 60_000L - 300_000L, startedAt = resumedStart),
+        )
+        assertEquals("**关键**：第二次调用不能新增记录", 1, sessions.rows.size)
+        assertEquals(
+            "归档起点应是最初那一轮，不是 resume 之后的时刻",
+            roundStart,
+            sessions.rows[0].startedAt,
+        )
+    }
+
+    /**
+     * **真机抓到的荒谬时长**：起点是昨天、只跑了 25 秒却算出 7 小时。
+     *
+     * 成因：运行时被陈旧快照恢复时把旧 `startedAt` 灌了进来。
+     * 即使源头修了，历史数据里仍可能有这种组合，所以归档器要有一道兜底：
+     * 起点比「现在 − 已跑时长」还早太多 → 这条数据不自洽，宁可不写。
+     */
+    @Test
+    fun `起点远早于实际开始时刻的记录不写入`() = runTest {
+        val sessions = FakeSessionDao()
+        val pauses = FakePauseDao()
+        val now = 1_800_000_000_000L
+        val archiver = SessionArchiver(dao(sessions, pauses)) { now }
+
+        // 昨天开始的起点，但这轮只跑了 25 秒（计划 60 秒倒计时）
+        val yesterday = now - 24 * 3_600_000L
+        val id = archiver.finish(
+            rt(
+                totalMillis = 60_000L,
+                remainingMillis = 60_000L - 25_000L,
+                startedAt = yesterday,
+            ),
+            completed = false,
+        )
+
+        assertNull("荒谬区间不该落库", id)
+        assertEquals("归档里不该出现这条", 0, sessions.rows.size)
+    }
+
+    @Test
+    fun `起点与已跑时长自洽时正常写入`() = runTest {
+        val sessions = FakeSessionDao()
+        val pauses = FakePauseDao()
+        val now = 1_900_000_000_000L
+        val archiver = SessionArchiver(dao(sessions, pauses)) { now }
+
+        // 正常情况：25 秒前开始、跑了 25 秒
+        val id = archiver.finish(
+            rt(
+                totalMillis = 60_000L,
+                remainingMillis = 60_000L - 25_000L,
+                startedAt = now - 25_000L,
+            ),
+            completed = false,
+        )
+        assertNotNull(id)
+        assertEquals(1, sessions.rows.size)
     }
 
     @Test

@@ -470,7 +470,16 @@ class PanelRunner(private val scope: CoroutineScope) {
                     stopwatchBaseMillis = r.remainingMillis,
                 )
             } else {
-                r.copy(running = true)
+                // 倒计时：只翻转 running，**不改 startedAt** —— 暂停再继续算同一轮，
+                // 归档区间应该从这一轮最初开始算。
+                //
+                // 例外：`startedAt == 0` 表示"这一轮还没有起点"（冷启动从快照恢复出来的
+                // 待命态一律置 0，见 ExtApplication 的说明）。这时必须补一个起点，
+                // 否则归档会算出一条 startedAt=0 的荒谬记录。
+                r.copy(
+                    running = true,
+                    startedAt = if (r.startedAt > 0L) r.startedAt else System.currentTimeMillis(),
+                )
             }
             )
         // 告知归档侧「暂停区间到此为止」

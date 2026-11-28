@@ -148,14 +148,38 @@ class SessionArchiver(
         completed: Boolean,
     ): Long? {
         val t = now()
-        // 幂等：这一轮已经归档过了就直接返回，别再插一条。
-        // 多条入口都会走到 finish（「结束」按钮 + deleteTimerRows 里的 finishIfNeeded），
-        // 没有这个检查，每次结束都会写两条。
-        if (rt.startedAt > 0L && archivedRoundOf[rt.timerId] == rt.startedAt) return null
         val existing = ongoingSessionOf[rt.timerId]
+
+        // ---- 幂等 ----
+        //
+        // 多条入口都会走到 finish（「结束」按钮 → archiveAndEndTimer 一次，
+        // 紧接着 deleteTimerRows 里的 finishIfNeeded 又一次）。没有幂等，
+        // 每次结束都会写两条。真机上确认过：(id=10 与 id=11 区间完全相同)。
+        //
+        // **幂等键不能用 `rt.startedAt`** —— 正计时 `resume()` 会把它挪到"现在"
+        // （为了让每一段的区间不重叠），于是恢复之后再结束，第二次调用的
+        // `startedAt` 与第一次不同，检查不命中 → 又插一条。
+        //
+        // 正确的分层：
+        // 1. **有占位行**（暂停过）→ 占位行就是这一轮的锚，处理完 `ongoingSessionOf`
+        //    就被清空；所以"清空前拿到它 = 第一次，拿不到 = 已经收尾过"。
+        //    这条路径下 `startedAt` 怎么变都不影响。
+        // 2. **没有占位行**（从未暂停过）→ 用 `startedAt` 当锚（它没被挪过）。
+        if (existing == null && rt.startedAt > 0L && archivedRoundOf[rt.timerId] == rt.startedAt) {
+            return null
+        }
+        if (existing != null && !isOngoingSession(existing)) {
+            // 占位行已被收尾过（映射残留），同样不再处理
+            ongoingSessionOf.remove(rt.timerId)
+            return null
+        }
+
         val startedAt = rt.startedAt.takeIf { it > 0L }
             ?: sessionOf(existing)?.startedAt
             ?: t
+        // 有占位行时，归档起点以**占位行**为准：正计时 resume 会把 rt.startedAt 挪到
+        // 最后一次恢复的时刻，用它算结束时刻会让区间变短（那段时间明明在计时）。
+        val archiveStart = sessionOf(existing)?.startedAt ?: startedAt
         val elapsed = elapsedMillisForArchive(
             totalMillis = rt.totalMillis,
             remainingMillis = rt.remainingMillis,
@@ -164,6 +188,21 @@ class SessionArchiver(
             stopwatchSegmentMillis = rt.stopwatchSegmentMillis,
         )
         val planned = if (rt.stopwatch) elapsed else rt.totalMillis
+
+        // 起点合理性兜底：`elapsed` 是从**运行时**算的（计划−剩余+超时），
+        // 而 `startedAt` 是墙钟。两者应当自洽，但若运行时是被陈旧快照恢复出来的
+        // （真机上见过：起点是昨天、只跑了 25 秒却算出 7 小时），
+        // 这段记录就是垃圾数据 —— 宁可丢掉也不写进归档。
+        //
+        // 判据：起点不应早于「现在 − 已跑时长」太多（容差吸收 tick 与恢复误差）。
+        if (startedAt < t - elapsed - START_TOLERANCE_MILLIS) {
+            existing?.let {
+                dao.sessions().deleteById(it)
+                dao.pauses().deleteForSession(it)
+                ongoingSessionOf.remove(rt.timerId)
+            }
+            return null
+        }
 
         // 太短的：把占位行删掉，归档里不留痕迹
         if (!ArchiveRules.shouldArchive(rt.stopwatch, elapsed, planned)) {
@@ -175,7 +214,7 @@ class SessionArchiver(
             return null
         }
 
-        val endedAt = (startedAt + elapsed).coerceAtLeast(startedAt)
+        val endedAt = (archiveStart + elapsed).coerceAtLeast(archiveStart)
         if (existing != null) {
             // 封口仍未结束的暂停区间（如果这次是"暂停中就重置"）
             dao.pauses().openPause(existing)?.let { open ->
@@ -225,6 +264,10 @@ class SessionArchiver(
     /** [TimerRuntime] 只有 `stopwatch` 标志，归档里要存 [TimerKind] 的名字。 */
     private fun kindNameOf(rt: TimerRuntime): String =
         if (rt.stopwatch) TimerKind.Stopwatch.name else TimerKind.Countdown.name
+
+    /** 该 sessionId 是否存在且仍是 `ongoing = 1`。 */
+    private suspend fun isOngoingSession(sessionId: Long): Boolean =
+        sessionOf(sessionId)?.ongoing == true
 
     private suspend fun sessionOf(id: Long?): TimerSession? {
         if (id == null) return null
@@ -314,6 +357,14 @@ class SessionArchiver(
  * 而 `AppDatabase` 是 Room 生成类、在纯 JVM 单测里造不出来。
  * 有了这个接口，测试可以直接塞一份内存实现，把状态机完整跑一遍。
  */
+/**
+ * 起点合理性容差。
+ *
+ * 归档区间 = [startedAt, startedAt + elapsed)。若 `startedAt` 比「现在 − elapsed」
+ * 还早出这个容差，说明两者不自洽（典型原因：运行时被陈旧快照恢复）。
+ */
+private const val START_TOLERANCE_MILLIS: Long = 5 * 60_000L
+
 interface SessionDao {
     fun sessions(): TimerSessionDao
     fun pauses(): TimerPauseDao

@@ -718,7 +718,18 @@ class ExtApplication : Application() {
                     running = false,
                     deadlineEpochMillis = null,
                     alertProfileId = timer.alertProfileId,
-                    startedAt = snap.startedAt.takeIf { it > 0L } ?: now,
+                    // **不能沿用快照里的 startedAt**。
+                    //
+                    // 恢复出来的运行时一律 `running = false`（待命态）—— 这一轮**还没开始**。
+                    // 若把快照里的旧 startedAt 灌进去，用户之后按「开始」时
+                    // `PanelRunner.resume()` 对倒计时**不会重写** startedAt，
+                    // 于是归档算出的区间从上一轮的起点一直拉到现在。
+                    //
+                    // 真机上确认过：隔天的一个 1 分钟倒计时只跑了 25 秒，
+                    // 归档里却是 24992 秒（约 7 小时）—— 起点是**昨天**的时刻。
+                    //
+                    // 置 0 = "这一轮还没有起点"，等真正 start/resume 时再写。
+                    startedAt = 0L,
                 )
             }
         }
