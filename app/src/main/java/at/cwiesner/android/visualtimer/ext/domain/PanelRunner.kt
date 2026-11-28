@@ -641,6 +641,47 @@ class PanelRunner(private val scope: CoroutineScope) {
     }
 
     /**
+     * ±5 按钮：按**剩余时间**加减，总时长跟着变，**保留已跑进度**。
+     *
+     * ## 与 [replaceTotal] 的区别（这是用户报的问题的根源）
+     *
+     * `replaceTotal` 是"改总时长"语义 —— 它把 `remainingMillis` 重置成新的 total，
+     * 等于重新开始一轮。用在 +5 上就出问题：
+     *
+     * ```
+     * 15 分钟计时，跑了 10 分钟剩 5 分钟
+     * 用户点 +5 想"再给 5 分钟"
+     * replaceTotal(20min) → 剩余变成 20 分钟  ← 反而多等 15 分钟
+     * ```
+     *
+     * 这个方法只平移剩余时间，已跑那一段完全不动：
+     *
+     * ```
+     * 剩余 5 分钟 → +5 → 剩余 10 分钟，总时长 15→20
+     * 实际已跑 10 分钟不变
+     * ```
+     *
+     * @param newRemainingMillis 新的剩余（已由调用方 clamp 过）
+     */
+    fun adjustRemaining(timerId: Long, newRemainingMillis: Long) {
+        val r = _runtimes.value[timerId] ?: return
+        val newRemaining = newRemainingMillis.coerceAtLeast(0L)
+        // 总时长 = 已跑 + 新剩余。已跑 = total − remaining（不含超时那部分）
+        val elapsed = (r.totalMillis - r.remainingMillis).coerceAtLeast(0L)
+        val newTotal = (elapsed + newRemaining).coerceAtLeast(newRemaining)
+        _runtimes.value = _runtimes.value + (
+            timerId to r.copy(
+                totalMillis = newTotal,
+                remainingMillis = newRemaining,
+                // 超时态跟着新剩余走：加到还有剩余了，就不再算超时
+                overdueMillis = if (newRemaining > 0L) 0L else r.overdueMillis,
+                firedLeads = emptySet(),
+            )
+            )
+        requestSnapshotNow()
+    }
+
+    /**
      * 截止时刻被用户改了（只可能发生在「未锁定的历史 DDL」上）。
      *
      * 为什么需要：DDL 的剩余量是 `deadlineEpochMillis - now` **现算**的

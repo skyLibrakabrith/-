@@ -80,6 +80,17 @@ fun TimerFocusScreen(
     /** DDL 锁定时长：不显示拖拽改时长的入口。 */
     locked: Boolean = false,
     onDurationCommit: (Long) -> Unit,
+    /**
+     * ±5 按钮：**按剩余时间**加减，总时长随之变化，**保留已跑的进度**。
+     *
+     * 为什么不复用 [onDurationCommit]：那个是"改总时长"，语义是重新开始
+     * （`replaceTotal` 会把 remaining 重置成新的 total）。
+     * 用户反馈「15 分钟剩 5 分钟，暂停 +5 变成了 20 分钟」就是踩了这个：
+     * 加完 5 分钟，之前跑的 10 分钟被清零，反而多等 15 分钟。
+     *
+     * 参数是**新的剩余毫秒数**（已 clamp）。
+     */
+    onAdjustRemaining: (Long) -> Unit = {},
     onStart: () -> Unit,
     onPause: () -> Unit,
     onReset: () -> Unit,
@@ -92,7 +103,11 @@ fun TimerFocusScreen(
     // 用 isOverdue 而不是 overdueMillis > 0：暂停后不应再显示成「超时中」，
     // 否则中央按钮永远提示「点击重置」
     val overdue = runtime?.isOverdue == true
-    var draft by remember(timer.id) { mutableLongStateOf(timer.durationMillis) }
+    // key 里带上 durationMillis：±5 改完总时长后库值变了，draft 必须跟着换，
+    // 否则界面仍显示旧时长（之前 key 只有 timer.id，改完不刷新）。
+    var draft by remember(timer.id, timer.durationMillis) {
+        mutableLongStateOf(timer.durationMillis)
+    }
     var dragging by remember { mutableStateOf(false) }
     // 长按标题重命名的临时状态
     var renaming by remember { mutableStateOf(false) }
@@ -270,6 +285,14 @@ fun TimerFocusScreen(
                 overdue -> "已超时 " + DeadlineCalculator.formatRemaining(runtime?.overdueMillis ?: 0L)
                 running -> "剩余 " + DeadlineCalculator.formatRemaining(remain) +
                     " · " + clockOf(System.currentTimeMillis() + remain) + " 结束"
+                // 暂停态：显示**剩余**，不是总时长。
+                //
+                // 之前这里一律显示 draft（= 总时长），于是「15 分钟跑剩 14 分钟时暂停」
+                // 界面上看还是「时长 15m00s」，点 +5 也看不出变化 ——
+                // 用户根本不知道还剩多少。
+                runtime != null && runtime.remainingMillis != runtime.totalMillis ->
+                    "剩余 " + DeadlineCalculator.formatRemaining(remain) +
+                        " · 共 " + DeadlineCalculator.formatRemaining(runtime.totalMillis)
                 else -> "时长 " + DeadlineCalculator.formatRemaining(draft) +
                     " · " + clockOf(System.currentTimeMillis() + draft) + " 结束"
             },
@@ -305,16 +328,22 @@ fun TimerFocusScreen(
                 horizontalArrangement = Arrangement.Center,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                // ±5 操作的是**剩余时间**，不是总时长。
+                //
+                // 用户反馈：「15 分钟剩 5 分钟时暂停，+5 变成了 20 分钟」——
+                // 原来按总时长算（15→20）并走 replaceTotal，剩余被重置成 20 分钟，
+                // 之前跑的 10 分钟白跑了。用户的直觉是"再给我 5 分钟"，
+                // 正确结果应当是剩余 5→10 分钟。
+                //
+                // 所以：`-5` 减剩余、`+5` 加剩余，总时长跟着变，已跑的进度保留。
                 MiniAdjustButton("−5") {
-                    val next = (draft - 5 * 60_000L).coerceAtLeast(60_000L)
-                    draft = next
-                    onDurationCommit(next)
+                    // 只把「新的剩余」交上去，总时长怎么变由上层统一算 ——
+                    // 界面层不自己维护 draft，否则和 runtime 的两份真相会打架。
+                    onAdjustRemaining((remain - 5 * 60_000L).coerceAtLeast(60_000L))
                 }
                 Spacer(modifier = Modifier.size(12.dp))
                 MiniAdjustButton("+5") {
-                    val next = (draft + 5 * 60_000L).coerceAtMost(60 * 60_000L)
-                    draft = next
-                    onDurationCommit(next)
+                    onAdjustRemaining((remain + 5 * 60_000L).coerceAtMost(60 * 60_000L))
                 }
             }
         }

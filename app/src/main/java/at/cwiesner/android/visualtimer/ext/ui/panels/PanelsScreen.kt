@@ -674,6 +674,21 @@ fun PanelsScreen(
                     thresholdMinutes = thresholdMinutes,
                     thresholdColors = thresholdColors,
                     locked = !focused.isEditable,
+                    // ±5：按剩余调整，保留已跑进度（不用 onDurationCommit，那是"重新开始"语义）
+                    onAdjustRemaining = { newRemaining ->
+                        scope.launch {
+                            val cur = runner.get(focused.id)
+                            if (cur == null) return@launch
+                            runner.adjustRemaining(focused.id, newRemaining)
+                            // 库里的 durationMillis 也要跟上，否则退回列表看到旧时长
+                            val newTotal = (cur.totalMillis - cur.remainingMillis)
+                                .coerceAtLeast(0L) + newRemaining
+                            runCatching {
+                                db.timerDao().upsert(focused.copy(durationMillis = newTotal))
+                            }
+                            runner.markLeadsBaseline(focused.id, newRemaining)
+                        }
+                    },
                     onDurationCommit = { d ->
                         scope.launch {
                             val updated = focused.copy(durationMillis = d)
