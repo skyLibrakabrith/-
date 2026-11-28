@@ -1,5 +1,7 @@
 package at.cwiesner.android.visualtimer.ext
 
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.distinctUntilChanged
 import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -23,6 +25,7 @@ import at.cwiesner.android.visualtimer.ext.domain.PanelRunner
 import at.cwiesner.android.visualtimer.ext.domain.TimerRuntime
 import at.cwiesner.android.visualtimer.ext.service.AlertOverlayService
 import at.cwiesner.android.visualtimer.ext.service.KeepAliveService
+import at.cwiesner.android.visualtimer.ext.service.TimerAlarmScheduler
 import at.cwiesner.android.visualtimer.ext.service.TimerOverlayService
 import at.cwiesner.android.visualtimer.ext.settings.SettingsRepo
 import at.cwiesner.android.visualtimer.ext.util.logCatching
@@ -109,6 +112,9 @@ class ExtApplication : Application() {
      * 挂在 Application 上，这样悬浮窗的「下一阶段」按钮
      * 可以在应用不在前台时也推进序列。
      */
+    /** 已经注册过闹钟的计时器 id，用于「取消不再跑的」。 */
+    private val scheduledAlarmIds = mutableSetOf<Long>()
+
     /**
      * 序列（多阶段计时）的归档写入者。
      *
@@ -963,6 +969,46 @@ class ExtApplication : Application() {
                     }
                 }
             }
+        }
+
+        // 1.95) 到点闹钟：进程被杀时最后的兜底
+        //
+        // 前台服务（1.9）只能让「切后台」不被优先回收，用户从最近任务划掉
+        // 或 ROM 清理时照样会死。这里给每个在跑的计时器注册一个到点闹钟，
+        // 即使进程没了，系统也会把 TimerAlarmReceiver 拉起来发通知。
+        //
+        // 只在「运行状态」变化时重排（runtimes 的 running 集合），
+        // 避免 200ms 一次的无谓 IO。
+        appScope.launch {
+            panelRunner.runtimes
+                .map { map ->
+                    // **键必须是稳定的**：只取 timerId 集合，不能把「到点时刻」放进来。
+                    // 一开始我放了 Triple(timerId, label, dueAt)，而 dueAt 是
+                    // 「现在 + 剩余」—— runtimes 每 200ms 更新一次，dueAt 每次都变，
+                    // `distinctUntilChanged` 形同虚设，于是每 200ms 重排一次闹钟（IO 爆炸）。
+                    map.values.filter { it.running }.map { it.timerId }.toSet()
+                }
+                .distinctUntilChanged()
+                .collect { aliveIds ->
+                    // 到点时刻在这里现算（只在 running 集合真正变化时才执行）
+                    val running = aliveIds.mapNotNull { id ->
+                        panelRunner.get(id)?.let { rt -> Triple(rt.timerId, rt.label, at.cwiesner.android.visualtimer.ext.domain.dueAtMillisOf(rt)) }
+                    }
+                    // 取消已经不在跑的
+                    scheduledAlarmIds.filter { it !in aliveIds }.forEach { id ->
+                        logCatching("alarm-cancel") { TimerAlarmScheduler.cancel(this@ExtApplication, id) }
+                    }
+                    // 注册/更新还在跑的
+                    running.forEach { (id, label, dueAt) ->
+                        if (dueAt != null) {
+                            logCatching("alarm-schedule") {
+                                TimerAlarmScheduler.schedule(this@ExtApplication, id, label, dueAt)
+                            }
+                        }
+                    }
+                    scheduledAlarmIds.removeAll { it !in aliveIds }
+                    scheduledAlarmIds.addAll(aliveIds)
+                }
         }
 
         // 2) 持续震动：只要还有未处理的到点计时器就一直震

@@ -28,3 +28,20 @@ fun shouldKeepAlive(
     return sequencePhase is StepSequenceEngine.Phase.Running ||
         sequencePhase is StepSequenceEngine.Phase.AwaitingConfirm
 }
+
+/**
+ * 这个运行时「到点」的墙钟时刻；正计时没有终点，返回 null。
+ *
+ * 三种计时器语义完全不同：
+ * - **DDL**：终点由**绝对时刻**决定（「今晚 8 点前交」），与剩余时间无关
+ * - **倒计时**：现在 + 剩余（关机期间也过去了，`remainingMillis` 才准）
+ * - **正计时**：永远不到点
+ *
+ * @param nowMillis 允许注入，便于单测
+ */
+fun dueAtMillisOf(rt: TimerRuntime, nowMillis: Long = System.currentTimeMillis()): Long? {
+    if (rt.stopwatch) return null
+    rt.deadlineEpochMillis?.let { return it }
+    if (rt.remainingMillis <= 0L) return null
+    return nowMillis + rt.remainingMillis
+}

@@ -98,6 +98,10 @@
         </service>
 
         <receiver
+            android:name=".service.TimerAlarmReceiver"
+            android:exported="false" />
+
+        <receiver
             android:name=".service.BootReceiver"
             android:exported="false">
             <intent-filter>
